@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         3.9.0
+// @version         3.9.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -1182,52 +1182,6 @@ static constexpr UINT WM_APP_REBUILD = WM_APP + 1;
 
 // Forward declarations
 static void LoadSettings();
-// Inverse of ParseActionType: the stable id a value store / settings file uses.
-static const wchar_t *ActionIdFromEnum(CornerAction a)
-{
-    switch (a)
-    {
-    case CornerAction::Nothing: return L"ACTION_NOTHING";
-    case CornerAction::ShowDesktop: return L"ACTION_SHOW_DESKTOP";
-    case CornerAction::TaskView: return L"ACTION_TASK_VIEW";
-    case CornerAction::ScreenSaver: return L"ACTION_SCREENSAVER";
-    case CornerAction::MonitorsOff: return L"ACTION_MONITORS_OFF";
-    case CornerAction::QuickSettings: return L"ACTION_QUICK_SETTINGS";
-    case CornerAction::NotificationCenter: return L"ACTION_NOTIFICATION_CENTER";
-    case CornerAction::StartMenu: return L"ACTION_START_MENU";
-    case CornerAction::HideOthers: return L"ACTION_HIDE_OTHERS";
-    case CornerAction::Mute: return L"ACTION_MUTE";
-    case CornerAction::TaskManager: return L"ACTION_TASK_MANAGER";
-    case CornerAction::Lock: return L"ACTION_LOCK";
-    case CornerAction::Sleep: return L"ACTION_SLEEP";
-    case CornerAction::SwitchLastWindow: return L"ACTION_SWITCH_LAST";
-    case CornerAction::TaskSwitcher: return L"ACTION_TASK_SWITCHER";
-    case CornerAction::MinimizeWindow: return L"ACTION_MINIMIZE";
-    case CornerAction::MaximizeWindow: return L"ACTION_MAXIMIZE";
-    case CornerAction::SnapLeft: return L"ACTION_SNAP_LEFT";
-    case CornerAction::SnapRight: return L"ACTION_SNAP_RIGHT";
-    case CornerAction::CloseWindow: return L"ACTION_CLOSE_WINDOW";
-    case CornerAction::FileExplorer: return L"ACTION_FILE_EXPLORER";
-    case CornerAction::SettingsApp: return L"ACTION_SETTINGS";
-    case CornerAction::Search: return L"ACTION_SEARCH";
-    case CornerAction::ClipboardHistory: return L"ACTION_CLIPBOARD";
-    case CornerAction::Screenshot: return L"ACTION_SCREENSHOT";
-    case CornerAction::ProjectDisplay: return L"ACTION_PROJECT";
-    case CornerAction::VDesktopNext: return L"ACTION_VDESK_NEXT";
-    case CornerAction::VDesktopPrev: return L"ACTION_VDESK_PREV";
-    case CornerAction::VDesktopNew: return L"ACTION_VDESK_NEW";
-    case CornerAction::VDesktopClose: return L"ACTION_VDESK_CLOSE";
-    case CornerAction::LockAndMonitorsOff: return L"ACTION_LOCK_MONITORS_OFF";
-    case CornerAction::KeepAwakeOn: return L"ACTION_KEEP_AWAKE_ON";
-    case CornerAction::KeepAwakeOff: return L"ACTION_KEEP_AWAKE_OFF";
-    case CornerAction::AlternateKeypress: return L"ACTION_ALTERNATE_KEYPRESS";
-    case CornerAction::AlternateCommand: return L"ACTION_ALTERNATE_COMMAND";
-    case CornerAction::SendKeypress: return L"ACTION_SEND_KEYPRESS";
-    case CornerAction::StartProcess: return L"ACTION_START_PROCESS";
-    }
-    return L"ACTION_NOTHING";
-}
-
 static const wchar_t *ZoneToString(Zone z);
 static const wchar_t *ActionToString(CornerAction a);
 
@@ -3854,6 +3808,16 @@ static const OptDef kOpts[] = {
 };
 static constexpr int kOptCount = ARRAYSIZE(kOpts);
 
+// A free function with CALLBACK, not a lambda: a non-capturing lambda decays
+// to a cdecl function pointer, while WNDENUMPROC is __stdcall. They happen to
+// be interchangeable in 64-bit builds, but this mod is compiled 32-bit where
+// the calling conventions genuinely differ, so the lambda will not convert.
+static BOOL CALLBACK DashSetChildFont(HWND hChild, LPARAM lParam)
+{
+    SendMessageW(hChild, WM_SETFONT, (WPARAM)lParam, TRUE);
+    return TRUE;
+}
+
 static void DashSetInt(DashState *s, int id, int v)
 {
     wchar_t b[32];
@@ -4294,13 +4258,7 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         lf.lfHeight = -MulDiv(9, (int)s->dpi, 72);
         wcscpy_s(lf.lfFaceName, L"Segoe UI");
         s->hFont = CreateFontIndirectW(&lf);
-        EnumChildWindows(hWnd,
-                         [](HWND c, LPARAM p) -> BOOL
-                         {
-                             SendMessageW(c, WM_SETFONT, (WPARAM)p, TRUE);
-                             return TRUE;
-                         },
-                         (LPARAM)s->hFont);
+        EnumChildWindows(hWnd, DashSetChildFont, (LPARAM)s->hFont);
         RECT *r = (RECT *)lParam;
         SetWindowPos(hWnd, nullptr, r->left, r->top, r->right - r->left,
                      r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);

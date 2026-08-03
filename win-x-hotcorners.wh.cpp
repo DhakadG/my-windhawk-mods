@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         3.4.0
+// @version         3.5.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -293,6 +293,13 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
     if both are a toggle (like Task View) they cancel out and nothing seems
     to happen. 80 ms is imperceptible and blocks pass-through firing.
     Set to 0 only if you use corners or edges but never both.
+- ShowMonitorNames: true
+  $name: List my monitors in the log
+  $description: >-
+    Writes your connected displays to this mod's log every time it loads or
+    your display layout changes, so you can copy a name straight into the
+    Monitor field above instead of guessing it. Harmless to leave on - it
+    only writes a few lines, and only when something actually changes.
 - VerboseLogging: false
   $name: Verbose logging
   $description: >-
@@ -802,6 +809,10 @@ static HANDLE g_hStopEvent = nullptr;
 // other process that logs — including the other Windhawk mods.
 static bool g_verboseLog = false;
 
+// Prints the monitor list at load and on display changes, so names can be
+// copied into the Monitor setting instead of guessed. Cheap - once per event.
+static bool g_showMonitorNames = true;
+
 // Hard floor between any two actions, whatever the zone or the cooldown
 // setting. Actions are user-visible shell operations (Task View, Show Desktop,
 // launching a process); replaying a queued burst of them back-to-back is what
@@ -1231,14 +1242,26 @@ static void RefreshMonitors()
             m.id += L" #" + std::to_wstring(n);
     }
 
-    Wh_Log(L"Monitors: %d found", (int)g_monitors.size());
+    if (!g_showMonitorNames)
+        return;
+
+    // Printed so the name can be copied straight into the Monitor setting,
+    // rather than guessed. Once per load and per display change only.
+    Wh_Log(L" ");
+    Wh_Log(L"+-- Your monitors ---------------------------------------");
+    Wh_Log(L"|  Copy a name below into this mod's \"Monitor\" setting.");
+    Wh_Log(L"|  Use  *  to apply one configuration to every monitor.");
+    Wh_Log(L"|");
     for (const auto &m : g_monitors)
     {
-        Wh_Log(L"  Monitor %d%s id='%s' device=%s (%ld,%ld)-(%ld,%ld)",
-               m.index, m.isPrimary ? L" [PRIMARY]" : L"", m.id.c_str(),
-               m.device.c_str(), m.rcMonitor.left, m.rcMonitor.top,
-               m.rcMonitor.right, m.rcMonitor.bottom);
+        Wh_Log(L"|   %d. \"%s\"%s   %ld x %ld  at (%ld, %ld)", m.index,
+               m.id.c_str(), m.isPrimary ? L"   [primary]" : L"",
+               m.rcMonitor.right - m.rcMonitor.left,
+               m.rcMonitor.bottom - m.rcMonitor.top, m.rcMonitor.left,
+               m.rcMonitor.top);
     }
+    Wh_Log(L"+--------------------------------------------------------");
+    Wh_Log(L" ");
 }
 
 // =====================================================================
@@ -1770,36 +1793,36 @@ static const wchar_t *ActionToString(CornerAction a)
     switch (a)
     {
     case CornerAction::Nothing: return L"Nothing";
-    case CornerAction::ShowDesktop: return L"ShowDesktop";
-    case CornerAction::TaskView: return L"TaskView";
-    case CornerAction::ScreenSaver: return L"ScreenSaver";
-    case CornerAction::MonitorsOff: return L"MonitorsOff";
-    case CornerAction::QuickSettings: return L"QuickSettings";
-    case CornerAction::NotificationCenter: return L"NotificationCenter";
-    case CornerAction::StartMenu: return L"StartMenu";
-    case CornerAction::HideOthers: return L"HideOthers";
+    case CornerAction::ShowDesktop: return L"Show Desktop";
+    case CornerAction::TaskView: return L"Task View";
+    case CornerAction::ScreenSaver: return L"Screen Saver";
+    case CornerAction::MonitorsOff: return L"Turn Off Monitors";
+    case CornerAction::QuickSettings: return L"Quick Settings";
+    case CornerAction::NotificationCenter: return L"Notification Center";
+    case CornerAction::StartMenu: return L"Start Menu";
+    case CornerAction::HideOthers: return L"Hide Other Windows";
     case CornerAction::Mute: return L"Mute";
-    case CornerAction::TaskManager: return L"TaskManager";
-    case CornerAction::Lock: return L"Lock";
+    case CornerAction::TaskManager: return L"Task Manager";
+    case CornerAction::Lock: return L"Lock Computer";
     case CornerAction::Sleep: return L"Sleep";
-    case CornerAction::SwitchLastWindow: return L"SwitchLastWindow";
-    case CornerAction::TaskSwitcher: return L"TaskSwitcher";
-    case CornerAction::MinimizeWindow: return L"MinimizeWindow";
-    case CornerAction::MaximizeWindow: return L"MaximizeWindow";
-    case CornerAction::SnapLeft: return L"SnapLeft";
-    case CornerAction::SnapRight: return L"SnapRight";
-    case CornerAction::CloseWindow: return L"CloseWindow";
-    case CornerAction::FileExplorer: return L"FileExplorer";
+    case CornerAction::SwitchLastWindow: return L"Switch to Last Window";
+    case CornerAction::TaskSwitcher: return L"Task Switcher";
+    case CornerAction::MinimizeWindow: return L"Minimize Window";
+    case CornerAction::MaximizeWindow: return L"Maximize Window";
+    case CornerAction::SnapLeft: return L"Snap Left";
+    case CornerAction::SnapRight: return L"Snap Right";
+    case CornerAction::CloseWindow: return L"Close Window";
+    case CornerAction::FileExplorer: return L"File Explorer";
     case CornerAction::SettingsApp: return L"Settings";
     case CornerAction::Search: return L"Search";
-    case CornerAction::ClipboardHistory: return L"ClipboardHistory";
+    case CornerAction::ClipboardHistory: return L"Clipboard History";
     case CornerAction::Screenshot: return L"Screenshot";
     case CornerAction::ProjectDisplay: return L"Project";
-    case CornerAction::VDesktopNext: return L"VDesktopNext";
-    case CornerAction::VDesktopPrev: return L"VDesktopPrev";
-    case CornerAction::VDesktopNew: return L"VDesktopNew";
-    case CornerAction::SendKeypress: return L"SendKeypress";
-    case CornerAction::StartProcess: return L"StartProcess";
+    case CornerAction::VDesktopNext: return L"Virtual Desktop Next";
+    case CornerAction::VDesktopPrev: return L"Virtual Desktop Previous";
+    case CornerAction::VDesktopNew: return L"Virtual Desktop New";
+    case CornerAction::SendKeypress: return L"Virtual Key Press";
+    case CornerAction::StartProcess: return L"Custom Command";
     }
     return L"Unknown";
 }
@@ -1808,14 +1831,14 @@ static const wchar_t *ZoneToString(Zone z)
 {
     switch (z)
     {
-    case ZONE_TOP_LEFT: return L"TopLeft";
-    case ZONE_TOP_RIGHT: return L"TopRight";
-    case ZONE_BOTTOM_LEFT: return L"BottomLeft";
-    case ZONE_BOTTOM_RIGHT: return L"BottomRight";
-    case ZONE_EDGE_TOP: return L"EdgeTop";
-    case ZONE_EDGE_BOTTOM: return L"EdgeBottom";
-    case ZONE_EDGE_LEFT: return L"EdgeLeft";
-    case ZONE_EDGE_RIGHT: return L"EdgeRight";
+    case ZONE_TOP_LEFT: return L"Top-left corner";
+    case ZONE_TOP_RIGHT: return L"Top-right corner";
+    case ZONE_BOTTOM_LEFT: return L"Bottom-left corner";
+    case ZONE_BOTTOM_RIGHT: return L"Bottom-right corner";
+    case ZONE_EDGE_TOP: return L"Top edge";
+    case ZONE_EDGE_BOTTOM: return L"Bottom edge";
+    case ZONE_EDGE_LEFT: return L"Left edge";
+    case ZONE_EDGE_RIGHT: return L"Right edge";
     default: return L"None";
     }
 }
@@ -2012,11 +2035,18 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
 
     LeaveCriticalSection(&g_settingsLock);
 
-    Wh_Log(L"Active zones: %d (corner=%dpx, edge=%dpx requested)",
-           (int)set->zones.size(), csCfg, esCfg);
-    for (const auto &z : set->zones)
-        Wh_Log(L"  %s  (%ld,%ld)-(%ld,%ld)", z.label.c_str(), z.rect.left,
-               z.rect.top, z.rect.right, z.rect.bottom);
+    if (set->zones.empty())
+    {
+        Wh_Log(L"No zones are active - every zone is set to \"Nothing\", or "
+               L"no configuration matches a connected monitor.");
+    }
+    else
+    {
+        Wh_Log(L"Active zones (%d)   corner %dpx, edge %dpx:",
+               (int)set->zones.size(), csCfg, esCfg);
+        for (const auto &z : set->zones)
+            Wh_Log(L"   %s", z.label.c_str());
+    }
 
     return set;
 }
@@ -2359,6 +2389,7 @@ static void LoadSettings()
     g_settings.disableOnFullscreen = Wh_GetIntSetting(L"DisableOnFullscreen");
     g_settings.disableDuringDrag = Wh_GetIntSetting(L"DisableDuringDrag");
     g_verboseLog = Wh_GetIntSetting(L"VerboseLogging") != 0;
+    g_showMonitorNames = Wh_GetIntSetting(L"ShowMonitorNames") != 0;
 
     // Excluded processes (semicolon-separated, case-insensitive)
     g_settings.excludedProcesses.clear();
@@ -2436,27 +2467,28 @@ static void LoadSettings()
         if (!hasAnyAction)
             continue;
 
-        Wh_Log(L"Config %d: monitorId='%s' legacyIndex=%d", i,
-               cfg.monitorId.c_str(), cfg.monitorIndex);
-        for (int z = 0; z < ZONE_COUNT; z++)
-        {
-            if (cfg.zones[z].action != CornerAction::Nothing)
-                Wh_Log(L"  %s -> %s %s", zoneKeys[z],
-                       ActionToString(cfg.zones[z].action),
-                       cfg.zones[z].args.c_str());
-        }
+        // The resolved result is printed by BuildZoneSet as "Active zones";
+        // repeating every zone here just doubled the noise.
+        Wh_Log(L"Configuration %d applies to: %s", i + 1,
+               cfg.monitorId.empty()
+                   ? (cfg.monitorIndex == 0
+                          ? L"every monitor (legacy: Monitor Number 0)"
+                          : L"a monitor by number (legacy)")
+                   : cfg.monitorId.c_str());
 
         g_settings.monitorConfigs.push_back(std::move(cfg));
     }
 
-    Wh_Log(L"Settings: corner=%d edge=%d delay=%d settle=%d cooldown=%d "
-           L"fullscreen=%d drag=%d excluded=%d configs=%d",
+    Wh_Log(L"Sizes: corner %dpx, edge %dpx.  Timing: delay %dms, "
+           L"pass-through guard %dms, cooldown %dms.",
            g_settings.cornerSize, g_settings.edgeSize,
            g_settings.activationDelay, g_settings.settleMs,
-           g_settings.cooldownMs,
-           g_settings.disableOnFullscreen, g_settings.disableDuringDrag,
-           (int)g_settings.excludedProcesses.size(),
-           (int)g_settings.monitorConfigs.size());
+           g_settings.cooldownMs);
+    Wh_Log(L"Skip while fullscreen: %s.  Skip while dragging: %s.  "
+           L"Excluded apps: %d.",
+           g_settings.disableOnFullscreen ? L"yes" : L"no",
+           g_settings.disableDuringDrag ? L"yes" : L"no",
+           (int)g_settings.excludedProcesses.size());
 
     LeaveCriticalSection(&g_settingsLock);
 }

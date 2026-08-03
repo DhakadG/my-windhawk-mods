@@ -94,8 +94,8 @@ Left · Snap Right · Close Window
 Notification Center · Clipboard History · Screenshot / Snip · Project ·
 Task Manager · Mute Volume
 
-**Power** — Lock Computer · Lock and Turn Off Monitors · Keep Awake On/Off · Sleep · Turn Off Monitors ·
-Start Screen Saver · Keep Awake On / Off
+**Power** — Lock Computer · Lock and Turn Off Monitors · Turn Off Monitors ·
+Sleep · Start Screen Saver · Keep Awake On / Off
 
 **Custom** — Virtual Key Press · Alternate Key Press · Custom Command ·
 Alternate Command · Nothing

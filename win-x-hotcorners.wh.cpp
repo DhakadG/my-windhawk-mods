@@ -2,12 +2,12 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         3.8.0
+// @version         3.8.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
 // @include         windhawk.exe
-// @compilerOptions -lcomctl32 -lpowrprof -lshell32 -luser32
+// @compilerOptions -lcomctl32 -lgdi32 -lpowrprof -lshell32 -luser32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -952,7 +952,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
 
 #include <windows.h>
 
-#include <commctrl.h> // windhawk_utils.h needs SUBCLASSPROC from here
+#include <commctrl.h>
+#include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM // windhawk_utils.h needs SUBCLASSPROC from here
 #include <initializer_list>
 #include <powrprof.h>
 #include <shellapi.h>
@@ -3119,6 +3120,38 @@ static UINT g_taskbarCreatedMsg = 0;
 static constexpr UINT WM_APP_TRAY = WM_APP + 10;
 static constexpr UINT_PTR kTrayIconId = 1;
 
+// A stable GUID gives the icon an identity of its own. Without one it is keyed
+// on the host executable, which for a Windhawk tool mod is windhawk.exe and is
+// therefore shared with every other tray-owning mod — so Windows cannot tell
+// our show/hide preference apart from theirs.
+static const GUID kTrayIconGuid = {
+    0x7c15402a, 0xfbae, 0x41d8,
+    {0xad, 0x28, 0x46, 0xad, 0x02, 0x40, 0x8d, 0x73}};
+
+// Set once NIM_ADD succeeds. NIF_GUID also validates the registering
+// executable's path, so if it is ever rejected we fall back to plain uID
+// identity rather than losing the icon entirely.
+static bool g_trayUseGuid = true;
+
+// NOTIFYICON_VERSION_4 changes what the shell sends:
+//   left-click  -> NIN_SELECT      (rather than WM_LBUTTONUP)
+//   right-click -> WM_CONTEXTMENU  (rather than WM_RBUTTONUP)
+//   keyboard    -> NIN_KEYSELECT
+// and it packs the cursor position into wParam. Both the old and new forms are
+// accepted below so the icon behaves identically if the version call fails.
+#ifndef NIN_SELECT
+#define NIN_SELECT (WM_USER + 0)
+#endif
+#ifndef NIN_KEYSELECT
+#define NIN_KEYSELECT (WM_USER + 1)
+#endif
+#ifndef NOTIFYICON_VERSION_4
+#define NOTIFYICON_VERSION_4 4
+#endif
+#ifndef NIF_SHOWTIP
+#define NIF_SHOWTIP 0x00000080
+#endif
+
 enum TrayCommand
 {
     IDM_ENABLED = 100,
@@ -3200,6 +3233,18 @@ static HICON MakeTrayIcon(bool enabled)
     return hIcon;
 }
 
+static void FillTrayIconData(NOTIFYICONDATAW &nid)
+{
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_hTrayWnd;
+    nid.uID = (UINT)kTrayIconId;
+    if (g_trayUseGuid)
+    {
+        nid.uFlags |= NIF_GUID;
+        nid.guidItem = kTrayIconGuid;
+    }
+}
+
 static void UpdateTrayIcon(bool add)
 {
     if (!g_hTrayWnd)
@@ -3208,16 +3253,42 @@ static void UpdateTrayIcon(bool add)
     bool active = g_trayEnabled && GetTickCount64() >= g_suspendUntil.load();
 
     NOTIFYICONDATAW nid = {};
-    nid.cbSize = sizeof(nid);
-    nid.hWnd = g_hTrayWnd;
-    nid.uID = (UINT)kTrayIconId;
-    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
+    FillTrayIconData(nid);
     nid.uCallbackMessage = WM_APP_TRAY;
     nid.hIcon = MakeTrayIcon(active);
     wcscpy_s(nid.szTip, active ? L"Win-X Hot Corners - active"
                                : L"Win-X Hot Corners - paused");
 
-    Shell_NotifyIconW(add ? NIM_ADD : NIM_MODIFY, &nid);
+    BOOL ok = Shell_NotifyIconW(add ? NIM_ADD : NIM_MODIFY, &nid);
+
+    // NIF_GUID ties the icon to the registering executable's path. If the
+    // shell rejects it, drop the GUID and retry rather than silently ending up
+    // with no icon at all.
+    if (!ok && add && g_trayUseGuid)
+    {
+        Wh_Log(L"Tray: GUID identity refused, falling back to plain icon id");
+        g_trayUseGuid = false;
+        NOTIFYICONDATAW retry = {};
+        retry.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
+        FillTrayIconData(retry);
+        retry.uCallbackMessage = WM_APP_TRAY;
+        retry.hIcon = nid.hIcon;
+        wcscpy_s(retry.szTip, nid.szTip);
+        ok = Shell_NotifyIconW(NIM_ADD, &retry);
+    }
+
+    // Opt into the modern notification behaviour. Only meaningful right after
+    // the icon is added.
+    if (ok && add)
+    {
+        NOTIFYICONDATAW ver = {};
+        ver.uFlags = 0;
+        FillTrayIconData(ver);
+        ver.uVersion = NOTIFYICON_VERSION_4;
+        Shell_NotifyIconW(NIM_SETVERSION, &ver);
+    }
+
     if (nid.hIcon)
         DestroyIcon(nid.hIcon);
 }
@@ -3247,7 +3318,7 @@ static void ApplyTrayOverrides()
         g_verboseLog = (v != 0);
 }
 
-static void ShowTrayMenu()
+static void ShowTrayMenu(POINT pt)
 {
     HMENU hMenu = CreatePopupMenu();
     if (!hMenu)
@@ -3290,8 +3361,6 @@ static void ShowTrayMenu()
     AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_ABOUT,
                 L"Win-X Hot Corners " WH_MOD_VERSION);
 
-    POINT pt;
-    GetCursorPos(&pt);
     // Required so the menu dismisses when the user clicks elsewhere.
     SetForegroundWindow(g_hTrayWnd);
     TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hTrayWnd, nullptr);
@@ -3383,11 +3452,22 @@ static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
 {
     if (uMsg == WM_APP_TRAY)
     {
+        // Under NOTIFYICON_VERSION_4 the event is in the low word of lParam
+        // and the cursor position is in wParam; under the legacy version
+        // lParam is the event on its own. Reading LOWORD(lParam) is correct
+        // for both.
         UINT ev = LOWORD(lParam);
-        if (ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU)
-            ShowTrayMenu();
-        else if (ev == WM_LBUTTONUP)
+        if (ev == WM_CONTEXTMENU || ev == WM_RBUTTONUP)
+        {
+            POINT pt = {GET_X_LPARAM(wParam), GET_Y_LPARAM(wParam)};
+            if (pt.x == 0 && pt.y == 0)
+                GetCursorPos(&pt);  // legacy version does not supply coords
+            ShowTrayMenu(pt);
+        }
+        else if (ev == NIN_SELECT || ev == NIN_KEYSELECT || ev == WM_LBUTTONUP)
+        {
             HandleTrayCommand(IDM_ENABLED);
+        }
         return 0;
     }
     if (uMsg == WM_COMMAND)
@@ -3409,6 +3489,10 @@ static DWORD WINAPI TrayThread(LPVOID)
     const wchar_t *kClass = L"WindhawkHotCornersTray";
     HINSTANCE hInst = GetModuleHandle(nullptr);
 
+    // Registered before the window exists so an Explorer restart racing our
+    // startup cannot be missed.
+    g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+
     WNDCLASS wc = {};
     wc.lpfnWndProc = TrayWndProc;
     wc.hInstance = hInst;
@@ -3424,8 +3508,8 @@ static DWORD WINAPI TrayThread(LPVOID)
         return 1;
     }
 
-    g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
     UpdateTrayIcon(true);
+
 
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0))
@@ -3435,9 +3519,7 @@ static DWORD WINAPI TrayThread(LPVOID)
     }
 
     NOTIFYICONDATAW nid = {};
-    nid.cbSize = sizeof(nid);
-    nid.hWnd = g_hTrayWnd;
-    nid.uID = (UINT)kTrayIconId;
+    FillTrayIconData(nid);
     Shell_NotifyIconW(NIM_DELETE, &nid);
 
     DestroyWindow(g_hTrayWnd);

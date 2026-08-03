@@ -28,13 +28,22 @@ zones — four corners and four edges — and each takes its own action.
 
 ### Picking a monitor
 
-Set **Monitor** to a display's friendly name, e.g. `DELL S2725QC`. The exact
-names for your displays are written to the mod's log every time it loads:
+You don't have to guess the name. Open the mod's **Log** tab in Windhawk — the
+mod lists your displays every time it loads, ready to copy:
 
 ```
-Monitor 1 [PRIMARY] id='DELL S2725QC' device=\\.\DISPLAY1 (0,0)-(3840,2160)
-Monitor 2           id='BOE0998'      device=\\.\DISPLAY2 (-1920,772)-(0,1852)
++-- Your monitors ---------------------------------------
+|  Copy a name below into this mod's "Monitor" setting.
+|  Use  *  to apply one configuration to every monitor.
+|
+|   1. "DELL S2725QC"   [primary]   3840 x 2160  at (0, 0)
+|   2. "BOE0C29"                    1920 x 1080  at (-1920, 772)
++--------------------------------------------------------
 ```
+
+Paste the text between the quotes into **Monitor**. The list refreshes
+whenever you plug in, unplug or rearrange a display, so it always reflects
+what is actually connected.
 
 | Value | Meaning |
 |-------|---------|
@@ -62,6 +71,7 @@ corner on one display.
 | Disable on fullscreen apps | on | Ignore corners while a game or video is fullscreen |
 | Disable during mouse drag | on | Ignore corners while a mouse button is held |
 | Excluded processes | *(empty)* | Semicolon-separated exe names to disable in |
+| List my monitors in the log | on | Prints your displays so you can copy their names |
 | Verbose logging | off | Log every trigger (diagnostics only) |
 
 ---

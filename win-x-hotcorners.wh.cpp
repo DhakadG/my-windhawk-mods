@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         3.8.1
+// @version         3.9.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -1182,6 +1182,52 @@ static constexpr UINT WM_APP_REBUILD = WM_APP + 1;
 
 // Forward declarations
 static void LoadSettings();
+// Inverse of ParseActionType: the stable id a value store / settings file uses.
+static const wchar_t *ActionIdFromEnum(CornerAction a)
+{
+    switch (a)
+    {
+    case CornerAction::Nothing: return L"ACTION_NOTHING";
+    case CornerAction::ShowDesktop: return L"ACTION_SHOW_DESKTOP";
+    case CornerAction::TaskView: return L"ACTION_TASK_VIEW";
+    case CornerAction::ScreenSaver: return L"ACTION_SCREENSAVER";
+    case CornerAction::MonitorsOff: return L"ACTION_MONITORS_OFF";
+    case CornerAction::QuickSettings: return L"ACTION_QUICK_SETTINGS";
+    case CornerAction::NotificationCenter: return L"ACTION_NOTIFICATION_CENTER";
+    case CornerAction::StartMenu: return L"ACTION_START_MENU";
+    case CornerAction::HideOthers: return L"ACTION_HIDE_OTHERS";
+    case CornerAction::Mute: return L"ACTION_MUTE";
+    case CornerAction::TaskManager: return L"ACTION_TASK_MANAGER";
+    case CornerAction::Lock: return L"ACTION_LOCK";
+    case CornerAction::Sleep: return L"ACTION_SLEEP";
+    case CornerAction::SwitchLastWindow: return L"ACTION_SWITCH_LAST";
+    case CornerAction::TaskSwitcher: return L"ACTION_TASK_SWITCHER";
+    case CornerAction::MinimizeWindow: return L"ACTION_MINIMIZE";
+    case CornerAction::MaximizeWindow: return L"ACTION_MAXIMIZE";
+    case CornerAction::SnapLeft: return L"ACTION_SNAP_LEFT";
+    case CornerAction::SnapRight: return L"ACTION_SNAP_RIGHT";
+    case CornerAction::CloseWindow: return L"ACTION_CLOSE_WINDOW";
+    case CornerAction::FileExplorer: return L"ACTION_FILE_EXPLORER";
+    case CornerAction::SettingsApp: return L"ACTION_SETTINGS";
+    case CornerAction::Search: return L"ACTION_SEARCH";
+    case CornerAction::ClipboardHistory: return L"ACTION_CLIPBOARD";
+    case CornerAction::Screenshot: return L"ACTION_SCREENSHOT";
+    case CornerAction::ProjectDisplay: return L"ACTION_PROJECT";
+    case CornerAction::VDesktopNext: return L"ACTION_VDESK_NEXT";
+    case CornerAction::VDesktopPrev: return L"ACTION_VDESK_PREV";
+    case CornerAction::VDesktopNew: return L"ACTION_VDESK_NEW";
+    case CornerAction::VDesktopClose: return L"ACTION_VDESK_CLOSE";
+    case CornerAction::LockAndMonitorsOff: return L"ACTION_LOCK_MONITORS_OFF";
+    case CornerAction::KeepAwakeOn: return L"ACTION_KEEP_AWAKE_ON";
+    case CornerAction::KeepAwakeOff: return L"ACTION_KEEP_AWAKE_OFF";
+    case CornerAction::AlternateKeypress: return L"ACTION_ALTERNATE_KEYPRESS";
+    case CornerAction::AlternateCommand: return L"ACTION_ALTERNATE_COMMAND";
+    case CornerAction::SendKeypress: return L"ACTION_SEND_KEYPRESS";
+    case CornerAction::StartProcess: return L"ACTION_START_PROCESS";
+    }
+    return L"ACTION_NOTHING";
+}
+
 static const wchar_t *ZoneToString(Zone z);
 static const wchar_t *ActionToString(CornerAction a);
 
@@ -2220,6 +2266,52 @@ static const wchar_t *ActionToString(CornerAction a)
     return L"Unknown";
 }
 
+// Inverse of ParseActionType: the stable id a value store / settings file uses.
+static const wchar_t *ActionIdFromEnum(CornerAction a)
+{
+    switch (a)
+    {
+    case CornerAction::Nothing: return L"ACTION_NOTHING";
+    case CornerAction::ShowDesktop: return L"ACTION_SHOW_DESKTOP";
+    case CornerAction::TaskView: return L"ACTION_TASK_VIEW";
+    case CornerAction::ScreenSaver: return L"ACTION_SCREENSAVER";
+    case CornerAction::MonitorsOff: return L"ACTION_MONITORS_OFF";
+    case CornerAction::QuickSettings: return L"ACTION_QUICK_SETTINGS";
+    case CornerAction::NotificationCenter: return L"ACTION_NOTIFICATION_CENTER";
+    case CornerAction::StartMenu: return L"ACTION_START_MENU";
+    case CornerAction::HideOthers: return L"ACTION_HIDE_OTHERS";
+    case CornerAction::Mute: return L"ACTION_MUTE";
+    case CornerAction::TaskManager: return L"ACTION_TASK_MANAGER";
+    case CornerAction::Lock: return L"ACTION_LOCK";
+    case CornerAction::Sleep: return L"ACTION_SLEEP";
+    case CornerAction::SwitchLastWindow: return L"ACTION_SWITCH_LAST";
+    case CornerAction::TaskSwitcher: return L"ACTION_TASK_SWITCHER";
+    case CornerAction::MinimizeWindow: return L"ACTION_MINIMIZE";
+    case CornerAction::MaximizeWindow: return L"ACTION_MAXIMIZE";
+    case CornerAction::SnapLeft: return L"ACTION_SNAP_LEFT";
+    case CornerAction::SnapRight: return L"ACTION_SNAP_RIGHT";
+    case CornerAction::CloseWindow: return L"ACTION_CLOSE_WINDOW";
+    case CornerAction::FileExplorer: return L"ACTION_FILE_EXPLORER";
+    case CornerAction::SettingsApp: return L"ACTION_SETTINGS";
+    case CornerAction::Search: return L"ACTION_SEARCH";
+    case CornerAction::ClipboardHistory: return L"ACTION_CLIPBOARD";
+    case CornerAction::Screenshot: return L"ACTION_SCREENSHOT";
+    case CornerAction::ProjectDisplay: return L"ACTION_PROJECT";
+    case CornerAction::VDesktopNext: return L"ACTION_VDESK_NEXT";
+    case CornerAction::VDesktopPrev: return L"ACTION_VDESK_PREV";
+    case CornerAction::VDesktopNew: return L"ACTION_VDESK_NEW";
+    case CornerAction::VDesktopClose: return L"ACTION_VDESK_CLOSE";
+    case CornerAction::LockAndMonitorsOff: return L"ACTION_LOCK_MONITORS_OFF";
+    case CornerAction::KeepAwakeOn: return L"ACTION_KEEP_AWAKE_ON";
+    case CornerAction::KeepAwakeOff: return L"ACTION_KEEP_AWAKE_OFF";
+    case CornerAction::AlternateKeypress: return L"ACTION_ALTERNATE_KEYPRESS";
+    case CornerAction::AlternateCommand: return L"ACTION_ALTERNATE_COMMAND";
+    case CornerAction::SendKeypress: return L"ACTION_SEND_KEYPRESS";
+    case CornerAction::StartProcess: return L"ACTION_START_PROCESS";
+    }
+    return L"ACTION_NOTHING";
+}
+
 static const wchar_t *ZoneToString(Zone z)
 {
     switch (z)
@@ -3154,7 +3246,8 @@ static bool g_trayUseGuid = true;
 
 enum TrayCommand
 {
-    IDM_ENABLED = 100,
+    IDM_SETTINGS = 100,
+    IDM_ENABLED,
     IDM_SUSPEND_15,
     IDM_SUSPEND_30,
     IDM_SUSPEND_60,
@@ -3165,6 +3258,9 @@ enum TrayCommand
     IDM_CLEAR_OVERRIDES,
     IDM_ABOUT,
 };
+
+// Defined further down with the dashboard; the tray menu needs it earlier.
+static void OpenDashboard();
 
 // -1 means "no override, use the Windhawk setting"
 static const wchar_t *kOvrEnabled = L"ovr_enabled";
@@ -3293,6 +3389,96 @@ static void UpdateTrayIcon(bool add)
         DestroyIcon(nid.hIcon);
 }
 
+// =====================================================================
+// Dashboard persistence
+// =====================================================================
+//
+// The dashboard cannot write the Windhawk Settings page — Wh_GetIntSetting is
+// read-only from inside a mod. Everything it changes is therefore stored in
+// the mod's own value store and layered over the settings at load. "Reset to
+// Windhawk settings" clears the whole layer.
+//
+// One key per field rather than a packed string: verbose, but it survives
+// partial writes and is readable if anything ever needs debugging by hand.
+
+static constexpr int kMaxGuiConfigs = 8;
+
+static std::wstring GetStrValue(const wchar_t *name)
+{
+    WCHAR buf[512] = {};
+    if (Wh_GetStringValue(name, buf, ARRAYSIZE(buf)) == 0)
+        return L"";
+    return buf;
+}
+
+static std::wstring GuiKey(int cfg, int zone, const wchar_t *what)
+{
+    wchar_t k[64];
+    if (zone < 0)
+        _snwprintf_s(k, _countof(k), _TRUNCATE, L"g%d.%s", cfg, what);
+    else
+        _snwprintf_s(k, _countof(k), _TRUNCATE, L"g%d.z%d.%s", cfg, zone, what);
+    return k;
+}
+
+// Replaces g_settings.monitorConfigs when the dashboard has saved a layout.
+// Caller must hold g_settingsLock.
+static bool ApplyDashboardZones()
+{
+    if (Wh_GetIntValue(L"gui_active", 0) == 0)
+        return false;
+
+    std::vector<MonitorZoneConfig> configs;
+    for (int i = 0; i < kMaxGuiConfigs; i++)
+    {
+        std::wstring id = GetStrValue(GuiKey(i, -1, L"id").c_str());
+        if (id.empty())
+            continue;
+
+        MonitorZoneConfig cfg;
+        cfg.monitorId = (id == L"(unused)") ? L"" : id;
+        cfg.monitorIndex = 0;
+
+        bool any = false;
+        for (int z = 0; z < ZONE_COUNT; z++)
+        {
+            std::wstring a = GetStrValue(GuiKey(i, z, L"a").c_str());
+            std::wstring g = GetStrValue(GuiKey(i, z, L"g").c_str());
+            CornerAction act = ParseActionType(a);
+            cfg.zones[z].action = act;
+            cfg.zones[z].args = g;
+            cfg.zones[z].executor = MakeExecutor(act, g);
+            if (act != CornerAction::Nothing)
+                any = true;
+        }
+        if (any)
+            configs.push_back(std::move(cfg));
+    }
+
+    if (configs.empty())
+        return false;
+
+    g_settings.monitorConfigs = std::move(configs);
+    Wh_Log(L"Using the dashboard's zone layout (%d configuration%s)",
+           (int)g_settings.monitorConfigs.size(),
+           g_settings.monitorConfigs.size() == 1 ? L"" : L"s");
+    return true;
+}
+
+static void ClearDashboardConfig()
+{
+    Wh_SetIntValue(L"gui_active", 0);
+    for (int i = 0; i < kMaxGuiConfigs; i++)
+    {
+        Wh_SetStringValue(GuiKey(i, -1, L"id").c_str(), L"");
+        for (int z = 0; z < ZONE_COUNT; z++)
+        {
+            Wh_SetStringValue(GuiKey(i, z, L"a").c_str(), L"");
+            Wh_SetStringValue(GuiKey(i, z, L"g").c_str(), L"");
+        }
+    }
+}
+
 static void ApplyTrayOverrides()
 {
     // Called after LoadSettings so overrides win over the settings page.
@@ -3316,6 +3502,61 @@ static void ApplyTrayOverrides()
     v = Wh_GetIntValue(kOvrVerbose, -1);
     if (v >= 0)
         g_verboseLog = (v != 0);
+
+    // Everything the dashboard writes.
+    if (Wh_GetIntValue(L"gui_active", 0) != 0)
+    {
+        EnterCriticalSection(&g_settingsLock);
+        auto pull = [](const wchar_t *k, int &dst, int lo, int hi)
+        {
+            int x = Wh_GetIntValue(k, -1);
+            if (x >= lo && x <= hi)
+                dst = x;
+        };
+        pull(L"ovr_corner", g_settings.cornerSize, 1, 500);
+        pull(L"ovr_edge", g_settings.edgeSize, 1, 500);
+        pull(L"ovr_delay", g_settings.activationDelay, 0, 10000);
+        pull(L"ovr_settle", g_settings.settleMs, 0, 10000);
+        pull(L"ovr_knock", g_settings.knockWindowMs, 0, 10000);
+        pull(L"ovr_cooldown", g_settings.cooldownMs, 0, 60000);
+        pull(L"ovr_centre", g_settings.centerZonePercent, 1, 90);
+        pull(L"ovr_modifier", g_settings.requireModifier, 0, 4);
+        pull(L"ovr_lockblank", g_lockBlankDelayMs, 0, 10000);
+
+        int x = Wh_GetIntValue(L"ovr_taskbar", -1);
+        if (x >= 0)
+            g_settings.avoidTaskbar = (x != 0);
+        x = Wh_GetIntValue(L"ovr_monnames", -1);
+        if (x >= 0)
+            g_showMonitorNames = (x != 0);
+
+        std::wstring excl = GetStrValue(L"ovr_excluded");
+        if (!excl.empty())
+        {
+            g_settings.excludedProcesses.clear();
+            std::wstring rest = excl;
+            while (!rest.empty())
+            {
+                auto semi = rest.find(L';');
+                std::wstring tok;
+                if (semi != std::wstring::npos)
+                {
+                    tok = TrimStr(rest.substr(0, semi));
+                    rest = rest.substr(semi + 1);
+                }
+                else
+                {
+                    tok = TrimStr(rest);
+                    rest.clear();
+                }
+                if (!tok.empty())
+                    g_settings.excludedProcesses.push_back(ToLowerStr(tok));
+            }
+        }
+
+        ApplyDashboardZones();
+        LeaveCriticalSection(&g_settingsLock);
+    }
 }
 
 static void ShowTrayMenu(POINT pt)
@@ -3326,6 +3567,9 @@ static void ShowTrayMenu(POINT pt)
 
     bool suspended = GetTickCount64() < g_suspendUntil.load();
 
+    AppendMenuW(hMenu, MF_STRING, IDM_SETTINGS, L"Mod Settings...");
+    SetMenuDefaultItem(hMenu, IDM_SETTINGS, FALSE);
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING | (g_trayEnabled ? MF_CHECKED : 0),
                 IDM_ENABLED, L"Hot corners enabled");
 
@@ -3380,6 +3624,10 @@ static void HandleTrayCommand(UINT id)
 {
     switch (id)
     {
+    case IDM_SETTINGS:
+        OpenDashboard();
+        return;
+
     case IDM_ENABLED:
         g_trayEnabled = !g_trayEnabled;
         Wh_SetIntValue(kOvrEnabled, g_trayEnabled ? 1 : 0);
@@ -3447,6 +3695,705 @@ static void HandleTrayCommand(UINT id)
     UpdateTrayIcon(false);
 }
 
+// =====================================================================
+// Settings dashboard
+// =====================================================================
+//
+// A real window rather than a context menu, so every setting is reachable
+// without opening Windhawk. Runs on its own thread with its own message loop
+// and IsDialogMessage, so Tab/arrow navigation works and nothing it does can
+// stall detection.
+//
+// Mica is requested where the OS supports it, but classic Win32 controls paint
+// opaque, so the window is also fully dark-themed — that, not the backdrop, is
+// what makes it look native.
+
+static HANDLE g_hDashThread = nullptr;
+static HWND g_hDashWnd = nullptr;
+
+static constexpr COLORREF kClrBg = RGB(32, 32, 32);
+static constexpr COLORREF kClrText = RGB(255, 255, 255);
+static constexpr COLORREF kClrDim = RGB(190, 190, 190);
+
+enum DashId
+{
+    IDC_MONITOR = 1000,
+    IDC_PAGE_ZONES,
+    IDC_PAGE_OPTIONS,
+    IDC_SAVE,
+    IDC_CANCEL,
+    IDC_RESET,
+    IDC_ZONE_ACTION = 1100,           // + zone index
+    IDC_ZONE_ARGS = 1200,             // + zone index
+    IDC_OPT_FIRST = 1300,
+    IDC_CORNER = IDC_OPT_FIRST,
+    IDC_EDGE,
+    IDC_DELAY,
+    IDC_SETTLE,
+    IDC_KNOCK,
+    IDC_COOLDOWN,
+    IDC_CENTREPCT,
+    IDC_LOCKBLANK,
+    IDC_MODIFIER,
+    IDC_EXCLUDED,
+    IDC_CB_FULLSCREEN,
+    IDC_CB_DRAG,
+    IDC_CB_TASKBAR,
+    IDC_CB_MONNAMES,
+    IDC_CB_VERBOSE,
+    IDC_OPT_LAST,
+};
+
+struct DashState
+{
+    UINT dpi = 96;
+    HFONT hFont = nullptr;
+    HBRUSH hBg = nullptr;
+    bool showZones = true;
+    int cfgIndex = 0;   // which slot in the value store we are editing
+
+    HWND hMonitor = nullptr;
+    HWND hZoneLabel[ZONE_COUNT] = {};
+    HWND hZoneAction[ZONE_COUNT] = {};
+    HWND hZoneArgs[ZONE_COUNT] = {};
+    HWND hOpt[IDC_OPT_LAST - IDC_OPT_FIRST] = {};
+    HWND hOptLabel[IDC_OPT_LAST - IDC_OPT_FIRST] = {};
+    HWND hPageZones = nullptr, hPageOptions = nullptr;
+    HWND hSave = nullptr, hCancel = nullptr, hReset = nullptr;
+};
+
+static int Sc(int px, UINT dpi) { return MulDiv(px, (int)dpi, 96); }
+
+static void ThemeControl(HWND h, const wchar_t *theme)
+{
+    HMODULE ux = GetModuleHandleW(L"uxtheme.dll");
+    if (!ux)
+        ux = LoadLibraryExW(L"uxtheme.dll", nullptr,
+                            LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!ux)
+        return;
+    using Fn = HRESULT(WINAPI *)(HWND, LPCWSTR, LPCWSTR);
+    auto fn = reinterpret_cast<Fn>(GetProcAddress(ux, "SetWindowTheme"));
+    if (fn)
+        fn(h, theme, nullptr);
+}
+
+// Dark title bar, and Mica where the build supports it. Both are no-ops on
+// older Windows, so neither needs a version check.
+static void ApplyModernFrame(HWND hWnd)
+{
+    HMODULE dwm = GetModuleHandleW(L"dwmapi.dll");
+    bool loaded = false;
+    if (!dwm)
+    {
+        dwm = LoadLibraryExW(L"dwmapi.dll", nullptr,
+                             LOAD_LIBRARY_SEARCH_SYSTEM32);
+        loaded = true;
+    }
+    if (!dwm)
+        return;
+
+    using Fn = HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD);
+    auto fn = reinterpret_cast<Fn>(GetProcAddress(dwm, "DwmSetWindowAttribute"));
+    if (fn)
+    {
+        BOOL dark = TRUE;
+        fn(hWnd, 20, &dark, sizeof(dark));   // DWMWA_USE_IMMERSIVE_DARK_MODE
+        int backdrop = 2;                    // DWMSBT_MAINWINDOW (Mica)
+        fn(hWnd, 38, &backdrop, sizeof(backdrop));
+    }
+    if (loaded)
+        FreeLibrary(dwm);
+}
+
+static const wchar_t *kActionIds[] = {
+    L"ACTION_NOTHING",        L"ACTION_SHOW_DESKTOP",
+    L"ACTION_TASK_VIEW",      L"ACTION_SWITCH_LAST",
+    L"ACTION_TASK_SWITCHER",  L"ACTION_START_MENU",
+    L"ACTION_SEARCH",         L"ACTION_SETTINGS",
+    L"ACTION_FILE_EXPLORER",  L"ACTION_QUICK_SETTINGS",
+    L"ACTION_NOTIFICATION_CENTER", L"ACTION_CLIPBOARD",
+    L"ACTION_SCREENSHOT",     L"ACTION_PROJECT",
+    L"ACTION_TASK_MANAGER",   L"ACTION_MUTE",
+    L"ACTION_MINIMIZE",       L"ACTION_MAXIMIZE",
+    L"ACTION_SNAP_LEFT",      L"ACTION_SNAP_RIGHT",
+    L"ACTION_CLOSE_WINDOW",   L"ACTION_HIDE_OTHERS",
+    L"ACTION_VDESK_NEXT",     L"ACTION_VDESK_PREV",
+    L"ACTION_VDESK_NEW",      L"ACTION_VDESK_CLOSE",
+    L"ACTION_LOCK",           L"ACTION_LOCK_MONITORS_OFF",
+    L"ACTION_MONITORS_OFF",   L"ACTION_SLEEP",
+    L"ACTION_SCREENSAVER",    L"ACTION_KEEP_AWAKE_ON",
+    L"ACTION_KEEP_AWAKE_OFF", L"ACTION_SEND_KEYPRESS",
+    L"ACTION_ALTERNATE_KEYPRESS", L"ACTION_START_PROCESS",
+    L"ACTION_ALTERNATE_COMMAND",
+};
+static constexpr int kActionCount = ARRAYSIZE(kActionIds);
+
+struct OptDef
+{
+    int id;
+    const wchar_t *label;
+    bool isCheck;
+};
+static const OptDef kOpts[] = {
+    {IDC_CORNER, L"Corner size (px)", false},
+    {IDC_EDGE, L"Edge size (px)", false},
+    {IDC_DELAY, L"Activation delay (ms)", false},
+    {IDC_SETTLE, L"Pass-through guard (ms)", false},
+    {IDC_KNOCK, L"Knock window (ms, 0 = off)", false},
+    {IDC_COOLDOWN, L"Cooldown (ms)", false},
+    {IDC_CENTREPCT, L"Centre zone width (%)", false},
+    {IDC_LOCKBLANK, L"Blank delay after lock (ms)", false},
+    {IDC_MODIFIER, L"Require modifier", false},
+    {IDC_EXCLUDED, L"Excluded processes", false},
+    {IDC_CB_FULLSCREEN, L"Skip while an app is fullscreen", true},
+    {IDC_CB_DRAG, L"Skip while dragging the mouse", true},
+    {IDC_CB_TASKBAR, L"Keep zones off the taskbar", true},
+    {IDC_CB_MONNAMES, L"List my monitors in the log", true},
+    {IDC_CB_VERBOSE, L"Verbose logging", true},
+};
+static constexpr int kOptCount = ARRAYSIZE(kOpts);
+
+static void DashSetInt(DashState *s, int id, int v)
+{
+    wchar_t b[32];
+    _snwprintf_s(b, _countof(b), _TRUNCATE, L"%d", v);
+    SetWindowTextW(s->hOpt[id - IDC_OPT_FIRST], b);
+}
+
+static int DashGetInt(DashState *s, int id, int fallback)
+{
+    wchar_t b[32] = {};
+    GetWindowTextW(s->hOpt[id - IDC_OPT_FIRST], b, ARRAYSIZE(b));
+    if (!b[0])
+        return fallback;
+    return _wtoi(b);
+}
+
+static void DashLayout(HWND hWnd, DashState *s)
+{
+    UINT d = s->dpi;
+    int pad = Sc(14, d), rowH = Sc(30, d), y;
+
+    ShowWindow(s->hMonitor, s->showZones ? SW_SHOW : SW_HIDE);
+    for (int z = 0; z < ZONE_COUNT; z++)
+    {
+        int show = s->showZones ? SW_SHOW : SW_HIDE;
+        ShowWindow(s->hZoneLabel[z], show);
+        ShowWindow(s->hZoneAction[z], show);
+        ShowWindow(s->hZoneArgs[z], show);
+    }
+    for (int i = 0; i < kOptCount; i++)
+    {
+        int show = s->showZones ? SW_HIDE : SW_SHOW;
+        ShowWindow(s->hOpt[i], show);
+        if (s->hOptLabel[i])
+            ShowWindow(s->hOptLabel[i], show);
+    }
+
+    SetWindowPos(s->hPageZones, nullptr, pad, pad, Sc(90, d), Sc(26, d),
+                 SWP_NOZORDER);
+    SetWindowPos(s->hPageOptions, nullptr, pad + Sc(96, d), pad, Sc(90, d),
+                 Sc(26, d), SWP_NOZORDER);
+
+    if (s->showZones)
+    {
+        y = pad + Sc(40, d);
+        SetWindowPos(s->hMonitor, nullptr, pad, y, Sc(360, d), Sc(300, d),
+                     SWP_NOZORDER);
+        y += Sc(38, d);
+        for (int z = 0; z < ZONE_COUNT; z++)
+        {
+            SetWindowPos(s->hZoneLabel[z], nullptr, pad, y + Sc(5, d),
+                         Sc(128, d), Sc(20, d), SWP_NOZORDER);
+            SetWindowPos(s->hZoneAction[z], nullptr, pad + Sc(132, d), y,
+                         Sc(240, d), Sc(400, d), SWP_NOZORDER);
+            SetWindowPos(s->hZoneArgs[z], nullptr, pad + Sc(378, d), y,
+                         Sc(250, d), Sc(24, d), SWP_NOZORDER);
+            y += rowH;
+        }
+    }
+    else
+    {
+        y = pad + Sc(40, d);
+        for (int i = 0; i < kOptCount; i++)
+        {
+            if (kOpts[i].isCheck)
+            {
+                SetWindowPos(s->hOpt[i], nullptr, pad, y, Sc(400, d),
+                             Sc(22, d), SWP_NOZORDER);
+                y += Sc(26, d);
+            }
+            else
+            {
+                SetWindowPos(s->hOptLabel[i], nullptr, pad, y + Sc(4, d),
+                             Sc(220, d), Sc(20, d), SWP_NOZORDER);
+                bool wide = (kOpts[i].id == IDC_EXCLUDED);
+                bool combo = (kOpts[i].id == IDC_MODIFIER);
+                SetWindowPos(s->hOpt[i], nullptr, pad + Sc(228, d), y,
+                             Sc(wide ? 380 : 150, d),
+                             combo ? Sc(200, d) : Sc(24, d), SWP_NOZORDER);
+                y += Sc(30, d);
+            }
+        }
+    }
+
+    RECT rc;
+    GetClientRect(hWnd, &rc);
+    int by = rc.bottom - Sc(44, d);
+    SetWindowPos(s->hSave, nullptr, pad, by, Sc(120, d), Sc(30, d),
+                 SWP_NOZORDER);
+    SetWindowPos(s->hCancel, nullptr, pad + Sc(128, d), by, Sc(90, d),
+                 Sc(30, d), SWP_NOZORDER);
+    SetWindowPos(s->hReset, nullptr, pad + Sc(226, d), by, Sc(210, d),
+                 Sc(30, d), SWP_NOZORDER);
+    InvalidateRect(hWnd, nullptr, TRUE);
+}
+
+// Fills the zone controls from whichever configuration slot is selected.
+static void DashLoadZones(DashState *s)
+{
+    int sel = (int)SendMessageW(s->hMonitor, CB_GETCURSEL, 0, 0);
+    if (sel < 0)
+        sel = 0;
+    s->cfgIndex = sel;
+
+    bool fromGui = Wh_GetIntValue(L"gui_active", 0) != 0;
+
+    for (int z = 0; z < ZONE_COUNT; z++)
+    {
+        std::wstring act, args;
+        if (fromGui)
+        {
+            act = GetStrValue(GuiKey(sel, z, L"a").c_str());
+            args = GetStrValue(GuiKey(sel, z, L"g").c_str());
+        }
+        else
+        {
+            // First run: seed from whatever the Windhawk settings say.
+            EnterCriticalSection(&g_settingsLock);
+            if (sel < (int)g_settings.monitorConfigs.size())
+            {
+                act = ActionIdFromEnum(g_settings.monitorConfigs[sel].zones[z].action);
+                args = g_settings.monitorConfigs[sel].zones[z].args;
+            }
+            LeaveCriticalSection(&g_settingsLock);
+        }
+
+        int idx = 0;
+        for (int a = 0; a < kActionCount; a++)
+        {
+            if (act == kActionIds[a])
+            {
+                idx = a;
+                break;
+            }
+        }
+        SendMessageW(s->hZoneAction[z], CB_SETCURSEL, idx, 0);
+        SetWindowTextW(s->hZoneArgs[z], args.c_str());
+    }
+}
+
+static void DashLoad(HWND hWnd, DashState *s)
+{
+    // Monitor selector: one slot per detected display, plus a wildcard.
+    SendMessageW(s->hMonitor, CB_RESETCONTENT, 0, 0);
+    SendMessageW(s->hMonitor, CB_ADDSTRING, 0, (LPARAM)L"All monitors  ( * )");
+    EnterCriticalSection(&g_zonesLock);
+    std::vector<std::wstring> names;
+    LeaveCriticalSection(&g_zonesLock);
+    for (const auto &m : g_monitors)
+        names.push_back(m.id);
+    for (const auto &n : names)
+        SendMessageW(s->hMonitor, CB_ADDSTRING, 0, (LPARAM)n.c_str());
+    SendMessageW(s->hMonitor, CB_SETCURSEL, 0, 0);
+
+    EnterCriticalSection(&g_settingsLock);
+    DashSetInt(s, IDC_CORNER, g_settings.cornerSize);
+    DashSetInt(s, IDC_EDGE, g_settings.edgeSize);
+    DashSetInt(s, IDC_DELAY, g_settings.activationDelay);
+    DashSetInt(s, IDC_SETTLE, g_settings.settleMs);
+    DashSetInt(s, IDC_KNOCK, g_settings.knockWindowMs);
+    DashSetInt(s, IDC_COOLDOWN, g_settings.cooldownMs);
+    DashSetInt(s, IDC_CENTREPCT, g_settings.centerZonePercent);
+    DashSetInt(s, IDC_LOCKBLANK, g_lockBlankDelayMs);
+    SendMessageW(s->hOpt[IDC_MODIFIER - IDC_OPT_FIRST], CB_SETCURSEL,
+                 g_settings.requireModifier, 0);
+    std::wstring excl;
+    for (size_t i = 0; i < g_settings.excludedProcesses.size(); i++)
+    {
+        if (i)
+            excl += L";";
+        excl += g_settings.excludedProcesses[i];
+    }
+    SetWindowTextW(s->hOpt[IDC_EXCLUDED - IDC_OPT_FIRST], excl.c_str());
+    CheckDlgButton(hWnd, IDC_CB_FULLSCREEN,
+                   g_settings.disableOnFullscreen ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hWnd, IDC_CB_DRAG,
+                   g_settings.disableDuringDrag ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hWnd, IDC_CB_TASKBAR,
+                   g_settings.avoidTaskbar ? BST_CHECKED : BST_UNCHECKED);
+    LeaveCriticalSection(&g_settingsLock);
+    CheckDlgButton(hWnd, IDC_CB_MONNAMES,
+                   g_showMonitorNames ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hWnd, IDC_CB_VERBOSE, g_verboseLog ? BST_CHECKED
+                                                      : BST_UNCHECKED);
+
+    DashLoadZones(s);
+}
+
+static void DashSave(HWND hWnd, DashState *s)
+{
+    // Zones for the slot currently on screen.
+    int sel = s->cfgIndex;
+    wchar_t monName[256] = {};
+    int cur = (int)SendMessageW(s->hMonitor, CB_GETCURSEL, 0, 0);
+    if (cur == 0)
+        wcscpy_s(monName, L"*");
+    else if (cur > 0)
+        SendMessageW(s->hMonitor, CB_GETLBTEXT, cur, (LPARAM)monName);
+
+    Wh_SetStringValue(GuiKey(sel, -1, L"id").c_str(), monName);
+    for (int z = 0; z < ZONE_COUNT; z++)
+    {
+        int idx = (int)SendMessageW(s->hZoneAction[z], CB_GETCURSEL, 0, 0);
+        if (idx < 0 || idx >= kActionCount)
+            idx = 0;
+        wchar_t args[512] = {};
+        GetWindowTextW(s->hZoneArgs[z], args, ARRAYSIZE(args));
+        Wh_SetStringValue(GuiKey(sel, z, L"a").c_str(), kActionIds[idx]);
+        Wh_SetStringValue(GuiKey(sel, z, L"g").c_str(), args);
+    }
+    Wh_SetIntValue(L"gui_active", 1);
+
+    // Global options.
+    Wh_SetIntValue(L"ovr_corner", DashGetInt(s, IDC_CORNER, 6));
+    Wh_SetIntValue(L"ovr_edge", DashGetInt(s, IDC_EDGE, 6));
+    Wh_SetIntValue(L"ovr_delay", DashGetInt(s, IDC_DELAY, 0));
+    Wh_SetIntValue(L"ovr_settle", DashGetInt(s, IDC_SETTLE, 80));
+    Wh_SetIntValue(L"ovr_knock", DashGetInt(s, IDC_KNOCK, 0));
+    Wh_SetIntValue(L"ovr_cooldown", DashGetInt(s, IDC_COOLDOWN, 300));
+    Wh_SetIntValue(L"ovr_centre", DashGetInt(s, IDC_CENTREPCT, 20));
+    Wh_SetIntValue(L"ovr_lockblank", DashGetInt(s, IDC_LOCKBLANK, 1200));
+    Wh_SetIntValue(L"ovr_modifier",
+                   (int)SendMessageW(s->hOpt[IDC_MODIFIER - IDC_OPT_FIRST],
+                                     CB_GETCURSEL, 0, 0));
+    wchar_t excl[512] = {};
+    GetWindowTextW(s->hOpt[IDC_EXCLUDED - IDC_OPT_FIRST], excl,
+                   ARRAYSIZE(excl));
+    Wh_SetStringValue(L"ovr_excluded", excl);
+    Wh_SetIntValue(kOvrFullscreen, IsDlgButtonChecked(hWnd, IDC_CB_FULLSCREEN));
+    Wh_SetIntValue(kOvrDrag, IsDlgButtonChecked(hWnd, IDC_CB_DRAG));
+    Wh_SetIntValue(L"ovr_taskbar", IsDlgButtonChecked(hWnd, IDC_CB_TASKBAR));
+    Wh_SetIntValue(L"ovr_monnames", IsDlgButtonChecked(hWnd, IDC_CB_MONNAMES));
+    Wh_SetIntValue(kOvrVerbose, IsDlgButtonChecked(hWnd, IDC_CB_VERBOSE));
+
+    LoadSettings();
+    ApplyTrayOverrides();
+    RequestRebuild();
+    UpdateTrayIcon(false);
+    Wh_Log(L"Dashboard: settings saved and applied");
+}
+
+static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
+                                    LPARAM lParam)
+{
+    DashState *s = (DashState *)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+
+    switch (uMsg)
+    {
+    case WM_CREATE:
+    {
+        auto *cs = (CREATESTRUCTW *)lParam;
+        s = (DashState *)cs->lpCreateParams;
+        SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)s);
+
+        s->dpi = 96;
+        {
+            HMODULE u = GetModuleHandleW(L"user32.dll");
+            using Fn = UINT(WINAPI *)(HWND);
+            if (auto fn = (Fn)GetProcAddress(u, "GetDpiForWindow"))
+                s->dpi = fn(hWnd);
+            if (!s->dpi)
+                s->dpi = 96;
+        }
+
+        LOGFONTW lf = {};
+        lf.lfHeight = -MulDiv(9, (int)s->dpi, 72);
+        lf.lfWeight = FW_NORMAL;
+        wcscpy_s(lf.lfFaceName, L"Segoe UI");
+        s->hFont = CreateFontIndirectW(&lf);
+        s->hBg = CreateSolidBrush(kClrBg);
+
+        auto mk = [&](const wchar_t *cls, const wchar_t *txt, DWORD style,
+                      int id) -> HWND
+        {
+            HWND h = CreateWindowExW(0, cls, txt, WS_CHILD | style, 0, 0, 10,
+                                     10, hWnd, (HMENU)(INT_PTR)id,
+                                     cs->hInstance, nullptr);
+            if (h)
+                SendMessageW(h, WM_SETFONT, (WPARAM)s->hFont, TRUE);
+            return h;
+        };
+
+        s->hPageZones = mk(L"BUTTON", L"Zones", BS_PUSHBUTTON | WS_VISIBLE |
+                                                    WS_TABSTOP, IDC_PAGE_ZONES);
+        s->hPageOptions = mk(L"BUTTON", L"Options",
+                             BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP,
+                             IDC_PAGE_OPTIONS);
+        s->hMonitor = mk(L"COMBOBOX", nullptr,
+                         CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+                         IDC_MONITOR);
+        ThemeControl(s->hMonitor, L"DarkMode_CFD");
+
+        for (int z = 0; z < ZONE_COUNT; z++)
+        {
+            s->hZoneLabel[z] = mk(L"STATIC", ZoneToString((Zone)z), SS_LEFT, 0);
+            s->hZoneAction[z] =
+                mk(L"COMBOBOX", nullptr,
+                   CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+                   IDC_ZONE_ACTION + z);
+            ThemeControl(s->hZoneAction[z], L"DarkMode_CFD");
+            for (int a = 0; a < kActionCount; a++)
+            {
+                SendMessageW(s->hZoneAction[z], CB_ADDSTRING, 0,
+                             (LPARAM)ActionToString(ParseActionType(kActionIds[a])));
+            }
+            s->hZoneArgs[z] = mk(L"EDIT", nullptr,
+                                 WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP,
+                                 IDC_ZONE_ARGS + z);
+            ThemeControl(s->hZoneArgs[z], L"DarkMode_CFD");
+        }
+
+        for (int i = 0; i < kOptCount; i++)
+        {
+            if (kOpts[i].isCheck)
+            {
+                s->hOpt[i] = mk(L"BUTTON", kOpts[i].label,
+                                BS_AUTOCHECKBOX | WS_TABSTOP, kOpts[i].id);
+                s->hOptLabel[i] = nullptr;
+            }
+            else
+            {
+                s->hOptLabel[i] = mk(L"STATIC", kOpts[i].label, SS_LEFT, 0);
+                if (kOpts[i].id == IDC_MODIFIER)
+                {
+                    s->hOpt[i] = mk(L"COMBOBOX", nullptr,
+                                    CBS_DROPDOWNLIST | WS_TABSTOP,
+                                    kOpts[i].id);
+                    const wchar_t *mods[] = {L"None", L"Ctrl", L"Alt", L"Shift",
+                                             L"Win"};
+                    for (auto m : mods)
+                        SendMessageW(s->hOpt[i], CB_ADDSTRING, 0, (LPARAM)m);
+                }
+                else
+                {
+                    s->hOpt[i] = mk(L"EDIT", nullptr,
+                                    WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP,
+                                    kOpts[i].id);
+                }
+                ThemeControl(s->hOpt[i], L"DarkMode_CFD");
+            }
+        }
+
+        s->hSave = mk(L"BUTTON", L"Save and Apply",
+                      BS_DEFPUSHBUTTON | WS_VISIBLE | WS_TABSTOP, IDC_SAVE);
+        s->hCancel = mk(L"BUTTON", L"Close",
+                        BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP, IDC_CANCEL);
+        s->hReset = mk(L"BUTTON", L"Reset to Windhawk settings",
+                       BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP, IDC_RESET);
+
+        ApplyModernFrame(hWnd);
+        DashLoad(hWnd, s);
+        DashLayout(hWnd, s);
+        return 0;
+    }
+
+    case WM_ERASEBKGND:
+    {
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+        FillRect((HDC)wParam, &rc,
+                 s && s->hBg ? s->hBg : (HBRUSH)GetStockObject(BLACK_BRUSH));
+        return 1;
+    }
+
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN:
+        if (s)
+        {
+            SetTextColor((HDC)wParam, kClrText);
+            SetBkColor((HDC)wParam, kClrBg);
+            return (LRESULT)s->hBg;
+        }
+        break;
+
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+        if (s)
+        {
+            SetTextColor((HDC)wParam, kClrText);
+            SetBkColor((HDC)wParam, RGB(45, 45, 45));
+            return (LRESULT)s->hBg;
+        }
+        break;
+
+    case WM_COMMAND:
+    {
+        int id = LOWORD(wParam);
+        if (id == IDC_PAGE_ZONES || id == IDC_PAGE_OPTIONS)
+        {
+            s->showZones = (id == IDC_PAGE_ZONES);
+            DashLayout(hWnd, s);
+            return 0;
+        }
+        if (id == IDC_MONITOR && HIWORD(wParam) == CBN_SELCHANGE)
+        {
+            DashLoadZones(s);
+            return 0;
+        }
+        if (id == IDC_SAVE)
+        {
+            DashSave(hWnd, s);
+            return 0;
+        }
+        if (id == IDC_CANCEL)
+        {
+            DestroyWindow(hWnd);
+            return 0;
+        }
+        if (id == IDC_RESET)
+        {
+            if (MessageBoxW(hWnd,
+                            L"Discard everything set here and go back to the "
+                            L"Windhawk Settings page?",
+                            L"Win-X Hot Corners", MB_YESNO | MB_ICONQUESTION) ==
+                IDYES)
+            {
+                ClearDashboardConfig();
+                Wh_SetIntValue(kOvrEnabled, -1);
+                Wh_SetIntValue(kOvrFullscreen, -1);
+                Wh_SetIntValue(kOvrDrag, -1);
+                Wh_SetIntValue(kOvrVerbose, -1);
+                LoadSettings();
+                ApplyTrayOverrides();
+                RequestRebuild();
+                DashLoad(hWnd, s);
+            }
+            return 0;
+        }
+        break;
+    }
+
+    case WM_DPICHANGED:
+    {
+        s->dpi = HIWORD(wParam);
+        if (s->hFont)
+            DeleteObject(s->hFont);
+        LOGFONTW lf = {};
+        lf.lfHeight = -MulDiv(9, (int)s->dpi, 72);
+        wcscpy_s(lf.lfFaceName, L"Segoe UI");
+        s->hFont = CreateFontIndirectW(&lf);
+        EnumChildWindows(hWnd,
+                         [](HWND c, LPARAM p) -> BOOL
+                         {
+                             SendMessageW(c, WM_SETFONT, (WPARAM)p, TRUE);
+                             return TRUE;
+                         },
+                         (LPARAM)s->hFont);
+        RECT *r = (RECT *)lParam;
+        SetWindowPos(hWnd, nullptr, r->left, r->top, r->right - r->left,
+                     r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        DashLayout(hWnd, s);
+        return 0;
+    }
+
+    case WM_SIZE:
+        if (s)
+            DashLayout(hWnd, s);
+        return 0;
+
+    case WM_DESTROY:
+        if (s)
+        {
+            if (s->hFont)
+                DeleteObject(s->hFont);
+            if (s->hBg)
+                DeleteObject(s->hBg);
+        }
+        g_hDashWnd = nullptr;
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+}
+
+static DWORD WINAPI DashThread(LPVOID)
+{
+    PinThreadDpiPerMonitorV2();
+
+    const wchar_t *kClass = L"WindhawkHotCornersDash";
+    HINSTANCE hInst = GetModuleHandle(nullptr);
+
+    WNDCLASSEXW wc = {sizeof(wc)};
+    wc.lpfnWndProc = DashWndProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = kClass;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    RegisterClassExW(&wc);
+
+    DashState state;
+    int w = Sc(680, 96), h = Sc(560, 96);
+    int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
+    int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
+
+    HWND hWnd = CreateWindowExW(
+        0, kClass, L"Win-X Hot Corners — Settings",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, x, y, w, h,
+        nullptr, nullptr, hInst, &state);
+
+    if (!hWnd)
+    {
+        UnregisterClassW(kClass, hInst);
+        return 1;
+    }
+
+    g_hDashWnd = hWnd;
+    ShowWindow(hWnd, SW_SHOW);
+    SetForegroundWindow(hWnd);
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0))
+    {
+        if (!IsDialogMessageW(hWnd, &msg))
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+
+    UnregisterClassW(kClass, hInst);
+    return 0;
+}
+
+static void OpenDashboard()
+{
+    if (g_hDashWnd && IsWindow(g_hDashWnd))
+    {
+        // Already open — bring it forward rather than making a second one.
+        ShowWindow(g_hDashWnd, SW_RESTORE);
+        SetForegroundWindow(g_hDashWnd);
+        return;
+    }
+    if (g_hDashThread)
+    {
+        WaitForSingleObject(g_hDashThread, 0);
+        CloseHandle(g_hDashThread);
+        g_hDashThread = nullptr;
+    }
+    g_hDashThread = CreateThread(nullptr, 0, DashThread, nullptr, 0, nullptr);
+}
+
 static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                                     LPARAM lParam)
 {
@@ -3466,7 +4413,7 @@ static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         }
         else if (ev == NIN_SELECT || ev == NIN_KEYSELECT || ev == WM_LBUTTONUP)
         {
-            HandleTrayCommand(IDM_ENABLED);
+            OpenDashboard();
         }
         return 0;
     }

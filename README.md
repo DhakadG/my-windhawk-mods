@@ -75,6 +75,8 @@ corner on one display.
 | Disable on fullscreen apps | on | Ignore corners while a game or video is fullscreen |
 | Disable during mouse drag | on | Ignore corners while a mouse button is held |
 | Excluded processes | *(empty)* | Semicolon-separated exe names to disable in |
+| Keep zones off the taskbar | off | Build zones from the work area, avoiding the taskbar |
+| Delay before blanking after lock | 1200 ms | Used by Lock and Turn Off Monitors |
 | List my monitors in the log | on | Prints your displays so you can copy their names |
 | Verbose logging | off | Log every trigger (diagnostics only) |
 
@@ -92,10 +94,37 @@ Left · Snap Right · Close Window
 Notification Center · Clipboard History · Screenshot / Snip · Project ·
 Task Manager · Mute Volume
 
-**Power** — Lock Computer · Lock and Turn Off Monitors · Sleep · Turn Off Monitors ·
+**Power** — Lock Computer · Lock and Turn Off Monitors · Keep Awake On/Off · Sleep · Turn Off Monitors ·
 Start Screen Saver · Keep Awake On / Off
 
-**Custom** — Virtual Key Press · Custom Command · Nothing
+**Custom** — Virtual Key Press · Alternate Key Press · Custom Command ·
+Alternate Command · Nothing
+
+### Tray icon
+
+The mod adds a tray icon. Left-click toggles the hot corners on and off;
+right-click opens a menu to suspend them for 15/30/60 minutes, flip the
+fullscreen and drag guards, or turn verbose logging on while reproducing
+something.
+
+A Windhawk mod cannot write the settings shown on its own Settings page, so
+these tray changes are kept as *overrides* in the mod's storage and applied on
+top of your settings. **Reset to Windhawk settings** clears them and goes back
+to exactly what the Settings page says.
+
+### Alternate Key Press / Alternate Command
+
+Two actions separated by `|`. The zone fires the left one, then the right
+one, then the left again:
+
+```
+Alt+S | Alt+H            show notes, then hide them
+notepad.exe | calc.exe
+```
+
+Each side accepts everything the single-action version does, so
+`Ctrl+C;Ctrl+V | Alt+Tab` is valid. Every zone alternates independently, and
+the position resets when settings or the display layout change.
 
 ### Virtual Key Press
 

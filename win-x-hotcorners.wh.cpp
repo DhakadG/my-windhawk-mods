@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         3.7.0
+// @version         3.8.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -960,6 +960,7 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
 #include <windhawk_utils.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cwctype>
 #include <deque>
 #include <functional>
@@ -1129,6 +1130,12 @@ static bool g_verboseLog = false;
 // Prints the monitor list at load and on display changes, so names can be
 // copied into the Monitor setting instead of guessed. Cheap - once per event.
 static bool g_showMonitorNames = true;
+
+// Master switch and temporary suspend, both driven from the tray icon.
+// Written by the tray thread and read by the detection thread every tick;
+// atomic because this builds as 32-bit, where a plain 64-bit read can tear.
+static std::atomic<bool> g_trayEnabled{true};
+static std::atomic<ULONGLONG> g_suspendUntil{0};
 
 // How long to wait after locking before blanking the display. Hardware
 // dependent - the secure-desktop switch takes longer on some machines, and
@@ -2734,6 +2741,9 @@ static bool AnyMouseButtonDown()
 
 static void DetectTick()
 {
+    if (!g_trayEnabled.load() || GetTickCount64() < g_suspendUntil.load())
+        return;
+
     std::shared_ptr<const ZoneSet> zones;
     EnterCriticalSection(&g_zonesLock);
     zones = g_zones;
@@ -3088,6 +3098,355 @@ static void LoadSettings()
 }
 
 // =====================================================================
+// Tray Icon
+// =====================================================================
+//
+// Runs on its own thread with its own window and message loop. That is not
+// decoration: TrackPopupMenu is modal and does not return until the menu
+// closes, so hosting it on the detection thread would freeze every zone for
+// as long as the menu is open.
+//
+// Settings that the tray can change are stored as *overrides* in the mod's own
+// value store (Wh_GetIntValue / Wh_SetIntValue). Windhawk settings themselves
+// are read-only from inside a mod, so the tray cannot write what you see on
+// the Settings page. Overrides are applied on top of the settings at load, and
+// "Clear tray overrides" removes them.
+
+static HANDLE g_hTrayThread = nullptr;
+static DWORD g_dwTrayThreadId = 0;
+static HWND g_hTrayWnd = nullptr;
+static UINT g_taskbarCreatedMsg = 0;
+static constexpr UINT WM_APP_TRAY = WM_APP + 10;
+static constexpr UINT_PTR kTrayIconId = 1;
+
+enum TrayCommand
+{
+    IDM_ENABLED = 100,
+    IDM_SUSPEND_15,
+    IDM_SUSPEND_30,
+    IDM_SUSPEND_60,
+    IDM_RESUME,
+    IDM_FULLSCREEN,
+    IDM_DRAG,
+    IDM_VERBOSE,
+    IDM_CLEAR_OVERRIDES,
+    IDM_ABOUT,
+};
+
+// -1 means "no override, use the Windhawk setting"
+static const wchar_t *kOvrEnabled = L"ovr_enabled";
+static const wchar_t *kOvrFullscreen = L"ovr_fullscreen";
+static const wchar_t *kOvrDrag = L"ovr_drag";
+static const wchar_t *kOvrVerbose = L"ovr_verbose";
+
+static HICON MakeTrayIcon(bool enabled)
+{
+    int sz = GetSystemMetrics(SM_CXSMICON);
+    if (sz < 8)
+        sz = 16;
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = sz;
+    bmi.bmiHeader.biHeight = -sz;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void *bits = nullptr;
+    HDC hdc = GetDC(nullptr);
+    HBITMAP hColor =
+        CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC(nullptr, hdc);
+    if (!hColor || !bits)
+    {
+        if (hColor)
+            DeleteObject(hColor);
+        return nullptr;
+    }
+
+    // A screen outline with one corner lit. Mid-tone colours so it stays
+    // legible on both a light and a dark taskbar.
+    DWORD *px = static_cast<DWORD *>(bits);
+    const DWORD frame = enabled ? 0xFFB0B0B0 : 0xFF707070;
+    const DWORD accent = enabled ? 0xFF4CC2FF : 0xFF707070;
+    int block = sz / 3;
+    if (block < 3)
+        block = 3;
+
+    for (int y = 0; y < sz; y++)
+    {
+        for (int x = 0; x < sz; x++)
+        {
+            DWORD c = 0;  // transparent
+            if (x == 0 || y == 0 || x == sz - 1 || y == sz - 1)
+                c = frame;
+            if (x < block && y < block)
+                c = accent;
+            px[y * sz + x] = c;
+        }
+    }
+
+    HBITMAP hMask = CreateBitmap(sz, sz, 1, 1, nullptr);
+    ICONINFO ii = {};
+    ii.fIcon = TRUE;
+    ii.hbmColor = hColor;
+    ii.hbmMask = hMask;
+    HICON hIcon = CreateIconIndirect(&ii);
+
+    DeleteObject(hColor);
+    if (hMask)
+        DeleteObject(hMask);
+    return hIcon;
+}
+
+static void UpdateTrayIcon(bool add)
+{
+    if (!g_hTrayWnd)
+        return;
+
+    bool active = g_trayEnabled && GetTickCount64() >= g_suspendUntil.load();
+
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_hTrayWnd;
+    nid.uID = (UINT)kTrayIconId;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_APP_TRAY;
+    nid.hIcon = MakeTrayIcon(active);
+    wcscpy_s(nid.szTip, active ? L"Win-X Hot Corners - active"
+                               : L"Win-X Hot Corners - paused");
+
+    Shell_NotifyIconW(add ? NIM_ADD : NIM_MODIFY, &nid);
+    if (nid.hIcon)
+        DestroyIcon(nid.hIcon);
+}
+
+static void ApplyTrayOverrides()
+{
+    // Called after LoadSettings so overrides win over the settings page.
+    int v = Wh_GetIntValue(kOvrEnabled, -1);
+    g_trayEnabled = (v < 0) ? true : (v != 0);
+
+    // g_settings is read by the worker thread under this lock, so take it
+    // here too rather than writing the fields from underneath it.
+    EnterCriticalSection(&g_settingsLock);
+
+    v = Wh_GetIntValue(kOvrFullscreen, -1);
+    if (v >= 0)
+        g_settings.disableOnFullscreen = (v != 0);
+
+    v = Wh_GetIntValue(kOvrDrag, -1);
+    if (v >= 0)
+        g_settings.disableDuringDrag = (v != 0);
+
+    LeaveCriticalSection(&g_settingsLock);
+
+    v = Wh_GetIntValue(kOvrVerbose, -1);
+    if (v >= 0)
+        g_verboseLog = (v != 0);
+}
+
+static void ShowTrayMenu()
+{
+    HMENU hMenu = CreatePopupMenu();
+    if (!hMenu)
+        return;
+
+    bool suspended = GetTickCount64() < g_suspendUntil.load();
+
+    AppendMenuW(hMenu, MF_STRING | (g_trayEnabled ? MF_CHECKED : 0),
+                IDM_ENABLED, L"Hot corners enabled");
+
+    HMENU hSuspend = CreatePopupMenu();
+    AppendMenuW(hSuspend, MF_STRING, IDM_SUSPEND_15, L"15 minutes");
+    AppendMenuW(hSuspend, MF_STRING, IDM_SUSPEND_30, L"30 minutes");
+    AppendMenuW(hSuspend, MF_STRING, IDM_SUSPEND_60, L"1 hour");
+    if (suspended)
+    {
+        AppendMenuW(hSuspend, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(hSuspend, MF_STRING, IDM_RESUME, L"Resume now");
+    }
+    AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hSuspend,
+                suspended ? L"Suspended..." : L"Suspend for");
+
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
+    EnterCriticalSection(&g_settingsLock);
+    bool fs = g_settings.disableOnFullscreen;
+    bool drag = g_settings.disableDuringDrag;
+    LeaveCriticalSection(&g_settingsLock);
+
+    AppendMenuW(hMenu, MF_STRING | (fs ? MF_CHECKED : 0), IDM_FULLSCREEN,
+                L"Skip while an app is fullscreen");
+    AppendMenuW(hMenu, MF_STRING | (drag ? MF_CHECKED : 0), IDM_DRAG,
+                L"Skip while dragging the mouse");
+    AppendMenuW(hMenu, MF_STRING | (g_verboseLog ? MF_CHECKED : 0),
+                IDM_VERBOSE, L"Verbose logging");
+
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, IDM_CLEAR_OVERRIDES,
+                L"Reset to Windhawk settings");
+    AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_ABOUT,
+                L"Win-X Hot Corners " WH_MOD_VERSION);
+
+    POINT pt;
+    GetCursorPos(&pt);
+    // Required so the menu dismisses when the user clicks elsewhere.
+    SetForegroundWindow(g_hTrayWnd);
+    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hTrayWnd, nullptr);
+    PostMessage(g_hTrayWnd, WM_NULL, 0, 0);
+
+    DestroyMenu(hMenu);
+}
+
+// The zone snapshot carries drag/settle, so a change there needs a rebuild.
+static void RequestRebuild()
+{
+    if (g_hDetectWnd)
+        PostMessage(g_hDetectWnd, WM_APP_REBUILD, 0, 0);
+}
+
+static void HandleTrayCommand(UINT id)
+{
+    switch (id)
+    {
+    case IDM_ENABLED:
+        g_trayEnabled = !g_trayEnabled;
+        Wh_SetIntValue(kOvrEnabled, g_trayEnabled ? 1 : 0);
+        g_suspendUntil = 0;
+        Wh_Log(L"Tray: hot corners %s", g_trayEnabled ? L"enabled" : L"disabled");
+        break;
+
+    case IDM_SUSPEND_15:
+    case IDM_SUSPEND_30:
+    case IDM_SUSPEND_60:
+    {
+        int mins = (id == IDM_SUSPEND_15) ? 15 : (id == IDM_SUSPEND_30) ? 30 : 60;
+        g_suspendUntil = GetTickCount64() + (ULONGLONG)mins * 60 * 1000;
+        Wh_Log(L"Tray: suspended for %d minutes", mins);
+        break;
+    }
+
+    case IDM_RESUME:
+        g_suspendUntil = 0;
+        Wh_Log(L"Tray: resumed");
+        break;
+
+    case IDM_FULLSCREEN:
+    {
+        EnterCriticalSection(&g_settingsLock);
+        g_settings.disableOnFullscreen = !g_settings.disableOnFullscreen;
+        int v = g_settings.disableOnFullscreen ? 1 : 0;
+        LeaveCriticalSection(&g_settingsLock);
+        Wh_SetIntValue(kOvrFullscreen, v);
+        break;
+    }
+
+    case IDM_DRAG:
+    {
+        EnterCriticalSection(&g_settingsLock);
+        g_settings.disableDuringDrag = !g_settings.disableDuringDrag;
+        int v = g_settings.disableDuringDrag ? 1 : 0;
+        LeaveCriticalSection(&g_settingsLock);
+        Wh_SetIntValue(kOvrDrag, v);
+        RequestRebuild();
+        break;
+    }
+
+    case IDM_VERBOSE:
+        g_verboseLog = !g_verboseLog;
+        Wh_SetIntValue(kOvrVerbose, g_verboseLog ? 1 : 0);
+        break;
+
+    case IDM_CLEAR_OVERRIDES:
+        Wh_SetIntValue(kOvrEnabled, -1);
+        Wh_SetIntValue(kOvrFullscreen, -1);
+        Wh_SetIntValue(kOvrDrag, -1);
+        Wh_SetIntValue(kOvrVerbose, -1);
+        g_suspendUntil = 0;
+        LoadSettings();
+        ApplyTrayOverrides();
+        RequestRebuild();
+        Wh_Log(L"Tray: overrides cleared, back to the Windhawk settings");
+        break;
+
+    default:
+        return;
+    }
+
+    UpdateTrayIcon(false);
+}
+
+static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
+                                    LPARAM lParam)
+{
+    if (uMsg == WM_APP_TRAY)
+    {
+        UINT ev = LOWORD(lParam);
+        if (ev == WM_RBUTTONUP || ev == WM_CONTEXTMENU)
+            ShowTrayMenu();
+        else if (ev == WM_LBUTTONUP)
+            HandleTrayCommand(IDM_ENABLED);
+        return 0;
+    }
+    if (uMsg == WM_COMMAND)
+    {
+        HandleTrayCommand(LOWORD(wParam));
+        return 0;
+    }
+    // Explorer restarted and threw away every tray icon; put ours back.
+    if (g_taskbarCreatedMsg && uMsg == g_taskbarCreatedMsg)
+    {
+        UpdateTrayIcon(true);
+        return 0;
+    }
+    return DefWindowProc(hWnd, uMsg, wParam, lParam);
+}
+
+static DWORD WINAPI TrayThread(LPVOID)
+{
+    const wchar_t *kClass = L"WindhawkHotCornersTray";
+    HINSTANCE hInst = GetModuleHandle(nullptr);
+
+    WNDCLASS wc = {};
+    wc.lpfnWndProc = TrayWndProc;
+    wc.hInstance = hInst;
+    wc.lpszClassName = kClass;
+    RegisterClass(&wc);
+
+    g_hTrayWnd = CreateWindowEx(WS_EX_TOOLWINDOW, kClass, nullptr, WS_POPUP, 0,
+                                0, 0, 0, nullptr, nullptr, hInst, nullptr);
+    if (!g_hTrayWnd)
+    {
+        Wh_Log(L"Tray: failed to create the icon's window");
+        UnregisterClass(kClass, hInst);
+        return 1;
+    }
+
+    g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+    UpdateTrayIcon(true);
+
+    MSG msg;
+    while (GetMessage(&msg, nullptr, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    NOTIFYICONDATAW nid = {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_hTrayWnd;
+    nid.uID = (UINT)kTrayIconId;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+
+    DestroyWindow(g_hTrayWnd);
+    g_hTrayWnd = nullptr;
+    UnregisterClass(kClass, hInst);
+    return 0;
+}
+
+// =====================================================================
 // Tool Mod Entry Points
 // =====================================================================
 
@@ -3108,6 +3467,7 @@ BOOL WhTool_ModInit()
     }
 
     LoadSettings();
+    ApplyTrayOverrides();
 
     g_hWorkerThread =
         CreateThread(nullptr, 0, ActionWorkerThread, nullptr, 0, nullptr);
@@ -3125,12 +3485,20 @@ BOOL WhTool_ModInit()
         return FALSE;
     }
 
+    // Non-fatal: losing the tray icon should not take the hot corners with it.
+    g_hTrayThread =
+        CreateThread(nullptr, 0, TrayThread, nullptr, 0, &g_dwTrayThreadId);
+    if (!g_hTrayThread)
+        Wh_Log(L"Tray icon unavailable (thread creation failed)");
+
     return TRUE;
 }
 
 void WhTool_ModSettingsChanged()
 {
     LoadSettings();
+    ApplyTrayOverrides();
+    UpdateTrayIcon(false);
     // The zone rebuild has to happen on the detection thread, which owns the
     // DPI context and the monitor list. Post, never send — Windhawk's thread
     // must not block on ours.
@@ -3142,6 +3510,17 @@ void WhTool_ModUninit()
 {
     if (g_hStopEvent)
         SetEvent(g_hStopEvent);
+
+    if (g_dwTrayThreadId)
+        PostThreadMessage(g_dwTrayThreadId, WM_QUIT, 0, 0);
+
+    if (g_hTrayThread)
+    {
+        if (WaitForSingleObject(g_hTrayThread, 3000) == WAIT_TIMEOUT)
+            Wh_Log(L"Tray thread exit timed out");
+        CloseHandle(g_hTrayThread);
+        g_hTrayThread = nullptr;
+    }
 
     if (g_dwDetectThreadId)
         PostThreadMessage(g_dwDetectThreadId, WM_QUIT, 0, 0);

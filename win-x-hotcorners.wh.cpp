@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         3.6.1
+// @version         3.7.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -87,6 +87,8 @@ Windhawk mod.
 | Action | Description |
 |--------|-------------|
 | Lock Computer | Lock the workstation instantly |
+| Lock and Turn Off Monitors | Lock, then blank the displays |
+| Keep Awake On / Off | Suspend or restore screensaver and sleep |
 | Sleep | Put the computer to sleep |
 | Turn Off Monitors | Power off all displays |
 | Start Screen Saver | Activate the screen saver |
@@ -96,6 +98,8 @@ Windhawk mod.
 | Action | Description |
 |--------|-------------|
 | Virtual Key Press | Send any key combination, or several in sequence |
+| Alternate Key Press | Two combinations, fired alternately (`Alt+S | Alt+H`) |
+| Alternate Command | Two commands, fired alternately |
 | Custom Command | Launch any executable, path, or URL |
 | Nothing | Disabled (default) |
 
@@ -142,6 +146,20 @@ sends Ctrl+C, then Alt+Tab.
 Left, Right, Up, Down, etc.
 
 **Examples:** `Ctrl+Shift+Esc`, `Alt+F4`, `Win+L`
+
+## Alternate Key Press / Alternate Command
+
+Two actions separated by `|`. The zone fires the left one, then the right
+one, then the left again — the "different action on the second trigger" case:
+
+```
+Alt+S | Alt+H            one corner shows notes, then hides them
+notepad.exe | calc.exe
+```
+
+Each side accepts everything the single-action version does, so
+`Ctrl+C;Ctrl+V | Alt+Tab` is valid. Every zone alternates independently, and
+the position resets whenever settings or the display layout change.
 
 ## Custom Command Format
 
@@ -314,6 +332,15 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
     OutputDebugString, which takes a system-wide lock, so logging on every
     trigger can stutter other Windhawk mods. Turn on only while diagnosing.
     Errors and startup information are always logged.
+- AvoidTaskbar: false
+  $name: Keep zones off the taskbar
+  $description: >-
+    Build the zones from the desktop work area instead of the whole screen, so
+    they stop at the edge of the taskbar. Turn this on if a bottom corner is
+    fighting the taskbar's own "peek at desktop" strip, or if you keep
+    triggering a corner while aiming for a taskbar button. Off by default,
+    because putting a zone on top of the taskbar is a perfectly reasonable
+    thing to want.
 - CenterZonePercent: 20
   $name: Centre zone width (% of the edge)
   $description: >-
@@ -410,6 +437,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - TopLeftArgs: ""
@@ -453,6 +482,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - TopRightArgs: ""
@@ -495,6 +526,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - BottomLeftArgs: ""
@@ -537,6 +570,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - BottomRightArgs: ""
@@ -579,6 +614,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - EdgeTopArgs: ""
@@ -621,6 +658,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - EdgeBottomArgs: ""
@@ -663,6 +702,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - EdgeLeftArgs: ""
@@ -705,6 +746,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - EdgeRightArgs: ""
@@ -751,6 +794,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - CenterTopArgs: ""
@@ -797,6 +842,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - CenterBottomArgs: ""
@@ -843,6 +890,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - CenterLeftArgs: ""
@@ -889,6 +938,8 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
       - ACTION_KEEP_AWAKE_ON: Keep Awake - On
       - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_ALTERNATE_KEYPRESS: Alternate Key Press (A then B)
+      - ACTION_ALTERNATE_COMMAND: Alternate Command (A then B)
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - CenterRightArgs: ""
@@ -959,6 +1010,8 @@ enum class CornerAction
     LockAndMonitorsOff,
     KeepAwakeOn,
     KeepAwakeOff,
+    AlternateKeypress,
+    AlternateCommand,
     SendKeypress,
     StartProcess,
 };
@@ -999,6 +1052,7 @@ struct MonitorInfo
 {
     HMONITOR handle;
     RECT rcMonitor;
+    RECT rcWork;   // monitor minus taskbar and any docked appbars
     bool isPrimary;
     int index;           // 1-based, legacy ordinal assigned after sorting
     std::wstring device; // GDI name, e.g. \\.\DISPLAY1
@@ -1040,6 +1094,7 @@ static struct
     int knockWindowMs = 0;   // 0 = knock mode off
     int requireModifier = 0; // 0 none, 1 Ctrl, 2 Alt, 3 Shift, 4 Win
     int centerZonePercent = 20;
+    bool avoidTaskbar = false;
     int cooldownMs = 300;
     bool disableOnFullscreen = true;
     bool disableDuringDrag = true;
@@ -1111,6 +1166,9 @@ static std::vector<ULONGLONG> g_lastExitTick;
 // announce (docking, monitor wake, RDP reconnect).
 static int g_topoCount = -1;
 static RECT g_topoVirtual = {};
+// Also tracked, so moving or auto-hiding the taskbar rebuilds the zones when
+// they are being built from the work area.
+static RECT g_topoWorkArea = {};
 
 static constexpr UINT WM_APP_REBUILD = WM_APP + 1;
 
@@ -1467,6 +1525,7 @@ static BOOL CALLBACK MonitorEnumProc(HMONITOR hMonitor, HDC, LPRECT,
         MonitorInfo info;
         info.handle = hMonitor;
         info.rcMonitor = mi.rcMonitor;
+        info.rcWork = mi.rcWork;
         info.isPrimary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
         info.index = 0;
         info.device = mi.szDevice;
@@ -2098,6 +2157,8 @@ static CornerAction ParseActionType(const std::wstring &raw)
         {L"ACTION_LOCK_MONITORS_OFF", CornerAction::LockAndMonitorsOff},
         {L"ACTION_KEEP_AWAKE_ON", CornerAction::KeepAwakeOn},
         {L"ACTION_KEEP_AWAKE_OFF", CornerAction::KeepAwakeOff},
+        {L"ACTION_ALTERNATE_KEYPRESS", CornerAction::AlternateKeypress},
+        {L"ACTION_ALTERNATE_COMMAND", CornerAction::AlternateCommand},
         {L"ACTION_SEND_KEYPRESS", CornerAction::SendKeypress},
         {L"ACTION_START_PROCESS", CornerAction::StartProcess},
     };
@@ -2143,6 +2204,8 @@ static const wchar_t *ActionToString(CornerAction a)
     case CornerAction::LockAndMonitorsOff: return L"Lock and Turn Off Monitors";
     case CornerAction::KeepAwakeOn: return L"Keep Awake On";
     case CornerAction::KeepAwakeOff: return L"Keep Awake Off";
+    case CornerAction::AlternateKeypress: return L"Alternate Key Press";
+    case CornerAction::AlternateCommand: return L"Alternate Command";
     case CornerAction::SendKeypress: return L"Virtual Key Press";
     case CornerAction::StartProcess: return L"Custom Command";
     }
@@ -2167,6 +2230,18 @@ static const wchar_t *ZoneToString(Zone z)
     case ZONE_CENTER_RIGHT: return L"Right edge centre";
     default: return L"None";
     }
+}
+
+// Splits "a | b" into its two halves. Both must be non-empty.
+static bool SplitAlternate(const std::wstring &args, std::wstring &first,
+                           std::wstring &second)
+{
+    auto bar = args.find(L'|');
+    if (bar == std::wstring::npos)
+        return false;
+    first = TrimStr(args.substr(0, bar));
+    second = TrimStr(args.substr(bar + 1));
+    return !first.empty() && !second.empty();
 }
 
 // Creates an action executor from action type and args
@@ -2208,6 +2283,61 @@ static std::function<void()> MakeExecutor(CornerAction action,
     case CornerAction::LockAndMonitorsOff: return ActionLockAndMonitorsOff;
     case CornerAction::KeepAwakeOn: return ActionKeepAwakeOn;
     case CornerAction::KeepAwakeOff: return ActionKeepAwakeOff;
+    // Alternating actions.
+    //
+    // Deliberately built as two extra action types rather than by giving every
+    // zone a second action + args. That would have doubled a settings block
+    // that is already twelve zones long, for a feature most zones will never
+    // use. Here the two halves live in the existing Args field, split on "|",
+    // so nothing about the zone structure, the hit test or the detection loop
+    // changes at all.
+    //
+    // The alternation flag is a shared_ptr captured by the lambda, so it
+    // travels with the executor and needs no per-zone state anywhere else.
+    // It resets whenever the zone set is rebuilt — settings change, display
+    // change — which is the documented behaviour.
+    case CornerAction::AlternateKeypress:
+    {
+        std::wstring left, right;
+        if (!SplitAlternate(args, left, right))
+        {
+            Wh_Log(L"Alternate Key Press: expected two combinations separated "
+                   L"by | , for example  Alt+S | Alt+H");
+            return nullptr;
+        }
+        auto first = ParseKeyCombo(left);
+        auto second = ParseKeyCombo(right);
+        if (first.empty() || second.empty())
+        {
+            Wh_Log(L"Alternate Key Press: could not parse both sides of '%s'",
+                   args.c_str());
+            return nullptr;
+        }
+        auto useSecond = std::make_shared<bool>(false);
+        return [first, second, useSecond]()
+        {
+            const auto &combos = *useSecond ? second : first;
+            *useSecond = !*useSecond;
+            for (const auto &keys : combos)
+                SendKeys(keys);
+        };
+    }
+    case CornerAction::AlternateCommand:
+    {
+        std::wstring left, right;
+        if (!SplitAlternate(args, left, right))
+        {
+            Wh_Log(L"Alternate Command: expected two commands separated by | ");
+            return nullptr;
+        }
+        auto useSecond = std::make_shared<bool>(false);
+        return [left, right, useSecond]()
+        {
+            const std::wstring &cmd = *useSecond ? right : left;
+            *useSecond = !*useSecond;
+            ActionStartProcess(cmd);
+        };
+    }
     case CornerAction::SendKeypress:
     {
         auto combos = ParseKeyCombo(args);
@@ -2304,7 +2434,15 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
 
     for (const auto &mon : g_monitors)
     {
-        const RECT &r = mon.rcMonitor;
+        // rcWork is the monitor minus the taskbar and any docked appbars, so
+        // using it is a complete fix for zones colliding with the taskbar —
+        // including the taskbar's own "peek at desktop" strip — without
+        // having to locate Shell_TrayWnd or subtract rectangles by hand.
+        // It also tracks the taskbar being moved, resized or auto-hidden,
+        // because the work area is recomputed on the same events that already
+        // trigger a zone rebuild.
+        const RECT &r =
+            g_settings.avoidTaskbar ? mon.rcWork : mon.rcMonitor;
 
         // Clamp per monitor so the eight zones are provably disjoint and the
         // hit test's first-match-wins can never hide one behind another:
@@ -2336,7 +2474,23 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
                 return;
             HitZone hz;
             hz.rect = rect;
-            hz.exec = zc->executor;
+
+            // Alternating actions carry their flip state inside the executor.
+            // Copying the shared config executor would make every zone that
+            // resolves to it — e.g. the same corner on two monitors under a
+            // "*" configuration — share one flag and alternate against each
+            // other. Build a fresh executor so each zone alternates alone.
+            if (zc->action == CornerAction::AlternateKeypress ||
+                zc->action == CornerAction::AlternateCommand)
+            {
+                hz.exec = MakeExecutor(zc->action, zc->args);
+                if (!hz.exec)
+                    return;
+            }
+            else
+            {
+                hz.exec = zc->executor;
+            }
             hz.label = mon.id + L" " + ZoneToString(z) + L" -> " +
                        ActionToString(zc->action);
             set->zones.push_back(std::move(hz));
@@ -2444,6 +2598,7 @@ static void RebuildZones()
                      GetSystemMetrics(SM_YVIRTUALSCREEN),
                      GetSystemMetrics(SM_CXVIRTUALSCREEN),
                      GetSystemMetrics(SM_CYVIRTUALSCREEN)};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &g_topoWorkArea, 0);
 }
 
 // WM_DISPLAYCHANGE is not delivered for every layout change that matters —
@@ -2455,8 +2610,12 @@ static bool TopologyChanged()
               GetSystemMetrics(SM_YVIRTUALSCREEN),
               GetSystemMetrics(SM_CXVIRTUALSCREEN),
               GetSystemMetrics(SM_CYVIRTUALSCREEN)};
+    RECT work = {};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+
     return GetSystemMetrics(SM_CMONITORS) != g_topoCount ||
-           memcmp(&v, &g_topoVirtual, sizeof(v)) != 0;
+           memcmp(&v, &g_topoVirtual, sizeof(v)) != 0 ||
+           memcmp(&work, &g_topoWorkArea, sizeof(work)) != 0;
 }
 
 // =====================================================================
@@ -2801,6 +2960,8 @@ static void LoadSettings()
     g_settings.requireModifier = Wh_GetIntSetting(L"RequireModifier");
     if (g_settings.requireModifier < 0 || g_settings.requireModifier > 4)
         g_settings.requireModifier = 0;
+
+    g_settings.avoidTaskbar = Wh_GetIntSetting(L"AvoidTaskbar") != 0;
 
     g_settings.centerZonePercent = Wh_GetIntSetting(L"CenterZonePercent");
     if (g_settings.centerZonePercent < 1)

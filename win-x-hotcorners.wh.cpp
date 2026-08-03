@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         3.6.0
+// @version         3.6.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -293,6 +293,13 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
     if both are a toggle (like Task View) they cancel out and nothing seems
     to happen. 80 ms is imperceptible and blocks pass-through firing.
     Set to 0 only if you use corners or edges but never both.
+- LockBlankDelayMs: 1200
+  $name: Delay before blanking after lock (ms)
+  $description: >-
+    Used only by the "Lock and Turn Off Monitors" action. Locking counts as
+    activity, so the display is blanked a moment later - blank too early and
+    it simply wakes back up. If your screen stays on after locking, raise
+    this; if it blanks before the lock screen appears, lower it.
 - ShowMonitorNames: true
   $name: List my monitors in the log
   $description: >-
@@ -1068,6 +1075,11 @@ static bool g_verboseLog = false;
 // copied into the Monitor setting instead of guessed. Cheap - once per event.
 static bool g_showMonitorNames = true;
 
+// How long to wait after locking before blanking the display. Hardware
+// dependent - the secure-desktop switch takes longer on some machines, and
+// blanking before it settles just wakes the display again.
+static int g_lockBlankDelayMs = 1200;
+
 // Hard floor between any two actions, whatever the zone or the cooldown
 // setting. Actions are user-visible shell operations (Task View, Show Desktop,
 // launching a process); replaying a queued burst of them back-to-back is what
@@ -1838,20 +1850,33 @@ static void ActionShowDesktop()
 
 static void ActionTaskView() { SendKeys({VK_LWIN, VK_TAB}); }
 
+// SC_MONITORPOWER and SC_SCREENSAVE only take effect when they reach a window
+// that passes them to DefWindowProc, which is what hands them to the power
+// manager.
+//
+// Posting to GetForegroundWindow is unreliable: an application is free to
+// swallow WM_SYSCOMMAND, and after LockWorkStation the input desktop has
+// switched to Winlogon, so from our desktop it returns null and the old
+// fallback posted to GetDesktopWindow — which handles nothing at all. That is
+// why the display stayed awake after locking.
+//
+// Broadcasting reaches every top-level window, so at least one will route it.
+// Runs on the worker thread, so the blocking call cannot delay detection.
+static void BroadcastSysCommand(WPARAM command, LPARAM param)
+{
+    DWORD_PTR result = 0;
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SYSCOMMAND, command, param,
+                        SMTO_ABORTIFHUNG, 500, &result);
+}
+
 static void ActionScreenSaver()
 {
-    HWND hTarget = GetForegroundWindow();
-    if (!hTarget)
-        hTarget = GetDesktopWindow();
-    PostMessage(hTarget, WM_SYSCOMMAND, SC_SCREENSAVE, 0);
+    BroadcastSysCommand(SC_SCREENSAVE, 0);
 }
 
 static void ActionMonitorsOff()
 {
-    HWND hTarget = GetForegroundWindow();
-    if (!hTarget)
-        hTarget = GetDesktopWindow();
-    PostMessage(hTarget, WM_SYSCOMMAND, SC_MONITORPOWER, (LPARAM)2);
+    BroadcastSysCommand(SC_MONITORPOWER, (LPARAM)2);
 }
 
 static void ActionQuickSettings() { SendKeys({VK_LWIN, 'A'}); }
@@ -1908,11 +1933,12 @@ static void ActionVDesktopClose() { SendKeys({VK_LWIN, VK_LCONTROL, VK_F4}); }
 static void ActionLockAndMonitorsOff()
 {
     LockWorkStation();
-    Sleep(400);  // let the lock screen settle before blanking
-    HWND hTarget = GetForegroundWindow();
-    if (!hTarget)
-        hTarget = GetDesktopWindow();
-    PostMessage(hTarget, WM_SYSCOMMAND, SC_MONITORPOWER, (LPARAM)2);
+
+    // The lock transition itself counts as activity, so blanking too soon
+    // just wakes the display straight back up. How long the switch to the
+    // secure desktop takes varies by machine, hence the setting.
+    Sleep((DWORD)g_lockBlankDelayMs);
+    BroadcastSysCommand(SC_MONITORPOWER, (LPARAM)2);
 }
 
 // SetThreadExecutionState is per-thread and only holds while that thread
@@ -2790,6 +2816,12 @@ static void LoadSettings()
     g_settings.disableDuringDrag = Wh_GetIntSetting(L"DisableDuringDrag");
     g_verboseLog = Wh_GetIntSetting(L"VerboseLogging") != 0;
     g_showMonitorNames = Wh_GetIntSetting(L"ShowMonitorNames") != 0;
+
+    g_lockBlankDelayMs = Wh_GetIntSetting(L"LockBlankDelayMs");
+    if (g_lockBlankDelayMs < 0)
+        g_lockBlankDelayMs = 0;
+    if (g_lockBlankDelayMs > 10000)
+        g_lockBlankDelayMs = 10000;
 
     // Excluded processes (semicolon-separated, case-insensitive)
     g_settings.excludedProcesses.clear();

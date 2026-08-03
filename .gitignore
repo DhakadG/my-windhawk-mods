@@ -1,0 +1,4 @@
+*.cpp
+!Win-x-HotCorners.cpp
+!win-x-hotcorners.wh.cpp
+*.code-workspace

@@ -2329,13 +2329,16 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
         // segments with the centre between them, so no two zones ever
         // overlap. When it is not, the strip stays whole — existing
         // configurations are therefore completely unaffected.
+        // NB: do not name these "near"/"far" — windef.h still #defines both as
+        // empty macros from the 16-bit memory-model days, so the parameters
+        // vanish and the braced initialisers below fail to parse.
         auto addEdge = [&](Zone edge, Zone centre, bool horizontal, LONG lo,
-                           LONG hi, LONG near, LONG far)
+                           LONG hi, LONG nearSide, LONG farSide)
         {
             auto rectFor = [&](LONG a, LONG b) -> RECT
             {
-                return horizontal ? RECT{a, near, b, far}
-                                  : RECT{near, a, far, b};
+                return horizontal ? RECT{a, nearSide, b, farSide}
+                                  : RECT{nearSide, a, farSide, b};
             };
 
             const ZoneConfig *centreCfg = ResolveZone(mon, centre);

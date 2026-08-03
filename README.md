@@ -17,7 +17,7 @@ Inspired by [WinXCorners](https://github.com/vhanla/winxcorners).
 2. Open Windhawk → **Explore** → search for **Win-X Hot Corners** → Install.
 
 To install from source instead: Windhawk → **Create new mod**, paste the
-contents of `Win-x-HotCorners.cpp`, then **Compile** and **Save**.
+contents of `win-x-hotcorners.wh.cpp`, then **Compile** and **Save**.
 
 ---
 

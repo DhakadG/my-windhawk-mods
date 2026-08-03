@@ -338,5 +338,32 @@ Assert ($f.Count -eq 1) "modifier pressed while already in the zone still fires 
 $f = RunTicks (Dwell 0 10) 0 0 $true 80 0 0 $false
 Assert ($f.Count -eq 1) "modifier not required -> unchanged behaviour (got $($f.Count))"
 ''
+'--- Dashboard layout geometry (no overlaps) ---'
+# Parsed straight out of the source so the test cannot drift from the code.
+$modSrc = [IO.File]::ReadAllText('C:\Users\lost_husky\Downloads\Programs\VS Code Works\WindHawk Mods\Win-x-HotCorners.cpp')
+function K($n){ [int]([regex]::Match($modSrc, "constexpr int $n = (\d+);")).Groups[1].Value }
+$Pad=K 'Pad'; $Gap=K 'Gap'; $RowH=K 'RowH'; $CheckH=K 'CheckH'; $TabH=K 'TabH'
+$CtlH=K 'CtlH'; $BtnH=K 'BtnH'; $LblW=K 'LblW'; $CmbW=K 'CmbW'; $ArgW=K 'ArgW'
+$OptLblW=K 'OptLblW'; $OptCtlW=K 'OptCtlW'; $DiagW=K 'DiagW'; $DiagH=K 'DiagH'
+$ZC = 12
+Assert ($Pad -gt 0 -and $RowH -gt 0 -and $DiagW -gt 0) "layout constants parsed from source (pad=$Pad row=$RowH)"
+
+$leftW   = $Pad+$LblW+$Gap+$CmbW+$Gap+$ArgW
+$clientW = $leftW+$Gap+$DiagW+$Pad
+$zonesH  = $Pad+$TabH+$Gap+$CtlH+$Gap+$ZC*$RowH
+$optH    = $Pad+$TabH+$Gap+10*$RowH+5*$CheckH
+$content = [Math]::Max($zonesH,$optH)
+$clientH = $content+$Gap*2+$BtnH+$Pad
+$btnTop  = $clientH-$Pad-$BtnH
+
+Assert ($zonesH -le $btnTop)  "zones page ends ($zonesH) above the button bar ($btnTop)"
+Assert ($optH   -le $btnTop)  "options page ends ($optH) above the button bar ($btnTop)"
+$diagBottom = $Pad+$TabH+$Gap+$CtlH+$Gap+$DiagH+26
+Assert ($diagBottom -le $btnTop) "screen preview + label ($diagBottom) clears the button bar"
+Assert (($leftW+$Gap+$DiagW+$Pad) -le $clientW) "preview fits to the right of the rows"
+Assert (($Pad+130+$Gap+90+$Gap+210+$Pad) -le $clientW) "three buttons fit across the window"
+Assert (($Pad+$OptLblW+$Gap+$OptCtlW+$DiagW+$Pad) -le $clientW) "widest options field stays inside the window"
+Assert ($ArgW -ge 120) "args field wide enough to be usable ($ArgW px)"
+''
 if ($script:fails -eq 0) { 'ALL CHECKS PASSED'; exit 0 }
 else { "$($script:fails) CHECK(S) FAILED"; exit 1 }

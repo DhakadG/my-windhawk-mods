@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         3.9.1
+// @version         3.9.2
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -3704,6 +3704,7 @@ struct DashState
     HFONT hFont = nullptr;
     HBRUSH hBg = nullptr;
     bool showZones = true;
+    int hoverZone = -1;   // zone highlighted in the preview
     int cfgIndex = 0;   // which slot in the value store we are editing
 
     HWND hMonitor = nullptr;
@@ -3717,6 +3718,78 @@ struct DashState
 };
 
 static int Sc(int px, UINT dpi) { return MulDiv(px, (int)dpi, 96); }
+
+// Layout metrics at 96 DPI. The window is sized *from* these rather than the
+// other way round — the first version guessed a window size and the button bar
+// ended up on top of the last rows.
+namespace Lay
+{
+constexpr int Pad = 16;
+constexpr int Gap = 8;
+constexpr int RowH = 30;
+constexpr int CheckH = 26;
+constexpr int TabH = 28;
+constexpr int CtlH = 24;
+constexpr int BtnH = 32;
+constexpr int LblW = 128;
+constexpr int CmbW = 210;
+constexpr int ArgW = 176;
+constexpr int OptLblW = 200;
+constexpr int OptCtlW = 190;
+constexpr int DiagW = 250;
+constexpr int DiagH = 186;
+
+constexpr int LeftBlockW = Pad + LblW + Gap + CmbW + Gap + ArgW;   // 546
+constexpr int ClientW = LeftBlockW + Gap + DiagW + Pad;            // 820
+
+// Zones page: tabs, monitor combo, twelve rows.
+constexpr int ZonesH = Pad + TabH + Gap + CtlH + Gap + ZONE_COUNT * RowH;
+// Options page: ten labelled controls, five checkboxes.
+constexpr int OptionsH = Pad + TabH + Gap + 10 * RowH + 5 * CheckH;
+
+constexpr int ContentH = ZonesH > OptionsH ? ZonesH : OptionsH;
+constexpr int ClientH = ContentH + Gap * 2 + BtnH + Pad;
+}  // namespace Lay
+
+// Where the little screen preview sits, and where each zone sits inside it.
+static RECT DashDiagramRect(UINT dpi)
+{
+    RECT r;
+    r.left = Sc(Lay::LeftBlockW + Lay::Gap, dpi);
+    r.top = Sc(Lay::Pad + Lay::TabH + Lay::Gap + Lay::CtlH + Lay::Gap, dpi);
+    r.right = r.left + Sc(Lay::DiagW, dpi);
+    r.bottom = r.top + Sc(Lay::DiagH, dpi);
+    return r;
+}
+
+// Proportions inside the preview, mirroring how the real zones are built:
+// corners in the four corners, edges along the sides with the corners carved
+// out, and a centre block in the middle of each edge.
+static RECT ZoneRectInDiagram(Zone z, const RECT &d)
+{
+    int w = d.right - d.left, h = d.bottom - d.top;
+    int c = (w < h ? w : h) / 6;         // corner block
+    int t = c / 2;                       // edge thickness
+    int cx0 = d.left + w / 2 - w / 8, cx1 = d.left + w / 2 + w / 8;
+    int cy0 = d.top + h / 2 - h / 8, cy1 = d.top + h / 2 + h / 8;
+
+    switch (z)
+    {
+    case ZONE_TOP_LEFT:      return {d.left, d.top, d.left + c, d.top + c};
+    case ZONE_TOP_RIGHT:     return {d.right - c, d.top, d.right, d.top + c};
+    case ZONE_BOTTOM_LEFT:   return {d.left, d.bottom - c, d.left + c, d.bottom};
+    case ZONE_BOTTOM_RIGHT:  return {d.right - c, d.bottom - c, d.right, d.bottom};
+    case ZONE_EDGE_TOP:      return {d.left + c, d.top, d.right - c, d.top + t};
+    case ZONE_EDGE_BOTTOM:   return {d.left + c, d.bottom - t, d.right - c, d.bottom};
+    case ZONE_EDGE_LEFT:     return {d.left, d.top + c, d.left + t, d.bottom - c};
+    case ZONE_EDGE_RIGHT:    return {d.right - t, d.top + c, d.right, d.bottom - c};
+    case ZONE_CENTER_TOP:    return {cx0, d.top, cx1, d.top + t};
+    case ZONE_CENTER_BOTTOM: return {cx0, d.bottom - t, cx1, d.bottom};
+    case ZONE_CENTER_LEFT:   return {d.left, cy0, d.left + t, cy1};
+    case ZONE_CENTER_RIGHT:  return {d.right - t, cy0, d.right, cy1};
+    default:                 return {0, 0, 0, 0};
+    }
+}
 
 static void ThemeControl(HWND h, const wchar_t *theme)
 {
@@ -3837,83 +3910,156 @@ static int DashGetInt(DashState *s, int id, int fallback)
 static void DashLayout(HWND hWnd, DashState *s)
 {
     UINT d = s->dpi;
-    int pad = Sc(14, d), rowH = Sc(30, d), y;
+    const int pad = Sc(Lay::Pad, d), gap = Sc(Lay::Gap, d);
+    int y;
 
-    ShowWindow(s->hMonitor, s->showZones ? SW_SHOW : SW_HIDE);
+    // Show only the active page. Doing this first means the button bar below
+    // is positioned against a known set of visible controls.
     for (int z = 0; z < ZONE_COUNT; z++)
     {
-        int show = s->showZones ? SW_SHOW : SW_HIDE;
-        ShowWindow(s->hZoneLabel[z], show);
-        ShowWindow(s->hZoneAction[z], show);
-        ShowWindow(s->hZoneArgs[z], show);
+        int sw = s->showZones ? SW_SHOW : SW_HIDE;
+        ShowWindow(s->hZoneLabel[z], sw);
+        ShowWindow(s->hZoneAction[z], sw);
+        ShowWindow(s->hZoneArgs[z], sw);
     }
+    ShowWindow(s->hMonitor, s->showZones ? SW_SHOW : SW_HIDE);
     for (int i = 0; i < kOptCount; i++)
     {
-        int show = s->showZones ? SW_HIDE : SW_SHOW;
-        ShowWindow(s->hOpt[i], show);
+        int sw = s->showZones ? SW_HIDE : SW_SHOW;
+        ShowWindow(s->hOpt[i], sw);
         if (s->hOptLabel[i])
-            ShowWindow(s->hOptLabel[i], show);
+            ShowWindow(s->hOptLabel[i], sw);
     }
 
-    SetWindowPos(s->hPageZones, nullptr, pad, pad, Sc(90, d), Sc(26, d),
+    SetWindowPos(s->hPageZones, nullptr, pad, pad, Sc(96, d), Sc(Lay::TabH, d),
                  SWP_NOZORDER);
-    SetWindowPos(s->hPageOptions, nullptr, pad + Sc(96, d), pad, Sc(90, d),
-                 Sc(26, d), SWP_NOZORDER);
+    SetWindowPos(s->hPageOptions, nullptr, pad + Sc(104, d), pad, Sc(96, d),
+                 Sc(Lay::TabH, d), SWP_NOZORDER);
+
+    y = pad + Sc(Lay::TabH, d) + gap;
 
     if (s->showZones)
     {
-        y = pad + Sc(40, d);
-        SetWindowPos(s->hMonitor, nullptr, pad, y, Sc(360, d), Sc(300, d),
+        SetWindowPos(s->hMonitor, nullptr, pad, y,
+                     Sc(Lay::LblW + Lay::Gap + Lay::CmbW, d), Sc(320, d),
                      SWP_NOZORDER);
-        y += Sc(38, d);
+        y += Sc(Lay::CtlH, d) + gap;
+
         for (int z = 0; z < ZONE_COUNT; z++)
         {
-            SetWindowPos(s->hZoneLabel[z], nullptr, pad, y + Sc(5, d),
-                         Sc(128, d), Sc(20, d), SWP_NOZORDER);
-            SetWindowPos(s->hZoneAction[z], nullptr, pad + Sc(132, d), y,
-                         Sc(240, d), Sc(400, d), SWP_NOZORDER);
-            SetWindowPos(s->hZoneArgs[z], nullptr, pad + Sc(378, d), y,
-                         Sc(250, d), Sc(24, d), SWP_NOZORDER);
-            y += rowH;
+            int rowY = y + z * Sc(Lay::RowH, d);
+            SetWindowPos(s->hZoneLabel[z], nullptr, pad, rowY + Sc(5, d),
+                         Sc(Lay::LblW, d), Sc(20, d), SWP_NOZORDER);
+            SetWindowPos(s->hZoneAction[z], nullptr,
+                         pad + Sc(Lay::LblW + Lay::Gap, d), rowY,
+                         Sc(Lay::CmbW, d), Sc(320, d), SWP_NOZORDER);
+            SetWindowPos(s->hZoneArgs[z], nullptr,
+                         pad + Sc(Lay::LblW + Lay::Gap + Lay::CmbW + Lay::Gap, d),
+                         rowY, Sc(Lay::ArgW, d), Sc(Lay::CtlH, d), SWP_NOZORDER);
         }
     }
     else
     {
-        y = pad + Sc(40, d);
         for (int i = 0; i < kOptCount; i++)
         {
             if (kOpts[i].isCheck)
             {
-                SetWindowPos(s->hOpt[i], nullptr, pad, y, Sc(400, d),
+                SetWindowPos(s->hOpt[i], nullptr, pad, y,
+                             Sc(Lay::OptLblW + Lay::Gap + Lay::OptCtlW, d),
                              Sc(22, d), SWP_NOZORDER);
-                y += Sc(26, d);
+                y += Sc(Lay::CheckH, d);
             }
             else
             {
-                SetWindowPos(s->hOptLabel[i], nullptr, pad, y + Sc(4, d),
-                             Sc(220, d), Sc(20, d), SWP_NOZORDER);
-                bool wide = (kOpts[i].id == IDC_EXCLUDED);
+                SetWindowPos(s->hOptLabel[i], nullptr, pad, y + Sc(5, d),
+                             Sc(Lay::OptLblW, d), Sc(20, d), SWP_NOZORDER);
                 bool combo = (kOpts[i].id == IDC_MODIFIER);
-                SetWindowPos(s->hOpt[i], nullptr, pad + Sc(228, d), y,
-                             Sc(wide ? 380 : 150, d),
-                             combo ? Sc(200, d) : Sc(24, d), SWP_NOZORDER);
-                y += Sc(30, d);
+                bool wide = (kOpts[i].id == IDC_EXCLUDED);
+                SetWindowPos(s->hOpt[i], nullptr,
+                             pad + Sc(Lay::OptLblW + Lay::Gap, d), y,
+                             Sc(wide ? Lay::OptCtlW + Lay::DiagW : Lay::OptCtlW, d),
+                             combo ? Sc(200, d) : Sc(Lay::CtlH, d), SWP_NOZORDER);
+                y += Sc(Lay::RowH, d);
             }
         }
     }
 
+    // Button bar sits below the taller of the two pages, always, so it can
+    // never land on top of a control.
     RECT rc;
     GetClientRect(hWnd, &rc);
-    int by = rc.bottom - Sc(44, d);
-    SetWindowPos(s->hSave, nullptr, pad, by, Sc(120, d), Sc(30, d),
+    int by = rc.bottom - pad - Sc(Lay::BtnH, d);
+    int bx = pad;
+    SetWindowPos(s->hSave, nullptr, bx, by, Sc(130, d), Sc(Lay::BtnH, d),
                  SWP_NOZORDER);
-    SetWindowPos(s->hCancel, nullptr, pad + Sc(128, d), by, Sc(90, d),
-                 Sc(30, d), SWP_NOZORDER);
-    SetWindowPos(s->hReset, nullptr, pad + Sc(226, d), by, Sc(210, d),
-                 Sc(30, d), SWP_NOZORDER);
+    bx += Sc(130 + Lay::Gap, d);
+    SetWindowPos(s->hCancel, nullptr, bx, by, Sc(90, d), Sc(Lay::BtnH, d),
+                 SWP_NOZORDER);
+    bx += Sc(90 + Lay::Gap, d);
+    SetWindowPos(s->hReset, nullptr, bx, by, Sc(210, d), Sc(Lay::BtnH, d),
+                 SWP_NOZORDER);
+
     InvalidateRect(hWnd, nullptr, TRUE);
 }
 
+// Screen preview: a rectangle with the twelve zones drawn where they actually
+// sit, filled when something is assigned to them. Clicking one jumps to its
+// row, which is far quicker than reading down a list of twelve labels.
+static void DashPaintDiagram(HWND hWnd, DashState *s, HDC hdc)
+{
+    if (!s->showZones)
+        return;
+
+    UINT d = s->dpi;
+    RECT dg = DashDiagramRect(d);
+
+    HFONT old = (HFONT)SelectObject(hdc, s->hFont);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, kClrDim);
+    RECT cap = {dg.left, dg.top - Sc(20, d), dg.right, dg.top - Sc(2, d)};
+    DrawTextW(hdc, L"Your screen — click a zone to jump to it", -1, &cap,
+              DT_LEFT | DT_SINGLELINE);
+
+    HBRUSH screenBrush = CreateSolidBrush(RGB(24, 24, 24));
+    FillRect(hdc, &dg, screenBrush);
+    DeleteObject(screenBrush);
+
+    HPEN pen = CreatePen(PS_SOLID, Sc(1, d), RGB(90, 90, 90));
+    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+    HBRUSH hollow = (HBRUSH)GetStockObject(NULL_BRUSH);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, hollow);
+    Rectangle(hdc, dg.left, dg.top, dg.right, dg.bottom);
+    SelectObject(hdc, oldBrush);
+    SelectObject(hdc, oldPen);
+    DeleteObject(pen);
+
+    HBRUSH set = CreateSolidBrush(RGB(76, 194, 255));
+    HBRUSH unset = CreateSolidBrush(RGB(58, 58, 58));
+    HBRUSH sel = CreateSolidBrush(RGB(255, 190, 80));
+
+    for (int z = 0; z < ZONE_COUNT; z++)
+    {
+        RECT r = ZoneRectInDiagram((Zone)z, dg);
+        int idx = (int)SendMessageW(s->hZoneAction[z], CB_GETCURSEL, 0, 0);
+        bool assigned = (idx > 0);
+        FillRect(hdc, &r, z == s->hoverZone ? sel : (assigned ? set : unset));
+    }
+
+    DeleteObject(set);
+    DeleteObject(unset);
+    DeleteObject(sel);
+
+    if (s->hoverZone >= 0)
+    {
+        SetTextColor(hdc, kClrText);
+        RECT lab = {dg.left, dg.bottom + Sc(6, d), dg.right,
+                    dg.bottom + Sc(26, d)};
+        DrawTextW(hdc, ZoneToString((Zone)s->hoverZone), -1, &lab,
+                  DT_LEFT | DT_SINGLELINE);
+    }
+
+    SelectObject(hdc, old);
+}
 // Fills the zone controls from whichever configuration slot is selected.
 static void DashLoadZones(DashState *s)
 {
@@ -4167,6 +4313,11 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         s->hReset = mk(L"BUTTON", L"Reset to Windhawk settings",
                        BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP, IDC_RESET);
 
+        if (HICON ic = MakeTrayIcon(true))
+        {
+            SendMessageW(hWnd, WM_SETICON, ICON_SMALL, (LPARAM)ic);
+            SendMessageW(hWnd, WM_SETICON, ICON_BIG, (LPARAM)ic);
+        }
         ApplyModernFrame(hWnd);
         DashLoad(hWnd, s);
         DashLayout(hWnd, s);
@@ -4180,6 +4331,50 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         FillRect((HDC)wParam, &rc,
                  s && s->hBg ? s->hBg : (HBRUSH)GetStockObject(BLACK_BRUSH));
         return 1;
+    }
+
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        if (s)
+            DashPaintDiagram(hWnd, s, hdc);
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN:
+    {
+        if (!s || !s->showZones)
+            break;
+        POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        RECT dg = DashDiagramRect(s->dpi);
+        int hit = -1;
+        for (int z = 0; z < ZONE_COUNT; z++)
+        {
+            RECT r = ZoneRectInDiagram((Zone)z, dg);
+            if (PtInRect(&r, pt))
+            {
+                hit = z;
+                break;
+            }
+        }
+        if (uMsg == WM_MOUSEMOVE)
+        {
+            if (hit != s->hoverZone)
+            {
+                s->hoverZone = hit;
+                RECT inv = dg;
+                inv.bottom += Sc(30, s->dpi);
+                InvalidateRect(hWnd, &inv, TRUE);
+            }
+        }
+        else if (hit >= 0)
+        {
+            SetFocus(s->hZoneAction[hit]);
+        }
+        return 0;
     }
 
     case WM_CTLCOLORSTATIC:
@@ -4214,6 +4409,13 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         if (id == IDC_MONITOR && HIWORD(wParam) == CBN_SELCHANGE)
         {
             DashLoadZones(s);
+            InvalidateRect(hWnd, nullptr, TRUE);
+            return 0;
+        }
+        if (id >= IDC_ZONE_ACTION && id < IDC_ZONE_ACTION + ZONE_COUNT &&
+            HIWORD(wParam) == CBN_SELCHANGE)
+        {
+            InvalidateRect(hWnd, nullptr, TRUE);
             return 0;
         }
         if (id == IDC_SAVE)
@@ -4301,14 +4503,28 @@ static DWORD WINAPI DashThread(LPVOID)
     RegisterClassExW(&wc);
 
     DashState state;
-    int w = Sc(680, 96), h = Sc(560, 96);
+
+    UINT dpi = 96;
+    {
+        HMODULE u = GetModuleHandleW(L"user32.dll");
+        using Fn = UINT(WINAPI *)(void);
+        if (auto fn = (Fn)GetProcAddress(u, "GetDpiForSystem"))
+            dpi = fn();
+        if (!dpi)
+            dpi = 96;
+    }
+
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    RECT need = {0, 0, Sc(Lay::ClientW, dpi), Sc(Lay::ClientH, dpi)};
+    AdjustWindowRectEx(&need, style, FALSE, 0);
+    int w = need.right - need.left;
+    int h = need.bottom - need.top;
     int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
     int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
 
-    HWND hWnd = CreateWindowExW(
-        0, kClass, L"Win-X Hot Corners — Settings",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, x, y, w, h,
-        nullptr, nullptr, hInst, &state);
+    HWND hWnd = CreateWindowExW(0, kClass, L"Win-X Hot Corners — Settings",
+                                style, x, y, w, h, nullptr, nullptr, hInst,
+                                &state);
 
     if (!hWnd)
     {

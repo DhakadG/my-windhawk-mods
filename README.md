@@ -23,8 +23,9 @@ contents of `win-x-hotcorners.wh.cpp`, then **Compile** and **Save**.
 
 ## Configure
 
-Open the mod's **Settings** tab in Windhawk. Each monitor entry has eight
-zones — four corners and four edges — and each takes its own action.
+Open the mod's **Settings** tab in Windhawk. Each monitor entry has twelve
+zones — four corners, four edges and the centre of each edge — and each takes
+its own action.
 
 ### Picking a monitor
 
@@ -67,6 +68,9 @@ corner on one display.
 | Edge activation size | 6 px | How thick the edge strips are |
 | Activation delay | 0 ms | Dwell time before firing |
 | Pass-through guard | 80 ms | Stops a zone firing when you merely cross it |
+| Knock to activate | 0 (off) | Require two quick entries before firing |
+| Require a modifier key | None | Zones stay inert unless Ctrl/Alt/Shift/Win is held |
+| Centre zone width | 20% | How much of an edge the centre zone takes |
 | Cooldown between triggers | 300 ms | Minimum gap before the same zone fires again |
 | Disable on fullscreen apps | on | Ignore corners while a game or video is fullscreen |
 | Disable during mouse drag | on | Ignore corners while a mouse button is held |
@@ -79,7 +83,7 @@ corner on one display.
 ## Actions
 
 **Switching** — Task View · Switch to Last Window (Alt+Tab) · Task Switcher
-(Ctrl+Alt+Tab) · Virtual Desktop Next / Previous / New
+(Ctrl+Alt+Tab) · Virtual Desktop Next / Previous / New / Close
 
 **Windows** — Show Desktop · Hide Other Windows · Minimize · Maximize · Snap
 Left · Snap Right · Close Window
@@ -88,7 +92,8 @@ Left · Snap Right · Close Window
 Notification Center · Clipboard History · Screenshot / Snip · Project ·
 Task Manager · Mute Volume
 
-**Power** — Lock Computer · Sleep · Turn Off Monitors · Start Screen Saver
+**Power** — Lock Computer · Lock and Turn Off Monitors · Sleep · Turn Off Monitors ·
+Start Screen Saver · Keep Awake On / Off
 
 **Custom** — Virtual Key Press · Custom Command · Nothing
 

@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         3.5.0
+// @version         3.6.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -307,6 +307,32 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
     OutputDebugString, which takes a system-wide lock, so logging on every
     trigger can stutter other Windhawk mods. Turn on only while diagnosing.
     Errors and startup information are always logged.
+- CenterZonePercent: 20
+  $name: Centre zone width (% of the edge)
+  $description: >-
+    How much of each edge the centre zone occupies, as a percentage. Only
+    has any effect on edges where you have actually assigned a centre action.
+    The rest of the edge stays as the normal edge zone, split either side.
+- KnockWindowMs: 0
+  $name: Knock to activate (ms)
+  $description: >-
+    Require the cursor to enter a zone TWICE in quick succession, like knocking
+    on a door, before anything happens. A single entry does nothing at all.
+    This is the strongest protection against accidental triggers. 0 turns it
+    off; 400 is a comfortable starting point. The two entries must be within
+    this many milliseconds of each other.
+- RequireModifier: 0
+  $name: Require a modifier key
+  $description: >-
+    Only fire while this key is held down. Makes hot corners completely inert
+    the rest of the time, which suits people who work near the screen edges.
+    Combines with everything else - the zone still has to be entered normally.
+  $options:
+  - 0: None - zones always active
+  - 1: Ctrl
+  - 2: Alt
+  - 3: Shift
+  - 4: Win
 - CooldownMs: 300
   $name: Cooldown between triggers (ms)
   $description: >-
@@ -373,6 +399,10 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_VDESK_NEXT: Virtual Desktop - Next
       - ACTION_VDESK_PREV: Virtual Desktop - Previous
       - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - TopLeftArgs: ""
@@ -412,6 +442,10 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_VDESK_NEXT: Virtual Desktop - Next
       - ACTION_VDESK_PREV: Virtual Desktop - Previous
       - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - TopRightArgs: ""
@@ -450,6 +484,10 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_VDESK_NEXT: Virtual Desktop - Next
       - ACTION_VDESK_PREV: Virtual Desktop - Previous
       - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - BottomLeftArgs: ""
@@ -488,6 +526,10 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_VDESK_NEXT: Virtual Desktop - Next
       - ACTION_VDESK_PREV: Virtual Desktop - Previous
       - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - BottomRightArgs: ""
@@ -526,6 +568,10 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_VDESK_NEXT: Virtual Desktop - Next
       - ACTION_VDESK_PREV: Virtual Desktop - Previous
       - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - EdgeTopArgs: ""
@@ -564,6 +610,10 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_VDESK_NEXT: Virtual Desktop - Next
       - ACTION_VDESK_PREV: Virtual Desktop - Previous
       - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - EdgeBottomArgs: ""
@@ -602,6 +652,10 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_VDESK_NEXT: Virtual Desktop - Next
       - ACTION_VDESK_PREV: Virtual Desktop - Previous
       - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - EdgeLeftArgs: ""
@@ -640,10 +694,198 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
       - ACTION_VDESK_NEXT: Virtual Desktop - Next
       - ACTION_VDESK_PREV: Virtual Desktop - Previous
       - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
       - ACTION_SEND_KEYPRESS: Virtual Key Press
       - ACTION_START_PROCESS: Custom Command
     - EdgeRightArgs: ""
       $name: Right Edge Args
+      $description: >-
+        For Virtual Key Press or Custom Command only.
+    - CenterTop: ACTION_NOTHING
+      $name: Top Edge Centre
+      $description: >-
+        The middle of that edge. Easier to hit than a corner on a wide
+        display. Leaving this as Nothing keeps the full-length edge zone
+        exactly as it is today.
+      $options:
+      - ACTION_NOTHING: Nothing
+      - ACTION_SHOW_DESKTOP: Show Desktop
+      - ACTION_TASK_VIEW: Task View (Win+Tab)
+      - ACTION_SCREENSAVER: Start Screen Saver
+      - ACTION_MONITORS_OFF: Turn Off Monitors
+      - ACTION_QUICK_SETTINGS: Quick Settings (Win+A)
+      - ACTION_NOTIFICATION_CENTER: Notification Center (Win+N)
+      - ACTION_START_MENU: Start Menu
+      - ACTION_HIDE_OTHERS: Hide Other Windows (Win+Home)
+      - ACTION_MUTE: Mute Volume
+      - ACTION_TASK_MANAGER: Task Manager
+      - ACTION_LOCK: Lock Computer
+      - ACTION_SLEEP: Sleep
+      - ACTION_SWITCH_LAST: Switch to Last Window (Alt+Tab)
+      - ACTION_TASK_SWITCHER: Task Switcher (Ctrl+Alt+Tab)
+      - ACTION_MINIMIZE: Minimize Active Window (Win+Down)
+      - ACTION_MAXIMIZE: Maximize Active Window (Win+Up)
+      - ACTION_SNAP_LEFT: Snap Window Left (Win+Left)
+      - ACTION_SNAP_RIGHT: Snap Window Right (Win+Right)
+      - ACTION_CLOSE_WINDOW: Close Active Window (Alt+F4)
+      - ACTION_FILE_EXPLORER: File Explorer (Win+E)
+      - ACTION_SETTINGS: Settings (Win+I)
+      - ACTION_SEARCH: Search (Win+S)
+      - ACTION_CLIPBOARD: Clipboard History (Win+V)
+      - ACTION_SCREENSHOT: Screenshot / Snip (Win+Shift+S)
+      - ACTION_PROJECT: Project / Second Screen (Win+P)
+      - ACTION_VDESK_NEXT: Virtual Desktop - Next
+      - ACTION_VDESK_PREV: Virtual Desktop - Previous
+      - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_SEND_KEYPRESS: Virtual Key Press
+      - ACTION_START_PROCESS: Custom Command
+    - CenterTopArgs: ""
+      $name: Top Edge Centre Args
+      $description: >-
+        For Virtual Key Press or Custom Command only.
+    - CenterBottom: ACTION_NOTHING
+      $name: Bottom Edge Centre
+      $description: >-
+        The middle of that edge. Easier to hit than a corner on a wide
+        display. Leaving this as Nothing keeps the full-length edge zone
+        exactly as it is today.
+      $options:
+      - ACTION_NOTHING: Nothing
+      - ACTION_SHOW_DESKTOP: Show Desktop
+      - ACTION_TASK_VIEW: Task View (Win+Tab)
+      - ACTION_SCREENSAVER: Start Screen Saver
+      - ACTION_MONITORS_OFF: Turn Off Monitors
+      - ACTION_QUICK_SETTINGS: Quick Settings (Win+A)
+      - ACTION_NOTIFICATION_CENTER: Notification Center (Win+N)
+      - ACTION_START_MENU: Start Menu
+      - ACTION_HIDE_OTHERS: Hide Other Windows (Win+Home)
+      - ACTION_MUTE: Mute Volume
+      - ACTION_TASK_MANAGER: Task Manager
+      - ACTION_LOCK: Lock Computer
+      - ACTION_SLEEP: Sleep
+      - ACTION_SWITCH_LAST: Switch to Last Window (Alt+Tab)
+      - ACTION_TASK_SWITCHER: Task Switcher (Ctrl+Alt+Tab)
+      - ACTION_MINIMIZE: Minimize Active Window (Win+Down)
+      - ACTION_MAXIMIZE: Maximize Active Window (Win+Up)
+      - ACTION_SNAP_LEFT: Snap Window Left (Win+Left)
+      - ACTION_SNAP_RIGHT: Snap Window Right (Win+Right)
+      - ACTION_CLOSE_WINDOW: Close Active Window (Alt+F4)
+      - ACTION_FILE_EXPLORER: File Explorer (Win+E)
+      - ACTION_SETTINGS: Settings (Win+I)
+      - ACTION_SEARCH: Search (Win+S)
+      - ACTION_CLIPBOARD: Clipboard History (Win+V)
+      - ACTION_SCREENSHOT: Screenshot / Snip (Win+Shift+S)
+      - ACTION_PROJECT: Project / Second Screen (Win+P)
+      - ACTION_VDESK_NEXT: Virtual Desktop - Next
+      - ACTION_VDESK_PREV: Virtual Desktop - Previous
+      - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_SEND_KEYPRESS: Virtual Key Press
+      - ACTION_START_PROCESS: Custom Command
+    - CenterBottomArgs: ""
+      $name: Bottom Edge Centre Args
+      $description: >-
+        For Virtual Key Press or Custom Command only.
+    - CenterLeft: ACTION_NOTHING
+      $name: Left Edge Centre
+      $description: >-
+        The middle of that edge. Easier to hit than a corner on a wide
+        display. Leaving this as Nothing keeps the full-length edge zone
+        exactly as it is today.
+      $options:
+      - ACTION_NOTHING: Nothing
+      - ACTION_SHOW_DESKTOP: Show Desktop
+      - ACTION_TASK_VIEW: Task View (Win+Tab)
+      - ACTION_SCREENSAVER: Start Screen Saver
+      - ACTION_MONITORS_OFF: Turn Off Monitors
+      - ACTION_QUICK_SETTINGS: Quick Settings (Win+A)
+      - ACTION_NOTIFICATION_CENTER: Notification Center (Win+N)
+      - ACTION_START_MENU: Start Menu
+      - ACTION_HIDE_OTHERS: Hide Other Windows (Win+Home)
+      - ACTION_MUTE: Mute Volume
+      - ACTION_TASK_MANAGER: Task Manager
+      - ACTION_LOCK: Lock Computer
+      - ACTION_SLEEP: Sleep
+      - ACTION_SWITCH_LAST: Switch to Last Window (Alt+Tab)
+      - ACTION_TASK_SWITCHER: Task Switcher (Ctrl+Alt+Tab)
+      - ACTION_MINIMIZE: Minimize Active Window (Win+Down)
+      - ACTION_MAXIMIZE: Maximize Active Window (Win+Up)
+      - ACTION_SNAP_LEFT: Snap Window Left (Win+Left)
+      - ACTION_SNAP_RIGHT: Snap Window Right (Win+Right)
+      - ACTION_CLOSE_WINDOW: Close Active Window (Alt+F4)
+      - ACTION_FILE_EXPLORER: File Explorer (Win+E)
+      - ACTION_SETTINGS: Settings (Win+I)
+      - ACTION_SEARCH: Search (Win+S)
+      - ACTION_CLIPBOARD: Clipboard History (Win+V)
+      - ACTION_SCREENSHOT: Screenshot / Snip (Win+Shift+S)
+      - ACTION_PROJECT: Project / Second Screen (Win+P)
+      - ACTION_VDESK_NEXT: Virtual Desktop - Next
+      - ACTION_VDESK_PREV: Virtual Desktop - Previous
+      - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_SEND_KEYPRESS: Virtual Key Press
+      - ACTION_START_PROCESS: Custom Command
+    - CenterLeftArgs: ""
+      $name: Left Edge Centre Args
+      $description: >-
+        For Virtual Key Press or Custom Command only.
+    - CenterRight: ACTION_NOTHING
+      $name: Right Edge Centre
+      $description: >-
+        The middle of that edge. Easier to hit than a corner on a wide
+        display. Leaving this as Nothing keeps the full-length edge zone
+        exactly as it is today.
+      $options:
+      - ACTION_NOTHING: Nothing
+      - ACTION_SHOW_DESKTOP: Show Desktop
+      - ACTION_TASK_VIEW: Task View (Win+Tab)
+      - ACTION_SCREENSAVER: Start Screen Saver
+      - ACTION_MONITORS_OFF: Turn Off Monitors
+      - ACTION_QUICK_SETTINGS: Quick Settings (Win+A)
+      - ACTION_NOTIFICATION_CENTER: Notification Center (Win+N)
+      - ACTION_START_MENU: Start Menu
+      - ACTION_HIDE_OTHERS: Hide Other Windows (Win+Home)
+      - ACTION_MUTE: Mute Volume
+      - ACTION_TASK_MANAGER: Task Manager
+      - ACTION_LOCK: Lock Computer
+      - ACTION_SLEEP: Sleep
+      - ACTION_SWITCH_LAST: Switch to Last Window (Alt+Tab)
+      - ACTION_TASK_SWITCHER: Task Switcher (Ctrl+Alt+Tab)
+      - ACTION_MINIMIZE: Minimize Active Window (Win+Down)
+      - ACTION_MAXIMIZE: Maximize Active Window (Win+Up)
+      - ACTION_SNAP_LEFT: Snap Window Left (Win+Left)
+      - ACTION_SNAP_RIGHT: Snap Window Right (Win+Right)
+      - ACTION_CLOSE_WINDOW: Close Active Window (Alt+F4)
+      - ACTION_FILE_EXPLORER: File Explorer (Win+E)
+      - ACTION_SETTINGS: Settings (Win+I)
+      - ACTION_SEARCH: Search (Win+S)
+      - ACTION_CLIPBOARD: Clipboard History (Win+V)
+      - ACTION_SCREENSHOT: Screenshot / Snip (Win+Shift+S)
+      - ACTION_PROJECT: Project / Second Screen (Win+P)
+      - ACTION_VDESK_NEXT: Virtual Desktop - Next
+      - ACTION_VDESK_PREV: Virtual Desktop - Previous
+      - ACTION_VDESK_NEW: Virtual Desktop - New
+      - ACTION_VDESK_CLOSE: Virtual Desktop - Close
+      - ACTION_LOCK_MONITORS_OFF: Lock and Turn Off Monitors
+      - ACTION_KEEP_AWAKE_ON: Keep Awake - On
+      - ACTION_KEEP_AWAKE_OFF: Keep Awake - Off
+      - ACTION_SEND_KEYPRESS: Virtual Key Press
+      - ACTION_START_PROCESS: Custom Command
+    - CenterRightArgs: ""
+      $name: Right Edge Centre Args
       $description: >-
         For Virtual Key Press or Custom Command only.
   $name: Monitor Corner & Edge Configuration
@@ -706,6 +948,10 @@ enum class CornerAction
     VDesktopNext,
     VDesktopPrev,
     VDesktopNew,
+    VDesktopClose,
+    LockAndMonitorsOff,
+    KeepAwakeOn,
+    KeepAwakeOff,
     SendKeypress,
     StartProcess,
 };
@@ -721,7 +967,11 @@ enum Zone
     ZONE_EDGE_BOTTOM = 5,
     ZONE_EDGE_LEFT = 6,
     ZONE_EDGE_RIGHT = 7,
-    ZONE_COUNT = 8,
+    ZONE_CENTER_TOP = 8,
+    ZONE_CENTER_BOTTOM = 9,
+    ZONE_CENTER_LEFT = 10,
+    ZONE_CENTER_RIGHT = 11,
+    ZONE_COUNT = 12,
 };
 
 struct ZoneConfig
@@ -764,6 +1014,8 @@ struct ZoneSet
     std::vector<HitZone> zones;
     int activationDelay = 0;
     int settleMs = 80;
+    int knockWindowMs = 0;
+    int requireModifier = 0;
     int cooldownMs = 0;
     bool disableDuringDrag = true;
 };
@@ -778,6 +1030,9 @@ static struct
     int edgeSize = 6;
     int activationDelay = 0;
     int settleMs = 80;
+    int knockWindowMs = 0;   // 0 = knock mode off
+    int requireModifier = 0; // 0 none, 1 Ctrl, 2 Alt, 3 Shift, 4 Win
+    int centerZonePercent = 20;
     int cooldownMs = 300;
     bool disableOnFullscreen = true;
     bool disableDuringDrag = true;
@@ -835,7 +1090,10 @@ static constexpr size_t kMaxQueue = 2;
 static int g_activeZone = -1;
 static ULONGLONG g_enterTick = 0;
 static bool g_firedThisEntry = false;
+static bool g_knockSatisfied = true;
 static std::vector<ULONGLONG> g_lastFireTick;
+// When each zone was last left, for knock detection.
+static std::vector<ULONGLONG> g_lastExitTick;
 
 // Cached display topology, for catching layout changes Windows doesn't
 // announce (docking, monitor wake, RDP reconnect).
@@ -1643,6 +1901,36 @@ static void ActionProjectDisplay() { SendKeys({VK_LWIN, 'P'}); }
 static void ActionVDesktopNext() { SendKeys({VK_LWIN, VK_LCONTROL, VK_RIGHT}); }
 static void ActionVDesktopPrev() { SendKeys({VK_LWIN, VK_LCONTROL, VK_LEFT}); }
 static void ActionVDesktopNew() { SendKeys({VK_LWIN, VK_LCONTROL, 'D'}); }
+static void ActionVDesktopClose() { SendKeys({VK_LWIN, VK_LCONTROL, VK_F4}); }
+
+// Lock first, then blank. Blanking first tends to wake the display straight
+// back up, because the switch to the lock screen counts as activity.
+static void ActionLockAndMonitorsOff()
+{
+    LockWorkStation();
+    Sleep(400);  // let the lock screen settle before blanking
+    HWND hTarget = GetForegroundWindow();
+    if (!hTarget)
+        hTarget = GetDesktopWindow();
+    PostMessage(hTarget, WM_SYSCOMMAND, SC_MONITORPOWER, (LPARAM)2);
+}
+
+// SetThreadExecutionState is per-thread and only holds while that thread
+// lives, so these must run on the action worker — which they do, and which
+// stays alive for the whole session. The worker clears the state on exit.
+static void ActionKeepAwakeOn()
+{
+    SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED |
+                            ES_SYSTEM_REQUIRED);
+    Wh_Log(L"Keep awake ON - screensaver, display sleep and system sleep are "
+           L"suppressed until you trigger Keep Awake Off.");
+}
+
+static void ActionKeepAwakeOff()
+{
+    SetThreadExecutionState(ES_CONTINUOUS);
+    Wh_Log(L"Keep awake OFF - normal power behaviour restored.");
+}
 
 static void ActionLock() { LockWorkStation(); }
 
@@ -1780,6 +2068,10 @@ static CornerAction ParseActionType(const std::wstring &raw)
         {L"ACTION_VDESK_NEXT", CornerAction::VDesktopNext},
         {L"ACTION_VDESK_PREV", CornerAction::VDesktopPrev},
         {L"ACTION_VDESK_NEW", CornerAction::VDesktopNew},
+        {L"ACTION_VDESK_CLOSE", CornerAction::VDesktopClose},
+        {L"ACTION_LOCK_MONITORS_OFF", CornerAction::LockAndMonitorsOff},
+        {L"ACTION_KEEP_AWAKE_ON", CornerAction::KeepAwakeOn},
+        {L"ACTION_KEEP_AWAKE_OFF", CornerAction::KeepAwakeOff},
         {L"ACTION_SEND_KEYPRESS", CornerAction::SendKeypress},
         {L"ACTION_START_PROCESS", CornerAction::StartProcess},
     };
@@ -1821,6 +2113,10 @@ static const wchar_t *ActionToString(CornerAction a)
     case CornerAction::VDesktopNext: return L"Virtual Desktop Next";
     case CornerAction::VDesktopPrev: return L"Virtual Desktop Previous";
     case CornerAction::VDesktopNew: return L"Virtual Desktop New";
+    case CornerAction::VDesktopClose: return L"Virtual Desktop Close";
+    case CornerAction::LockAndMonitorsOff: return L"Lock and Turn Off Monitors";
+    case CornerAction::KeepAwakeOn: return L"Keep Awake On";
+    case CornerAction::KeepAwakeOff: return L"Keep Awake Off";
     case CornerAction::SendKeypress: return L"Virtual Key Press";
     case CornerAction::StartProcess: return L"Custom Command";
     }
@@ -1839,6 +2135,10 @@ static const wchar_t *ZoneToString(Zone z)
     case ZONE_EDGE_BOTTOM: return L"Bottom edge";
     case ZONE_EDGE_LEFT: return L"Left edge";
     case ZONE_EDGE_RIGHT: return L"Right edge";
+    case ZONE_CENTER_TOP: return L"Top edge centre";
+    case ZONE_CENTER_BOTTOM: return L"Bottom edge centre";
+    case ZONE_CENTER_LEFT: return L"Left edge centre";
+    case ZONE_CENTER_RIGHT: return L"Right edge centre";
     default: return L"None";
     }
 }
@@ -1878,6 +2178,10 @@ static std::function<void()> MakeExecutor(CornerAction action,
     case CornerAction::VDesktopNext: return ActionVDesktopNext;
     case CornerAction::VDesktopPrev: return ActionVDesktopPrev;
     case CornerAction::VDesktopNew: return ActionVDesktopNew;
+    case CornerAction::VDesktopClose: return ActionVDesktopClose;
+    case CornerAction::LockAndMonitorsOff: return ActionLockAndMonitorsOff;
+    case CornerAction::KeepAwakeOn: return ActionKeepAwakeOn;
+    case CornerAction::KeepAwakeOff: return ActionKeepAwakeOff;
     case CornerAction::SendKeypress:
     {
         auto combos = ParseKeyCombo(args);
@@ -1967,6 +2271,8 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
 
     set->activationDelay = g_settings.activationDelay;
     set->settleMs = g_settings.settleMs;
+    set->knockWindowMs = g_settings.knockWindowMs;
+    set->requireModifier = g_settings.requireModifier;
     set->cooldownMs = g_settings.cooldownMs;
     set->disableDuringDrag = g_settings.disableDuringDrag;
 
@@ -1989,6 +2295,7 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
         if (cs < 1)
             cs = 1;
         int es = esCfg > cs ? cs : esCfg;
+        LONG centrePct = g_settings.centerZonePercent;
 
         if (cs != csCfg || es != esCfg)
         {
@@ -2016,20 +2323,55 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
         add(ZONE_BOTTOM_RIGHT,
             {r.right - cs, r.bottom - cs, r.right, r.bottom});
 
-        // Edges — the side strip with the corner zones carved out
+        // Edges — the side strip with the corner zones carved out.
+        //
+        // When a centre zone is configured, the strip is split into two
+        // segments with the centre between them, so no two zones ever
+        // overlap. When it is not, the strip stays whole — existing
+        // configurations are therefore completely unaffected.
+        auto addEdge = [&](Zone edge, Zone centre, bool horizontal, LONG lo,
+                           LONG hi, LONG near, LONG far)
+        {
+            auto rectFor = [&](LONG a, LONG b) -> RECT
+            {
+                return horizontal ? RECT{a, near, b, far}
+                                  : RECT{near, a, far, b};
+            };
+
+            const ZoneConfig *centreCfg = ResolveZone(mon, centre);
+            LONG span = hi - lo;
+            LONG width = span * centrePct / 100;
+
+            if (!centreCfg || width < 1 || width >= span)
+            {
+                add(edge, rectFor(lo, hi));
+                return;
+            }
+
+            LONG mid = lo + span / 2;
+            LONG cLo = mid - width / 2;
+            LONG cHi = cLo + width;
+
+            if (cLo > lo)
+                add(edge, rectFor(lo, cLo));
+            add(centre, rectFor(cLo, cHi));
+            if (cHi < hi)
+                add(edge, rectFor(cHi, hi));
+        };
+
         if (r.left + cs < r.right - cs)
         {
-            add(ZONE_EDGE_TOP,
-                {r.left + cs, r.top, r.right - cs, r.top + es});
-            add(ZONE_EDGE_BOTTOM,
-                {r.left + cs, r.bottom - es, r.right - cs, r.bottom});
+            addEdge(ZONE_EDGE_TOP, ZONE_CENTER_TOP, true, r.left + cs,
+                    r.right - cs, r.top, r.top + es);
+            addEdge(ZONE_EDGE_BOTTOM, ZONE_CENTER_BOTTOM, true, r.left + cs,
+                    r.right - cs, r.bottom - es, r.bottom);
         }
         if (r.top + cs < r.bottom - cs)
         {
-            add(ZONE_EDGE_LEFT,
-                {r.left, r.top + cs, r.left + es, r.bottom - cs});
-            add(ZONE_EDGE_RIGHT,
-                {r.right - es, r.top + cs, r.right, r.bottom - cs});
+            addEdge(ZONE_EDGE_LEFT, ZONE_CENTER_LEFT, false, r.top + cs,
+                    r.bottom - cs, r.left, r.left + es);
+            addEdge(ZONE_EDGE_RIGHT, ZONE_CENTER_RIGHT, false, r.top + cs,
+                    r.bottom - cs, r.right - es, r.right);
         }
     }
 
@@ -2065,6 +2407,8 @@ static void RebuildZones()
     g_firedThisEntry = false;
     g_lastAnyFireTick = 0;
     g_lastFireTick.assign(set->zones.size(), 0);
+    g_lastExitTick.assign(set->zones.size(), 0);
+    g_knockSatisfied = true;
 
     g_topoCount = GetSystemMetrics(SM_CMONITORS);
     g_topoVirtual = {GetSystemMetrics(SM_XVIRTUALSCREEN),
@@ -2106,7 +2450,12 @@ static DWORD WINAPI ActionWorkerThread(LPVOID)
     {
         DWORD r = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
         if (r == WAIT_OBJECT_0 || r == WAIT_FAILED)
+        {
+            // Release any keep-awake request this thread was holding, so
+            // unloading the mod never leaves the machine unable to sleep.
+            SetThreadExecutionState(ES_CONTINUOUS);
             break;
+        }
 
         for (;;)
         {
@@ -2172,6 +2521,20 @@ static DWORD WINAPI ActionWorkerThread(LPVOID)
 // Detection
 // =====================================================================
 
+// 0 none, 1 Ctrl, 2 Alt, 3 Shift, 4 Win
+static bool RequiredModifierHeld(int which)
+{
+    switch (which)
+    {
+    case 1: return (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    case 2: return (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    case 3: return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    case 4: return (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+                   (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+    default: return true;  // no modifier required
+    }
+}
+
 static bool AnyMouseButtonDown()
 {
     return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) ||
@@ -2213,12 +2576,32 @@ static void DetectTick()
     // once on entry and re-arms only after the cursor leaves it.
     if (idx != g_activeZone)
     {
+        // Record when we left the previous zone, so a quick return to it can
+        // be recognised as the second half of a knock.
+        if (g_activeZone >= 0 && g_activeZone < (int)g_lastExitTick.size())
+            g_lastExitTick[g_activeZone] = now;
+
         g_activeZone = idx;
         g_enterTick = now;
         g_firedThisEntry = false;
+
+        // Knock mode: a single entry never fires. The zone only arms when it
+        // is re-entered soon after being left.
+        g_knockSatisfied =
+            zones->knockWindowMs <= 0 || idx < 0 ||
+            (idx < (int)g_lastExitTick.size() && g_lastExitTick[idx] != 0 &&
+             (now - g_lastExitTick[idx]) <= (ULONGLONG)zones->knockWindowMs);
     }
 
     if (idx < 0 || g_firedThisEntry)
+        return;
+
+    if (!g_knockSatisfied)
+        return;
+
+    // Checked every tick rather than on entry, so the zone becomes live the
+    // moment the modifier goes down while the cursor is already parked.
+    if (!RequiredModifierHeld(zones->requireModifier))
         return;
 
     // Suppress for the whole visit, not just this tick — otherwise releasing
@@ -2382,6 +2765,20 @@ static void LoadSettings()
     if (g_settings.settleMs < 0)
         g_settings.settleMs = 0;
 
+    g_settings.knockWindowMs = Wh_GetIntSetting(L"KnockWindowMs");
+    if (g_settings.knockWindowMs < 0)
+        g_settings.knockWindowMs = 0;
+
+    g_settings.requireModifier = Wh_GetIntSetting(L"RequireModifier");
+    if (g_settings.requireModifier < 0 || g_settings.requireModifier > 4)
+        g_settings.requireModifier = 0;
+
+    g_settings.centerZonePercent = Wh_GetIntSetting(L"CenterZonePercent");
+    if (g_settings.centerZonePercent < 1)
+        g_settings.centerZonePercent = 1;
+    if (g_settings.centerZonePercent > 90)
+        g_settings.centerZonePercent = 90;
+
     g_settings.cooldownMs = Wh_GetIntSetting(L"CooldownMs");
     if (g_settings.cooldownMs < 0)
         g_settings.cooldownMs = 0;
@@ -2420,6 +2817,7 @@ static void LoadSettings()
     static const wchar_t *zoneKeys[ZONE_COUNT] = {
         L"TopLeft", L"TopRight",   L"BottomLeft", L"BottomRight",
         L"EdgeTop", L"EdgeBottom", L"EdgeLeft",   L"EdgeRight",
+        L"CenterTop", L"CenterBottom", L"CenterLeft", L"CenterRight",
     };
 
     for (int i = 0; i < 16; i++)

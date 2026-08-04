@@ -2,12 +2,12 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         3.9.2
+// @version         4.0.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
 // @include         windhawk.exe
-// @compilerOptions -lcomctl32 -lgdi32 -lpowrprof -lshell32 -luser32
+// @compilerOptions -ladvapi32 -lcomctl32 -lgdi32 -lpowrprof -lshell32 -luser32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -1036,11 +1036,25 @@ enum Zone
     ZONE_COUNT = 12,
 };
 
+// Per-zone overrides. Every numeric field uses -1 for "inherit the global
+// value", so an untouched zone behaves exactly as it did before per-zone
+// settings existed and old configurations keep working unchanged.
+struct ZoneTuning
+{
+    int size = -1;      // corner square / edge strip thickness, px
+    int delay = -1;     // activation delay, ms
+    int settle = -1;    // pass-through guard, ms
+    int knock = -1;     // knock window, ms
+    int cooldown = -1;  // per-zone cooldown, ms
+    int modifier = -1;  // 0 none, 1 Ctrl, 2 Alt, 3 Shift, 4 Win
+};
+
 struct ZoneConfig
 {
     CornerAction action = CornerAction::Nothing;
     std::wstring args;
     std::function<void()> executor;
+    ZoneTuning tuning;
 };
 
 struct MonitorZoneConfig
@@ -1067,7 +1081,18 @@ struct HitZone
 {
     RECT rect;
     std::function<void()> exec;
-    std::wstring label; // "Dell U2720Q TopLeft -> TaskView", for logging
+    std::wstring label;  // "Dell U2720Q Top-left corner -> Task View"
+
+    // Resolved once at build time - zone override if set, otherwise the
+    // global. The detection loop therefore never has to know that per-zone
+    // settings exist.
+    int delay = 0;
+    int settle = 80;
+    int knock = 0;
+    int cooldown = 300;
+    int modifier = 0;
+    int size = 6;
+    Zone zone = ZONE_TOP_LEFT;
 };
 
 // The detection loop reads nothing but this snapshot, so it never touches
@@ -2489,37 +2514,49 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
     for (const auto &mon : g_monitors)
     {
         // rcWork is the monitor minus the taskbar and any docked appbars, so
-        // using it is a complete fix for zones colliding with the taskbar —
-        // including the taskbar's own "peek at desktop" strip — without
-        // having to locate Shell_TrayWnd or subtract rectangles by hand.
-        // It also tracks the taskbar being moved, resized or auto-hidden,
-        // because the work area is recomputed on the same events that already
-        // trigger a zone rebuild.
+        // using it is a complete fix for zones colliding with the taskbar,
+        // including the taskbar's own "peek at desktop" strip.
         const RECT &r =
             g_settings.avoidTaskbar ? mon.rcWork : mon.rcMonitor;
+        LONG centrePct = g_settings.centerZonePercent;
 
-        // Clamp per monitor so the eight zones are provably disjoint and the
-        // hit test's first-match-wins can never hide one behind another:
-        //   - a corner bigger than half the screen would overlap its opposite
-        //   - an edge strip thicker than the corner box would overlap the
-        //     perpendicular edge (EdgeTop vs EdgeLeft), and only whichever
-        //     was added first would ever fire
         int span = (r.right - r.left) < (r.bottom - r.top)
                        ? (r.right - r.left)
                        : (r.bottom - r.top);
-        int cs = csCfg;
-        if (cs > span / 2)
-            cs = span / 2;
-        if (cs < 1)
-            cs = 1;
-        int es = esCfg > cs ? cs : esCfg;
-        LONG centrePct = g_settings.centerZonePercent;
 
-        if (cs != csCfg || es != esCfg)
+        // Each zone may set its own size; -1 means inherit. Corners clamp to
+        // half the screen, then each edge clamps to the smaller of the two
+        // corners it runs between - that single rule is what keeps all twelve
+        // zones disjoint no matter what sizes are chosen.
+        auto zoneCfg = [&](Zone z) { return ResolveZone(mon, z); };
+        auto sizeOf = [&](Zone z, int fallback) -> int
         {
-            Wh_Log(L"  [%s] sizes clamped: corner %d->%d, edge %d->%d",
-                   mon.id.c_str(), csCfg, cs, esCfg, es);
-        }
+            const ZoneConfig *zc = zoneCfg(z);
+            int v = (zc && zc->tuning.size > 0) ? zc->tuning.size : fallback;
+            if (v < 1)
+                v = 1;
+            if (v > span / 2)
+                v = span / 2;
+            if (v < 1)
+                v = 1;
+            return v;
+        };
+
+        int csTL = sizeOf(ZONE_TOP_LEFT, csCfg);
+        int csTR = sizeOf(ZONE_TOP_RIGHT, csCfg);
+        int csBL = sizeOf(ZONE_BOTTOM_LEFT, csCfg);
+        int csBR = sizeOf(ZONE_BOTTOM_RIGHT, csCfg);
+
+        auto edgeThickness = [&](Zone z, int a, int b) -> int
+        {
+            int v = sizeOf(z, esCfg);
+            int cap = a < b ? a : b;
+            return v > cap ? cap : v;
+        };
+        int esTop = edgeThickness(ZONE_EDGE_TOP, csTL, csTR);
+        int esBot = edgeThickness(ZONE_EDGE_BOTTOM, csBL, csBR);
+        int esLeft = edgeThickness(ZONE_EDGE_LEFT, csTL, csBL);
+        int esRight = edgeThickness(ZONE_EDGE_RIGHT, csTR, csBR);
 
         auto add = [&](Zone z, RECT rect)
         {
@@ -2528,15 +2565,14 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
                 return;
             HitZone hz;
             hz.rect = rect;
+            hz.zone = z;
 
-            // Alternating actions carry their flip state inside the executor.
-            // Copying the shared config executor would make every zone that
-            // resolves to it — e.g. the same corner on two monitors under a
-            // "*" configuration — share one flag and alternate against each
-            // other. Build a fresh executor so each zone alternates alone.
             if (zc->action == CornerAction::AlternateKeypress ||
                 zc->action == CornerAction::AlternateCommand)
             {
+                // Alternating actions keep their flip state inside the
+                // executor, so each zone needs its own rather than a shared
+                // copy from the configuration.
                 hz.exec = MakeExecutor(zc->action, zc->args);
                 if (!hz.exec)
                     return;
@@ -2545,27 +2581,28 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
             {
                 hz.exec = zc->executor;
             }
+
+            const ZoneTuning &tn = zc->tuning;
+            hz.delay = tn.delay >= 0 ? tn.delay : g_settings.activationDelay;
+            hz.settle = tn.settle >= 0 ? tn.settle : g_settings.settleMs;
+            hz.knock = tn.knock >= 0 ? tn.knock : g_settings.knockWindowMs;
+            hz.cooldown = tn.cooldown >= 0 ? tn.cooldown : g_settings.cooldownMs;
+            hz.modifier =
+                tn.modifier >= 0 ? tn.modifier : g_settings.requireModifier;
+
             hz.label = mon.id + L" " + ZoneToString(z) + L" -> " +
                        ActionToString(zc->action);
             set->zones.push_back(std::move(hz));
         };
 
-        // Corners
-        add(ZONE_TOP_LEFT, {r.left, r.top, r.left + cs, r.top + cs});
-        add(ZONE_TOP_RIGHT, {r.right - cs, r.top, r.right, r.top + cs});
-        add(ZONE_BOTTOM_LEFT, {r.left, r.bottom - cs, r.left + cs, r.bottom});
+        add(ZONE_TOP_LEFT, {r.left, r.top, r.left + csTL, r.top + csTL});
+        add(ZONE_TOP_RIGHT, {r.right - csTR, r.top, r.right, r.top + csTR});
+        add(ZONE_BOTTOM_LEFT, {r.left, r.bottom - csBL, r.left + csBL, r.bottom});
         add(ZONE_BOTTOM_RIGHT,
-            {r.right - cs, r.bottom - cs, r.right, r.bottom});
+            {r.right - csBR, r.bottom - csBR, r.right, r.bottom});
 
-        // Edges — the side strip with the corner zones carved out.
-        //
-        // When a centre zone is configured, the strip is split into two
-        // segments with the centre between them, so no two zones ever
-        // overlap. When it is not, the strip stays whole — existing
-        // configurations are therefore completely unaffected.
-        // NB: do not name these "near"/"far" — windef.h still #defines both as
-        // empty macros from the 16-bit memory-model days, so the parameters
-        // vanish and the braced initialisers below fail to parse.
+        // Edges run between the two corners they touch, split around a centre
+        // zone when one is configured.
         auto addEdge = [&](Zone edge, Zone centre, bool horizontal, LONG lo,
                            LONG hi, LONG nearSide, LONG farSide)
         {
@@ -2576,16 +2613,17 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
             };
 
             const ZoneConfig *centreCfg = ResolveZone(mon, centre);
-            LONG span = hi - lo;
-            LONG width = span * centrePct / 100;
+            LONG sp = hi - lo;
+            LONG width = sp * centrePct / 100;
 
-            if (!centreCfg || width < 1 || width >= span)
+            if (!centreCfg || width < 1 || width >= sp || sp <= 0)
             {
-                add(edge, rectFor(lo, hi));
+                if (sp > 0)
+                    add(edge, rectFor(lo, hi));
                 return;
             }
 
-            LONG mid = lo + span / 2;
+            LONG mid = lo + sp / 2;
             LONG cLo = mid - width / 2;
             LONG cHi = cLo + width;
 
@@ -2596,22 +2634,15 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
                 add(edge, rectFor(cHi, hi));
         };
 
-        if (r.left + cs < r.right - cs)
-        {
-            addEdge(ZONE_EDGE_TOP, ZONE_CENTER_TOP, true, r.left + cs,
-                    r.right - cs, r.top, r.top + es);
-            addEdge(ZONE_EDGE_BOTTOM, ZONE_CENTER_BOTTOM, true, r.left + cs,
-                    r.right - cs, r.bottom - es, r.bottom);
-        }
-        if (r.top + cs < r.bottom - cs)
-        {
-            addEdge(ZONE_EDGE_LEFT, ZONE_CENTER_LEFT, false, r.top + cs,
-                    r.bottom - cs, r.left, r.left + es);
-            addEdge(ZONE_EDGE_RIGHT, ZONE_CENTER_RIGHT, false, r.top + cs,
-                    r.bottom - cs, r.right - es, r.right);
-        }
+        addEdge(ZONE_EDGE_TOP, ZONE_CENTER_TOP, true, r.left + csTL,
+                r.right - csTR, r.top, r.top + esTop);
+        addEdge(ZONE_EDGE_BOTTOM, ZONE_CENTER_BOTTOM, true, r.left + csBL,
+                r.right - csBR, r.bottom - esBot, r.bottom);
+        addEdge(ZONE_EDGE_LEFT, ZONE_CENTER_LEFT, false, r.top + csTL,
+                r.bottom - csBL, r.left, r.left + esLeft);
+        addEdge(ZONE_EDGE_RIGHT, ZONE_CENTER_RIGHT, false, r.top + csTR,
+                r.bottom - csBR, r.right - esRight, r.right);
     }
-
     LeaveCriticalSection(&g_settingsLock);
 
     if (set->zones.empty())
@@ -2832,10 +2863,11 @@ static void DetectTick()
 
         // Knock mode: a single entry never fires. The zone only arms when it
         // is re-entered soon after being left.
+        int knockMs = (idx >= 0) ? zones->zones[idx].knock : 0;
         g_knockSatisfied =
-            zones->knockWindowMs <= 0 || idx < 0 ||
+            knockMs <= 0 || idx < 0 ||
             (idx < (int)g_lastExitTick.size() && g_lastExitTick[idx] != 0 &&
-             (now - g_lastExitTick[idx]) <= (ULONGLONG)zones->knockWindowMs);
+             (now - g_lastExitTick[idx]) <= (ULONGLONG)knockMs);
     }
 
     if (idx < 0 || g_firedThisEntry)
@@ -2846,11 +2878,13 @@ static void DetectTick()
 
     // Checked every tick rather than on entry, so the zone becomes live the
     // moment the modifier goes down while the cursor is already parked.
-    if (!RequiredModifierHeld(zones->requireModifier))
+    if (!RequiredModifierHeld(zones->zones[idx].modifier))
         return;
 
     // Suppress for the whole visit, not just this tick — otherwise releasing
     // a drag inside a corner would immediately trigger it.
+    const HitZone &hz = zones->zones[idx];
+
     if (zones->disableDuringDrag && AnyMouseButtonDown())
     {
         g_firedThisEntry = true;
@@ -2863,15 +2897,14 @@ static void DetectTick()
     // and instantly re-closes, looking exactly like nothing happened.
     // Requiring the cursor to settle means a pass-through never fires; only
     // the zone you actually stop in does.
-    int dwell = zones->activationDelay > zones->settleMs ? zones->activationDelay
-                                                         : zones->settleMs;
+    int dwell = hz.delay > hz.settle ? hz.delay : hz.settle;
     if (dwell > 0 && (now - g_enterTick) < (ULONGLONG)dwell)
         return;
 
-    if (zones->cooldownMs > 0 && idx < (int)g_lastFireTick.size())
+    if (hz.cooldown > 0 && idx < (int)g_lastFireTick.size())
     {
         ULONGLONG last = g_lastFireTick[idx];
-        if (last != 0 && (now - last) < (ULONGLONG)zones->cooldownMs)
+        if (last != 0 && (now - last) < (ULONGLONG)hz.cooldown)
         {
             g_firedThisEntry = true;
             return;
@@ -3402,6 +3435,12 @@ static bool ApplyDashboardZones()
             cfg.zones[z].action = act;
             cfg.zones[z].args = g;
             cfg.zones[z].executor = MakeExecutor(act, g);
+            cfg.zones[z].tuning.size = Wh_GetIntValue(GuiKey(i, z, L"sz").c_str(), -1);
+            cfg.zones[z].tuning.delay = Wh_GetIntValue(GuiKey(i, z, L"dl").c_str(), -1);
+            cfg.zones[z].tuning.settle = Wh_GetIntValue(GuiKey(i, z, L"gd").c_str(), -1);
+            cfg.zones[z].tuning.knock = Wh_GetIntValue(GuiKey(i, z, L"kn").c_str(), -1);
+            cfg.zones[z].tuning.cooldown = Wh_GetIntValue(GuiKey(i, z, L"cd").c_str(), -1);
+            cfg.zones[z].tuning.modifier = Wh_GetIntValue(GuiKey(i, z, L"md").c_str(), -1);
             if (act != CornerAction::Nothing)
                 any = true;
         }
@@ -3429,6 +3468,8 @@ static void ClearDashboardConfig()
         {
             Wh_SetStringValue(GuiKey(i, z, L"a").c_str(), L"");
             Wh_SetStringValue(GuiKey(i, z, L"g").c_str(), L"");
+            for (const wchar_t *k : {L"sz", L"dl", L"gd", L"kn", L"cd", L"md"})
+                Wh_SetIntValue(GuiKey(i, z, k).c_str(), -1);
         }
     }
 }
@@ -3665,9 +3706,51 @@ static void HandleTrayCommand(UINT id)
 static HANDLE g_hDashThread = nullptr;
 static HWND g_hDashWnd = nullptr;
 
-static constexpr COLORREF kClrBg = RGB(32, 32, 32);
-static constexpr COLORREF kClrText = RGB(255, 255, 255);
-static constexpr COLORREF kClrDim = RGB(190, 190, 190);
+// The dashboard followed the system theme in neither direction before: it was
+// hard-coded dark, so on a light desktop the text was near-invisible. The
+// palette is now built from the user's actual preference and rebuilt when they
+// change it.
+struct Palette
+{
+    COLORREF bg, panel, text, dim, field, fieldText, border, accent, accentText;
+};
+static Palette g_pal;
+static bool g_lightTheme = false;
+
+static bool SystemUsesLightTheme()
+{
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\"
+                      L"Personalize",
+                      0, KEY_QUERY_VALUE, &k) != ERROR_SUCCESS)
+        return false;
+    DWORD v = 0, cb = sizeof(v), type = 0;
+    bool light = false;
+    if (RegQueryValueExW(k, L"AppsUseLightTheme", nullptr, &type, (LPBYTE)&v,
+                         &cb) == ERROR_SUCCESS &&
+        type == REG_DWORD)
+        light = (v != 0);
+    RegCloseKey(k);
+    return light;
+}
+
+static void BuildPalette()
+{
+    g_lightTheme = SystemUsesLightTheme();
+    if (g_lightTheme)
+    {
+        g_pal = {RGB(243, 243, 243), RGB(251, 251, 251), RGB(26, 26, 26),
+                 RGB(95, 95, 95),    RGB(255, 255, 255), RGB(26, 26, 26),
+                 RGB(214, 214, 214), RGB(0, 95, 184),    RGB(255, 255, 255)};
+    }
+    else
+    {
+        g_pal = {RGB(32, 32, 32),    RGB(43, 43, 43),   RGB(255, 255, 255),
+                 RGB(170, 170, 170), RGB(45, 45, 45),   RGB(255, 255, 255),
+                 RGB(70, 70, 70),    RGB(76, 194, 255), RGB(0, 0, 0)};
+    }
+}
 
 enum DashId
 {
@@ -3679,6 +3762,19 @@ enum DashId
     IDC_RESET,
     IDC_ZONE_ACTION = 1100,           // + zone index
     IDC_ZONE_ARGS = 1200,             // + zone index
+    IDC_HDR_ZONE = 1250,
+    IDC_HDR_ACTION,
+    IDC_HDR_ARGS,
+    IDC_TZ_TITLE,
+    IDC_TZ_HINT,
+    IDC_TZ_FIRST = 1260,   // six per-zone override fields
+    IDC_TZ_SIZE = IDC_TZ_FIRST,
+    IDC_TZ_DELAY,
+    IDC_TZ_SETTLE,
+    IDC_TZ_KNOCK,
+    IDC_TZ_COOLDOWN,
+    IDC_TZ_MODIFIER,
+    IDC_TZ_LAST,
     IDC_OPT_FIRST = 1300,
     IDC_CORNER = IDC_OPT_FIRST,
     IDC_EDGE,
@@ -3703,8 +3799,12 @@ struct DashState
     UINT dpi = 96;
     HFONT hFont = nullptr;
     HBRUSH hBg = nullptr;
+    HBRUSH hField = nullptr;
+    HBRUSH hPanel = nullptr;
     bool showZones = true;
     int hoverZone = -1;   // zone highlighted in the preview
+    int selZone = 0;      // zone whose per-zone settings are being edited
+    ZoneTuning tuning[ZONE_COUNT];
     int cfgIndex = 0;   // which slot in the value store we are editing
 
     HWND hMonitor = nullptr;
@@ -3713,6 +3813,11 @@ struct DashState
     HWND hZoneArgs[ZONE_COUNT] = {};
     HWND hOpt[IDC_OPT_LAST - IDC_OPT_FIRST] = {};
     HWND hOptLabel[IDC_OPT_LAST - IDC_OPT_FIRST] = {};
+    HWND hHdrZone = nullptr, hHdrAction = nullptr, hHdrArgs = nullptr;
+    HWND hTzTitle = nullptr, hTzHint = nullptr;
+    HWND hTz[IDC_TZ_LAST - IDC_TZ_FIRST] = {};
+    HWND hTzLabel[IDC_TZ_LAST - IDC_TZ_FIRST] = {};
+    HWND hTip = nullptr;
     HWND hPageZones = nullptr, hPageOptions = nullptr;
     HWND hSave = nullptr, hCancel = nullptr, hReset = nullptr;
 };
@@ -3737,13 +3842,18 @@ constexpr int ArgW = 176;
 constexpr int OptLblW = 200;
 constexpr int OptCtlW = 190;
 constexpr int DiagW = 250;
-constexpr int DiagH = 186;
+constexpr int DiagH = 150;
+constexpr int HdrH = 22;      // column-header row
+constexpr int TzRowH = 26;    // per-zone override row
+constexpr int TzPanelH = 14 + 20 + 20 + 6 * TzRowH;
 
 constexpr int LeftBlockW = Pad + LblW + Gap + CmbW + Gap + ArgW;   // 546
 constexpr int ClientW = LeftBlockW + Gap + DiagW + Pad;            // 820
 
 // Zones page: tabs, monitor combo, twelve rows.
-constexpr int ZonesH = Pad + TabH + Gap + CtlH + Gap + ZONE_COUNT * RowH;
+constexpr int ZonesLeftH = Pad + TabH + Gap + CtlH + Gap + HdrH + ZONE_COUNT * RowH;
+constexpr int ZonesRightH = Pad + TabH + Gap + CtlH + Gap + DiagH + TzPanelH;
+constexpr int ZonesH = ZonesLeftH > ZonesRightH ? ZonesLeftH : ZonesRightH;
 // Options page: ten labelled controls, five checkboxes.
 constexpr int OptionsH = Pad + TabH + Gap + 10 * RowH + 5 * CheckH;
 
@@ -3765,13 +3875,18 @@ static RECT DashDiagramRect(UINT dpi)
 // Proportions inside the preview, mirroring how the real zones are built:
 // corners in the four corners, edges along the sides with the corners carved
 // out, and a centre block in the middle of each edge.
-static RECT ZoneRectInDiagram(Zone z, const RECT &d)
+// Proportions inside the preview, mirroring how the real zones are built.
+// The edges are split around the centre blocks rather than drawn through
+// them - previously they overlapped, so hovering a centre highlighted the
+// whole edge and the centre punched a hole in it.
+static RECT ZoneRectInDiagram(Zone z, const RECT &d, bool secondHalf)
 {
     int w = d.right - d.left, h = d.bottom - d.top;
     int c = (w < h ? w : h) / 6;         // corner block
     int t = c / 2;                       // edge thickness
-    int cx0 = d.left + w / 2 - w / 8, cx1 = d.left + w / 2 + w / 8;
-    int cy0 = d.top + h / 2 - h / 8, cy1 = d.top + h / 2 + h / 8;
+    int cw = w / 5, ch = h / 5;          // centre block extent
+    int cx0 = d.left + w / 2 - cw / 2, cx1 = cx0 + cw;
+    int cy0 = d.top + h / 2 - ch / 2, cy1 = cy0 + ch;
 
     switch (z)
     {
@@ -3779,16 +3894,34 @@ static RECT ZoneRectInDiagram(Zone z, const RECT &d)
     case ZONE_TOP_RIGHT:     return {d.right - c, d.top, d.right, d.top + c};
     case ZONE_BOTTOM_LEFT:   return {d.left, d.bottom - c, d.left + c, d.bottom};
     case ZONE_BOTTOM_RIGHT:  return {d.right - c, d.bottom - c, d.right, d.bottom};
-    case ZONE_EDGE_TOP:      return {d.left + c, d.top, d.right - c, d.top + t};
-    case ZONE_EDGE_BOTTOM:   return {d.left + c, d.bottom - t, d.right - c, d.bottom};
-    case ZONE_EDGE_LEFT:     return {d.left, d.top + c, d.left + t, d.bottom - c};
-    case ZONE_EDGE_RIGHT:    return {d.right - t, d.top + c, d.right, d.bottom - c};
+
+    case ZONE_EDGE_TOP:
+        return secondHalf ? RECT{cx1, d.top, d.right - c, d.top + t}
+                          : RECT{d.left + c, d.top, cx0, d.top + t};
+    case ZONE_EDGE_BOTTOM:
+        return secondHalf ? RECT{cx1, d.bottom - t, d.right - c, d.bottom}
+                          : RECT{d.left + c, d.bottom - t, cx0, d.bottom};
+    case ZONE_EDGE_LEFT:
+        return secondHalf ? RECT{d.left, cy1, d.left + t, d.bottom - c}
+                          : RECT{d.left, d.top + c, d.left + t, cy0};
+    case ZONE_EDGE_RIGHT:
+        return secondHalf ? RECT{d.right - t, cy1, d.right, d.bottom - c}
+                          : RECT{d.right - t, d.top + c, d.right, cy0};
+
     case ZONE_CENTER_TOP:    return {cx0, d.top, cx1, d.top + t};
     case ZONE_CENTER_BOTTOM: return {cx0, d.bottom - t, cx1, d.bottom};
     case ZONE_CENTER_LEFT:   return {d.left, cy0, d.left + t, cy1};
     case ZONE_CENTER_RIGHT:  return {d.right - t, cy0, d.right, cy1};
     default:                 return {0, 0, 0, 0};
     }
+}
+
+// An edge occupies two rectangles once a centre is carved out of it, so both
+// have to be drawn and both have to be hit-tested.
+static bool ZoneHasTwoParts(Zone z)
+{
+    return z == ZONE_EDGE_TOP || z == ZONE_EDGE_BOTTOM || z == ZONE_EDGE_LEFT ||
+           z == ZONE_EDGE_RIGHT;
 }
 
 static void ThemeControl(HWND h, const wchar_t *theme)
@@ -3824,7 +3957,7 @@ static void ApplyModernFrame(HWND hWnd)
     auto fn = reinterpret_cast<Fn>(GetProcAddress(dwm, "DwmSetWindowAttribute"));
     if (fn)
     {
-        BOOL dark = TRUE;
+        BOOL dark = g_lightTheme ? FALSE : TRUE;
         fn(hWnd, 20, &dark, sizeof(dark));   // DWMWA_USE_IMMERSIVE_DARK_MODE
         int backdrop = 2;                    // DWMSBT_MAINWINDOW (Mica)
         fn(hWnd, 38, &backdrop, sizeof(backdrop));
@@ -3856,28 +3989,59 @@ static const wchar_t *kActionIds[] = {
 };
 static constexpr int kActionCount = ARRAYSIZE(kActionIds);
 
+// Per-zone override fields. Blank means "inherit the global value", which is
+// why every one of these can be left empty.
+struct TzDef
+{
+    int id;
+    const wchar_t *label;
+    const wchar_t *tip;
+};
+static const TzDef kTz[] = {
+    {IDC_TZ_SIZE, L"Size (px)",
+     L"How big this corner square or edge strip is, in pixels. Leave blank to "
+     L"use the global corner/edge size."},
+    {IDC_TZ_DELAY, L"Delay (ms)",
+     L"How long the cursor must sit in this zone before it fires. 0 is "
+     L"immediate. Blank inherits the global activation delay."},
+    {IDC_TZ_SETTLE, L"Guard (ms)",
+     L"Stops this zone firing when you merely pass through it on the way "
+     L"somewhere else. Blank inherits the global pass-through guard."},
+    {IDC_TZ_KNOCK, L"Knock (ms)",
+     L"Require entering this zone twice within this many milliseconds, like "
+     L"knocking. 0 disables it. Blank inherits the global setting."},
+    {IDC_TZ_COOLDOWN, L"Cooldown (ms)",
+     L"Minimum gap before this zone can fire again. Blank inherits the global "
+     L"cooldown."},
+    {IDC_TZ_MODIFIER, L"Modifier",
+     L"Only fire this zone while the chosen key is held. Inherit uses the "
+     L"global setting."},
+};
+static constexpr int kTzCount = ARRAYSIZE(kTz);
+
 struct OptDef
 {
     int id;
     const wchar_t *label;
     bool isCheck;
+    const wchar_t *tip;
 };
 static const OptDef kOpts[] = {
-    {IDC_CORNER, L"Corner size (px)", false},
-    {IDC_EDGE, L"Edge size (px)", false},
-    {IDC_DELAY, L"Activation delay (ms)", false},
-    {IDC_SETTLE, L"Pass-through guard (ms)", false},
-    {IDC_KNOCK, L"Knock window (ms, 0 = off)", false},
-    {IDC_COOLDOWN, L"Cooldown (ms)", false},
-    {IDC_CENTREPCT, L"Centre zone width (%)", false},
-    {IDC_LOCKBLANK, L"Blank delay after lock (ms)", false},
-    {IDC_MODIFIER, L"Require modifier", false},
-    {IDC_EXCLUDED, L"Excluded processes", false},
-    {IDC_CB_FULLSCREEN, L"Skip while an app is fullscreen", true},
-    {IDC_CB_DRAG, L"Skip while dragging the mouse", true},
-    {IDC_CB_TASKBAR, L"Keep zones off the taskbar", true},
-    {IDC_CB_MONNAMES, L"List my monitors in the log", true},
-    {IDC_CB_VERBOSE, L"Verbose logging", true},
+    {IDC_CORNER, L"Corner size (px)", false, L"Default size of the four corner squares. Individual corners can override this on the Zones page."},
+    {IDC_EDGE, L"Edge size (px)", false, L"Default thickness of the edge strips. An edge is always clamped to the smaller of the two corners it runs between."},
+    {IDC_DELAY, L"Activation delay (ms)", false, L"How long the cursor must dwell before a zone fires. 0 is immediate."},
+    {IDC_SETTLE, L"Pass-through guard (ms)", false, L"Stops a zone firing when you only cross it. You cannot reach a corner without crossing the edge beside it, so without this both would fire."},
+    {IDC_KNOCK, L"Knock window (ms, 0 = off)", false, L"Require entering a zone twice in quick succession, like knocking. The strongest guard against accidental triggers."},
+    {IDC_COOLDOWN, L"Cooldown (ms)", false, L"Minimum gap before the same zone can fire again."},
+    {IDC_CENTREPCT, L"Centre zone width (%)", false, L"How much of an edge the centre zone takes. Only affects edges where a centre action is assigned."},
+    {IDC_LOCKBLANK, L"Blank delay after lock (ms)", false, L"Only used by the Lock and Turn Off Monitors action. Locking counts as activity, so blanking too early just wakes the display."},
+    {IDC_MODIFIER, L"Require modifier", false, L"Zones stay inert unless this key is held. Individual zones can override it."},
+    {IDC_EXCLUDED, L"Excluded processes", false, L"Semicolon-separated executable names. While one of them is in the foreground, no zone fires. Example: photoshop.exe;blender.exe"},
+    {IDC_CB_FULLSCREEN, L"Skip while an app is fullscreen", true, L"Ignore zones while a game or video is fullscreen. Shell surfaces such as Task View and Start do not count."},
+    {IDC_CB_DRAG, L"Skip while dragging the mouse", true, L"Ignore zones while any mouse button is held, so dragging a window into a corner does not trigger it."},
+    {IDC_CB_TASKBAR, L"Keep zones off the taskbar", true, L"Build zones from the desktop work area, so they stop at the taskbar instead of fighting its peek-at-desktop strip."},
+    {IDC_CB_MONNAMES, L"List my monitors in the log", true, L"Writes your display names to the log so they can be copied into the monitor selector."},
+    {IDC_CB_VERBOSE, L"Verbose logging", true, L"Log every trigger. Off by default because the logging path takes a system-wide lock and can stutter other mods."},
 };
 static constexpr int kOptCount = ARRAYSIZE(kOpts);
 
@@ -3923,6 +4087,19 @@ static void DashLayout(HWND hWnd, DashState *s)
         ShowWindow(s->hZoneArgs[z], sw);
     }
     ShowWindow(s->hMonitor, s->showZones ? SW_SHOW : SW_HIDE);
+    {
+        int sw = s->showZones ? SW_SHOW : SW_HIDE;
+        ShowWindow(s->hHdrZone, sw);
+        ShowWindow(s->hHdrAction, sw);
+        ShowWindow(s->hHdrArgs, sw);
+        ShowWindow(s->hTzTitle, sw);
+        ShowWindow(s->hTzHint, sw);
+        for (int i = 0; i < kTzCount; i++)
+        {
+            ShowWindow(s->hTz[i], sw);
+            ShowWindow(s->hTzLabel[i], sw);
+        }
+    }
     for (int i = 0; i < kOptCount; i++)
     {
         int sw = s->showZones ? SW_HIDE : SW_SHOW;
@@ -3944,6 +4121,16 @@ static void DashLayout(HWND hWnd, DashState *s)
                      Sc(Lay::LblW + Lay::Gap + Lay::CmbW, d), Sc(320, d),
                      SWP_NOZORDER);
         y += Sc(Lay::CtlH, d) + gap;
+
+        // Column headers
+        SetWindowPos(s->hHdrZone, nullptr, pad, y, Sc(Lay::LblW, d),
+                     Sc(18, d), SWP_NOZORDER);
+        SetWindowPos(s->hHdrAction, nullptr, pad + Sc(Lay::LblW + Lay::Gap, d),
+                     y, Sc(Lay::CmbW, d), Sc(18, d), SWP_NOZORDER);
+        SetWindowPos(s->hHdrArgs, nullptr,
+                     pad + Sc(Lay::LblW + Lay::Gap + Lay::CmbW + Lay::Gap, d), y,
+                     Sc(Lay::ArgW, d), Sc(18, d), SWP_NOZORDER);
+        y += Sc(Lay::HdrH, d);
 
         for (int z = 0; z < ZONE_COUNT; z++)
         {
@@ -3984,6 +4171,29 @@ static void DashLayout(HWND hWnd, DashState *s)
         }
     }
 
+    if (s->showZones)
+    {
+        RECT dg = DashDiagramRect(d);
+        int px = dg.left;
+        int py = dg.bottom + Sc(14, d);
+        int pw = dg.right - dg.left;
+        SetWindowPos(s->hTzTitle, nullptr, px, py, pw, Sc(18, d), SWP_NOZORDER);
+        py += Sc(20, d);
+        SetWindowPos(s->hTzHint, nullptr, px, py, pw, Sc(16, d), SWP_NOZORDER);
+        py += Sc(20, d);
+        int lw = Sc(96, d);
+        for (int i = 0; i < kTzCount; i++)
+        {
+            SetWindowPos(s->hTzLabel[i], nullptr, px, py + Sc(4, d), lw,
+                         Sc(18, d), SWP_NOZORDER);
+            bool combo = (kTz[i].id == IDC_TZ_MODIFIER);
+            SetWindowPos(s->hTz[i], nullptr, px + lw + Sc(6, d), py,
+                         pw - lw - Sc(6, d), combo ? Sc(180, d) : Sc(22, d),
+                         SWP_NOZORDER);
+            py += Sc(Lay::TzRowH, d);
+        }
+    }
+
     // Button bar sits below the taller of the two pages, always, so it can
     // never land on top of a control.
     RECT rc;
@@ -4015,7 +4225,7 @@ static void DashPaintDiagram(HWND hWnd, DashState *s, HDC hdc)
 
     HFONT old = (HFONT)SelectObject(hdc, s->hFont);
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, kClrDim);
+    SetTextColor(hdc, g_pal.dim);
     RECT cap = {dg.left, dg.top - Sc(20, d), dg.right, dg.top - Sc(2, d)};
     DrawTextW(hdc, L"Your screen — click a zone to jump to it", -1, &cap,
               DT_LEFT | DT_SINGLELINE);
@@ -4039,28 +4249,142 @@ static void DashPaintDiagram(HWND hWnd, DashState *s, HDC hdc)
 
     for (int z = 0; z < ZONE_COUNT; z++)
     {
-        RECT r = ZoneRectInDiagram((Zone)z, dg);
         int idx = (int)SendMessageW(s->hZoneAction[z], CB_GETCURSEL, 0, 0);
-        bool assigned = (idx > 0);
-        FillRect(hdc, &r, z == s->hoverZone ? sel : (assigned ? set : unset));
+        HBRUSH b = (z == s->hoverZone) ? sel : (idx > 0 ? set : unset);
+        int parts = ZoneHasTwoParts((Zone)z) ? 2 : 1;
+        for (int p = 0; p < parts; p++)
+        {
+            RECT r = ZoneRectInDiagram((Zone)z, dg, p == 1);
+            if (r.right > r.left && r.bottom > r.top)
+                FillRect(hdc, &r, b);
+        }
     }
 
     DeleteObject(set);
     DeleteObject(unset);
     DeleteObject(sel);
 
+    // Hover card: what this zone will actually do, without clicking anything.
     if (s->hoverZone >= 0)
     {
-        SetTextColor(hdc, kClrText);
-        RECT lab = {dg.left, dg.bottom + Sc(6, d), dg.right,
-                    dg.bottom + Sc(26, d)};
-        DrawTextW(hdc, ZoneToString((Zone)s->hoverZone), -1, &lab,
-                  DT_LEFT | DT_SINGLELINE);
+        Zone hz = (Zone)s->hoverZone;
+        RECT card = {dg.left, dg.bottom + Sc(10, d), dg.right,
+                     dg.bottom + Sc(112, d)};
+        HBRUSH cb = CreateSolidBrush(g_pal.panel);
+        FillRect(hdc, &card, cb);
+        DeleteObject(cb);
+        HPEN cp = CreatePen(PS_SOLID, 1, g_pal.border);
+        HPEN op = (HPEN)SelectObject(hdc, cp);
+        HBRUSH ob2 = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        Rectangle(hdc, card.left, card.top, card.right, card.bottom);
+        SelectObject(hdc, ob2);
+        SelectObject(hdc, op);
+        DeleteObject(cp);
+
+        int actIdx = (int)SendMessageW(s->hZoneAction[hz], CB_GETCURSEL, 0, 0);
+        if (actIdx < 0 || actIdx >= kActionCount)
+            actIdx = 0;
+
+        const ZoneTuning &tn = s->tuning[hz];
+        auto val = [&](int v, int global) -> std::wstring
+        {
+            wchar_t b2[48];
+            if (v < 0)
+            {
+                _snwprintf_s(b2, _countof(b2), _TRUNCATE, L"%d (global)", global);
+            }
+            else
+            {
+                _snwprintf_s(b2, _countof(b2), _TRUNCATE, L"%d", v);
+            }
+            return b2;
+        };
+
+        EnterCriticalSection(&g_settingsLock);
+        std::wstring line2 = L"Size " + val(tn.size, g_settings.cornerSize) +
+                             L"px   ·   Delay " +
+                             val(tn.delay, g_settings.activationDelay) +
+                             L"ms   ·   Guard " +
+                             val(tn.settle, g_settings.settleMs) + L"ms";
+        std::wstring line3 = L"Knock " + val(tn.knock, g_settings.knockWindowMs) +
+                             L"ms   ·   Cooldown " +
+                             val(tn.cooldown, g_settings.cooldownMs) + L"ms";
+        static const wchar_t *modNames[] = {L"None", L"Ctrl", L"Alt", L"Shift",
+                                            L"Win"};
+        int m = tn.modifier >= 0 ? tn.modifier : g_settings.requireModifier;
+        std::wstring line4 =
+            std::wstring(L"Modifier ") +
+            modNames[(m >= 0 && m < 5) ? m : 0] +
+            (tn.modifier < 0 ? L" (global)" : L"");
+        LeaveCriticalSection(&g_settingsLock);
+
+        int pad2 = Sc(8, d), lh = Sc(19, d), ty = card.top + pad2;
+        RECT tr = {card.left + pad2, ty, card.right - pad2, ty + lh};
+        SetTextColor(hdc, g_pal.text);
+        DrawTextW(hdc, ZoneToString(hz), -1, &tr, DT_LEFT | DT_SINGLELINE);
+        SetTextColor(hdc, g_pal.accent);
+        tr.top += lh; tr.bottom += lh;
+        DrawTextW(hdc, ActionToString(ParseActionType(kActionIds[actIdx])), -1,
+                  &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        SetTextColor(hdc, g_pal.dim);
+        tr.top += lh; tr.bottom += lh;
+        DrawTextW(hdc, line2.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE);
+        tr.top += lh; tr.bottom += lh;
+        DrawTextW(hdc, line3.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE);
+        tr.top += lh; tr.bottom += lh;
+        DrawTextW(hdc, line4.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE);
     }
 
     SelectObject(hdc, old);
 }
 // Fills the zone controls from whichever configuration slot is selected.
+// Pushes the selected zone's overrides into the six panel fields.
+static void DashShowZoneTuning(DashState *s)
+{
+    const ZoneTuning &tn = s->tuning[s->selZone];
+    auto put = [&](int id, int v)
+    {
+        wchar_t b[24] = L"";
+        if (v >= 0)
+            _snwprintf_s(b, _countof(b), _TRUNCATE, L"%d", v);
+        SetWindowTextW(s->hTz[id - IDC_TZ_FIRST], b);
+    };
+    put(IDC_TZ_SIZE, tn.size);
+    put(IDC_TZ_DELAY, tn.delay);
+    put(IDC_TZ_SETTLE, tn.settle);
+    put(IDC_TZ_KNOCK, tn.knock);
+    put(IDC_TZ_COOLDOWN, tn.cooldown);
+    SendMessageW(s->hTz[IDC_TZ_MODIFIER - IDC_TZ_FIRST], CB_SETCURSEL,
+                 tn.modifier < 0 ? 0 : tn.modifier + 1, 0);
+
+    std::wstring title =
+        std::wstring(L"Settings for ") + ZoneToString((Zone)s->selZone);
+    SetWindowTextW(s->hTzTitle, title.c_str());
+}
+
+// Reads the six panel fields back into the selected zone. Blank stays -1,
+// which is what "inherit the global value" is stored as.
+static void DashCaptureZoneTuning(DashState *s)
+{
+    ZoneTuning &tn = s->tuning[s->selZone];
+    auto get = [&](int id) -> int
+    {
+        wchar_t b[24] = {};
+        GetWindowTextW(s->hTz[id - IDC_TZ_FIRST], b, ARRAYSIZE(b));
+        if (!b[0])
+            return -1;
+        return _wtoi(b);
+    };
+    tn.size = get(IDC_TZ_SIZE);
+    tn.delay = get(IDC_TZ_DELAY);
+    tn.settle = get(IDC_TZ_SETTLE);
+    tn.knock = get(IDC_TZ_KNOCK);
+    tn.cooldown = get(IDC_TZ_COOLDOWN);
+    int m = (int)SendMessageW(s->hTz[IDC_TZ_MODIFIER - IDC_TZ_FIRST],
+                              CB_GETCURSEL, 0, 0);
+    tn.modifier = (m <= 0) ? -1 : m - 1;
+}
+
 static void DashLoadZones(DashState *s)
 {
     int sel = (int)SendMessageW(s->hMonitor, CB_GETCURSEL, 0, 0);
@@ -4101,7 +4425,23 @@ static void DashLoadZones(DashState *s)
         }
         SendMessageW(s->hZoneAction[z], CB_SETCURSEL, idx, 0);
         SetWindowTextW(s->hZoneArgs[z], args.c_str());
+
+        ZoneTuning &tn = s->tuning[z];
+        if (fromGui)
+        {
+            tn.size = Wh_GetIntValue(GuiKey(sel, z, L"sz").c_str(), -1);
+            tn.delay = Wh_GetIntValue(GuiKey(sel, z, L"dl").c_str(), -1);
+            tn.settle = Wh_GetIntValue(GuiKey(sel, z, L"gd").c_str(), -1);
+            tn.knock = Wh_GetIntValue(GuiKey(sel, z, L"kn").c_str(), -1);
+            tn.cooldown = Wh_GetIntValue(GuiKey(sel, z, L"cd").c_str(), -1);
+            tn.modifier = Wh_GetIntValue(GuiKey(sel, z, L"md").c_str(), -1);
+        }
+        else
+        {
+            tn = ZoneTuning{};
+        }
     }
+    DashShowZoneTuning(s);
 }
 
 static void DashLoad(HWND hWnd, DashState *s)
@@ -4154,6 +4494,7 @@ static void DashLoad(HWND hWnd, DashState *s)
 
 static void DashSave(HWND hWnd, DashState *s)
 {
+    DashCaptureZoneTuning(s);
     // Zones for the slot currently on screen.
     int sel = s->cfgIndex;
     wchar_t monName[256] = {};
@@ -4173,6 +4514,14 @@ static void DashSave(HWND hWnd, DashState *s)
         GetWindowTextW(s->hZoneArgs[z], args, ARRAYSIZE(args));
         Wh_SetStringValue(GuiKey(sel, z, L"a").c_str(), kActionIds[idx]);
         Wh_SetStringValue(GuiKey(sel, z, L"g").c_str(), args);
+
+        const ZoneTuning &tn = s->tuning[z];
+        Wh_SetIntValue(GuiKey(sel, z, L"sz").c_str(), tn.size);
+        Wh_SetIntValue(GuiKey(sel, z, L"dl").c_str(), tn.delay);
+        Wh_SetIntValue(GuiKey(sel, z, L"gd").c_str(), tn.settle);
+        Wh_SetIntValue(GuiKey(sel, z, L"kn").c_str(), tn.knock);
+        Wh_SetIntValue(GuiKey(sel, z, L"cd").c_str(), tn.cooldown);
+        Wh_SetIntValue(GuiKey(sel, z, L"md").c_str(), tn.modifier);
     }
     Wh_SetIntValue(L"gui_active", 1);
 
@@ -4233,7 +4582,10 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         lf.lfWeight = FW_NORMAL;
         wcscpy_s(lf.lfFaceName, L"Segoe UI");
         s->hFont = CreateFontIndirectW(&lf);
-        s->hBg = CreateSolidBrush(kClrBg);
+        BuildPalette();
+        s->hBg = CreateSolidBrush(g_pal.bg);
+        s->hField = CreateSolidBrush(g_pal.field);
+        s->hPanel = CreateSolidBrush(g_pal.panel);
 
         auto mk = [&](const wchar_t *cls, const wchar_t *txt, DWORD style,
                       int id) -> HWND
@@ -4254,7 +4606,7 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         s->hMonitor = mk(L"COMBOBOX", nullptr,
                          CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
                          IDC_MONITOR);
-        ThemeControl(s->hMonitor, L"DarkMode_CFD");
+        ThemeControl(s->hMonitor, g_lightTheme ? L"CFD" : L"DarkMode_CFD");
 
         for (int z = 0; z < ZONE_COUNT; z++)
         {
@@ -4263,7 +4615,7 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                 mk(L"COMBOBOX", nullptr,
                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
                    IDC_ZONE_ACTION + z);
-            ThemeControl(s->hZoneAction[z], L"DarkMode_CFD");
+            ThemeControl(s->hZoneAction[z], g_lightTheme ? L"CFD" : L"DarkMode_CFD");
             for (int a = 0; a < kActionCount; a++)
             {
                 SendMessageW(s->hZoneAction[z], CB_ADDSTRING, 0,
@@ -4272,7 +4624,7 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
             s->hZoneArgs[z] = mk(L"EDIT", nullptr,
                                  WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP,
                                  IDC_ZONE_ARGS + z);
-            ThemeControl(s->hZoneArgs[z], L"DarkMode_CFD");
+            ThemeControl(s->hZoneArgs[z], g_lightTheme ? L"CFD" : L"DarkMode_CFD");
         }
 
         for (int i = 0; i < kOptCount; i++)
@@ -4302,8 +4654,39 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                                     WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP,
                                     kOpts[i].id);
                 }
-                ThemeControl(s->hOpt[i], L"DarkMode_CFD");
+                ThemeControl(s->hOpt[i], g_lightTheme ? L"CFD" : L"DarkMode_CFD");
             }
+        }
+
+        // Column headers - the argument field previously had no label at all.
+        s->hHdrZone = mk(L"STATIC", L"Zone", SS_LEFT, IDC_HDR_ZONE);
+        s->hHdrAction = mk(L"STATIC", L"Action", SS_LEFT, IDC_HDR_ACTION);
+        s->hHdrArgs = mk(L"STATIC", L"Argument / command", SS_LEFT, IDC_HDR_ARGS);
+
+        s->hTzTitle = mk(L"STATIC", L"Settings for this zone", SS_LEFT,
+                         IDC_TZ_TITLE);
+        s->hTzHint = mk(L"STATIC", L"Leave blank to use the global value.",
+                        SS_LEFT, IDC_TZ_HINT);
+        for (int i = 0; i < kTzCount; i++)
+        {
+            s->hTzLabel[i] = mk(L"STATIC", kTz[i].label, SS_LEFT, 0);
+            if (kTz[i].id == IDC_TZ_MODIFIER)
+            {
+                s->hTz[i] = mk(L"COMBOBOX", nullptr,
+                               CBS_DROPDOWNLIST | WS_TABSTOP, kTz[i].id);
+                const wchar_t *mv[] = {L"Inherit", L"None", L"Ctrl",
+                                       L"Alt",     L"Shift", L"Win"};
+                for (auto v : mv)
+                    SendMessageW(s->hTz[i], CB_ADDSTRING, 0, (LPARAM)v);
+            }
+            else
+            {
+                s->hTz[i] = mk(L"EDIT", nullptr,
+                               WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER |
+                                   WS_TABSTOP,
+                               kTz[i].id);
+            }
+            ThemeControl(s->hTz[i], g_lightTheme ? L"CFD" : L"DarkMode_CFD");
         }
 
         s->hSave = mk(L"BUTTON", L"Save and Apply",
@@ -4312,6 +4695,48 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                         BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP, IDC_CANCEL);
         s->hReset = mk(L"BUTTON", L"Reset to Windhawk settings",
                        BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP, IDC_RESET);
+
+        // One tooltip control serving every field. Descriptions live next to
+        // the field definitions so a new setting cannot be added without one.
+        s->hTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                                  WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP, 0, 0,
+                                  0, 0, hWnd, nullptr, cs->hInstance, nullptr);
+        if (s->hTip)
+        {
+            SendMessageW(s->hTip, TTM_SETMAXTIPWIDTH, 0, Sc(320, s->dpi));
+            auto tip = [&](HWND ctl, const wchar_t *text)
+            {
+                if (!ctl || !text)
+                    return;
+                TTTOOLINFOW ti = {};
+                ti.cbSize = sizeof(ti);
+                ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+                ti.hwnd = hWnd;
+                ti.uId = (UINT_PTR)ctl;
+                ti.lpszText = const_cast<LPWSTR>(text);
+                SendMessageW(s->hTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+            };
+            for (int i = 0; i < kOptCount; i++)
+            {
+                tip(s->hOpt[i], kOpts[i].tip);
+                tip(s->hOptLabel[i], kOpts[i].tip);
+            }
+            for (int i = 0; i < kTzCount; i++)
+            {
+                tip(s->hTz[i], kTz[i].tip);
+                tip(s->hTzLabel[i], kTz[i].tip);
+            }
+            tip(s->hMonitor,
+                L"Which display these zones belong to. Use * to apply one "
+                L"configuration to every monitor.");
+            tip(s->hHdrArgs,
+                L"Extra input for the chosen action: a key combination for "
+                L"Virtual Key Press, a path or URL for Custom Command, or two "
+                L"of either separated by | for the Alternate actions.");
+            tip(s->hReset,
+                L"Discard everything set here and go back to the Windhawk "
+                L"Settings page.");
+        }
 
         if (HICON ic = MakeTrayIcon(true))
         {
@@ -4351,13 +4776,25 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         POINT pt = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         RECT dg = DashDiagramRect(s->dpi);
         int hit = -1;
-        for (int z = 0; z < ZONE_COUNT; z++)
+        // Centres are tested first: they sit inside the span an edge would
+        // otherwise claim, and the first match wins.
+        static const Zone order[ZONE_COUNT] = {
+            ZONE_TOP_LEFT,      ZONE_TOP_RIGHT,     ZONE_BOTTOM_LEFT,
+            ZONE_BOTTOM_RIGHT,  ZONE_CENTER_TOP,    ZONE_CENTER_BOTTOM,
+            ZONE_CENTER_LEFT,   ZONE_CENTER_RIGHT,  ZONE_EDGE_TOP,
+            ZONE_EDGE_BOTTOM,   ZONE_EDGE_LEFT,     ZONE_EDGE_RIGHT};
+        for (int oi = 0; oi < ZONE_COUNT && hit < 0; oi++)
         {
-            RECT r = ZoneRectInDiagram((Zone)z, dg);
-            if (PtInRect(&r, pt))
+            Zone z = order[oi];
+            int parts = ZoneHasTwoParts(z) ? 2 : 1;
+            for (int p = 0; p < parts; p++)
             {
-                hit = z;
-                break;
+                RECT r = ZoneRectInDiagram(z, dg, p == 1);
+                if (PtInRect(&r, pt))
+                {
+                    hit = (int)z;
+                    break;
+                }
             }
         }
         if (uMsg == WM_MOUSEMOVE)
@@ -4372,7 +4809,11 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         }
         else if (hit >= 0)
         {
+            DashCaptureZoneTuning(s);
+            s->selZone = hit;
+            DashShowZoneTuning(s);
             SetFocus(s->hZoneAction[hit]);
+            InvalidateRect(hWnd, nullptr, TRUE);
         }
         return 0;
     }
@@ -4381,8 +4822,8 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
     case WM_CTLCOLORBTN:
         if (s)
         {
-            SetTextColor((HDC)wParam, kClrText);
-            SetBkColor((HDC)wParam, kClrBg);
+            SetTextColor((HDC)wParam, g_pal.text);
+            SetBkColor((HDC)wParam, g_pal.bg);
             return (LRESULT)s->hBg;
         }
         break;
@@ -4391,9 +4832,9 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
     case WM_CTLCOLORLISTBOX:
         if (s)
         {
-            SetTextColor((HDC)wParam, kClrText);
-            SetBkColor((HDC)wParam, RGB(45, 45, 45));
-            return (LRESULT)s->hBg;
+            SetTextColor((HDC)wParam, g_pal.fieldText);
+            SetBkColor((HDC)wParam, g_pal.field);
+            return (LRESULT)s->hField;
         }
         break;
 
@@ -4412,11 +4853,20 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
             InvalidateRect(hWnd, nullptr, TRUE);
             return 0;
         }
-        if (id >= IDC_ZONE_ACTION && id < IDC_ZONE_ACTION + ZONE_COUNT &&
-            HIWORD(wParam) == CBN_SELCHANGE)
+        if (id >= IDC_ZONE_ACTION && id < IDC_ZONE_ACTION + ZONE_COUNT)
         {
-            InvalidateRect(hWnd, nullptr, TRUE);
-            return 0;
+            if (HIWORD(wParam) == CBN_SELCHANGE ||
+                HIWORD(wParam) == CBN_SETFOCUS)
+            {
+                if (HIWORD(wParam) == CBN_SETFOCUS)
+                {
+                    DashCaptureZoneTuning(s);
+                    s->selZone = id - IDC_ZONE_ACTION;
+                    DashShowZoneTuning(s);
+                }
+                InvalidateRect(hWnd, nullptr, TRUE);
+                return 0;
+            }
         }
         if (id == IDC_SAVE)
         {
@@ -4480,6 +4930,10 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                 DeleteObject(s->hFont);
             if (s->hBg)
                 DeleteObject(s->hBg);
+            if (s->hField)
+                DeleteObject(s->hField);
+            if (s->hPanel)
+                DeleteObject(s->hPanel);
         }
         g_hDashWnd = nullptr;
         PostQuitMessage(0);
@@ -4491,6 +4945,10 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
 static DWORD WINAPI DashThread(LPVOID)
 {
     PinThreadDpiPerMonitorV2();
+
+    // TOOLTIPS_CLASS lives in comctl32 and needs the library initialised.
+    INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_WIN95_CLASSES};
+    InitCommonControlsEx(&icc);
 
     const wchar_t *kClass = L"WindhawkHotCornersDash";
     HINSTANCE hInst = GetModuleHandle(nullptr);

@@ -350,16 +350,21 @@ Assert ($Pad -gt 0 -and $RowH -gt 0 -and $DiagW -gt 0) "layout constants parsed 
 
 $leftW   = $Pad+$LblW+$Gap+$CmbW+$Gap+$ArgW
 $clientW = $leftW+$Gap+$DiagW+$Pad
-$zonesH  = $Pad+$TabH+$Gap+$CtlH+$Gap+$ZC*$RowH
+$HdrH=K 'HdrH'; $TzRowH=K 'TzRowH'
+$tzPanel = 14+20+20+6*$TzRowH
+$zonesLeft  = $Pad+$TabH+$Gap+$CtlH+$Gap+$HdrH+$ZC*$RowH
+$zonesRight = $Pad+$TabH+$Gap+$CtlH+$Gap+$DiagH+$tzPanel
+$zonesH  = [Math]::Max($zonesLeft,$zonesRight)
 $optH    = $Pad+$TabH+$Gap+10*$RowH+5*$CheckH
 $content = [Math]::Max($zonesH,$optH)
 $clientH = $content+$Gap*2+$BtnH+$Pad
 $btnTop  = $clientH-$Pad-$BtnH
 
-Assert ($zonesH -le $btnTop)  "zones page ends ($zonesH) above the button bar ($btnTop)"
+Assert ($zonesLeft -le $btnTop)  "zone rows end ($zonesLeft) above the button bar ($btnTop)"
+Assert ($zonesRight -le $btnTop) "right column ends ($zonesRight) above the button bar ($btnTop)"
 Assert ($optH   -le $btnTop)  "options page ends ($optH) above the button bar ($btnTop)"
-$diagBottom = $Pad+$TabH+$Gap+$CtlH+$Gap+$DiagH+26
-Assert ($diagBottom -le $btnTop) "screen preview + label ($diagBottom) clears the button bar"
+$diagBottom = $Pad+$TabH+$Gap+$CtlH+$Gap+$DiagH+$tzPanel
+Assert ($diagBottom -le $btnTop) "preview + per-zone panel ($diagBottom) clears the button bar"
 Assert (($leftW+$Gap+$DiagW+$Pad) -le $clientW) "preview fits to the right of the rows"
 Assert (($Pad+130+$Gap+90+$Gap+210+$Pad) -le $clientW) "three buttons fit across the window"
 Assert (($Pad+$OptLblW+$Gap+$OptCtlW+$DiagW+$Pad) -le $clientW) "widest options field stays inside the window"

@@ -34,7 +34,7 @@ function Case($name, $mutated, $expect) {
 
 # v3.9.0: String.Replace hit two anchors and duplicated a function
 $dup = $src
-$m = [regex]::Match($dup, '(?s)static const wchar_t \*ActionIdFromEnum\(CornerAction a\)\s*\{.*?\n\}')
+$m = [regex]::Match($dup, '(?s)static const wchar_t \*ZoneToString\(Zone z\)\s*\{.*?\n\}')
 if ($m.Success) { $dup = $dup.Insert($m.Index + $m.Length, "`n`n" + $m.Value) }
 Case 'duplicate function definition' $dup 'defined more than once'
 
@@ -63,12 +63,28 @@ Case '@architecture on a tool mod' $arch '@architecture declared'
 $fwd = [regex]::Replace($src, '(?m)^//[^\r\n]*tray menu needs it earlier\.\r?\nstatic void OpenDashboard\(\);\r?\n', '')
 Case 'use before declaration' $fwd 'not declared until'
 
-# a settings key read but never declared in the settings block
-$set = $src.Replace('Wh_GetIntSetting(L"CooldownMs")', 'Wh_GetIntSetting(L"TotallyMadeUp")')
+# a settings key read but never declared. Since v4.1.0 there is no settings
+# block at all, so *any* read is undeclared - which is exactly the regression
+# worth catching if someone reaches for Wh_GetIntSetting again out of habit.
+$set = $src.Replace('g_settings.cooldownMs = 300;',
+                    'g_settings.cooldownMs = Wh_GetIntSetting(L"TotallyMadeUp");')
 Case 'setting read but not declared' $set 'settings read but not declared'
 
-# v4.0.2: a numbered dropdown made Windhawk reject the whole settings block
-$opt = $src.Replace("- RequireModifier: none", "- RequireModifier: 0")
+# v4.0.2: a numbered dropdown made Windhawk reject the whole settings block.
+# The mod no longer ships one, so the case supplies its own.
+$block = @'
+// ==WindhawkModSettings==
+/*
+- RequireModifier: 0
+  $name: Require a modifier
+  $options:
+  - 0: None
+  - 1: Ctrl
+*/
+// ==/WindhawkModSettings==
+'@ -replace "`r`n", "`n"
+$opt = $src.Replace("// ==/WindhawkModReadme==`n",
+                    "// ==/WindhawkModReadme==`n`n$block")
 Case 'numbered $options dropdown' $opt 'must have a string value'
 
 # unbalanced braces

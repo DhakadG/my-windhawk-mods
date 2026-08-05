@@ -36,14 +36,38 @@ contents of `win-x-hotcorners.wh.cpp`, then **Compile** and **Save**.
 
 ## Configure
 
-Open the mod's **Settings** tab in Windhawk. Each monitor entry has twelve
-zones — four corners, four edges and the centre of each edge — and each takes
-its own action.
+**Not in Windhawk — this mod has no Settings page.** It adds a tray icon next
+to the clock, and that is where everything lives:
+
+| | |
+|---|---|
+| **Left-click** | Turn the hot corners on and off |
+| **Right-click** | Suspend for a while; skip while fullscreen; skip while dragging |
+| **Right-click → Zones & settings...** | The dashboard |
+
+The dashboard is a normal window with a clickable preview of your screen. Pick
+a display, click the corner or edge you want, choose its action. Twelve zones
+per display — four corners, four edges, and the centre of each edge — each with
+its own action and, if you want, its own size, delay and modifier. Every field
+explains itself on hover.
+
+This is deliberate. Twelve zones on each of up to eight displays, each with a
+forty-entry action list and six timing overrides, is not something a settings
+form can present without becoming a tree nobody can navigate — and a Windhawk
+mod cannot write its own settings from code, so anything changed in the mod's
+own UI could never be written back to the page. Two places to configure one
+thing, guaranteed to disagree. Now there is one.
+
+> **Upgrading from 4.0.x or earlier?** Configuration you saved from the
+> dashboard carries over untouched. Configuration you typed into Windhawk's
+> Settings page does not — set it up again from the dashboard.
 
 ### Picking a monitor
 
-You don't have to guess the name. Open the mod's **Log** tab in Windhawk — the
-mod lists your displays every time it loads, ready to copy:
+The dashboard lists your displays by name, so normally there is nothing to
+pick out. The names also go to the mod's **Log** tab in Windhawk, which is
+where to look when a display is unplugged and you want to know which
+configuration belonged to it:
 
 ```
 +-- Your monitors ---------------------------------------
@@ -55,15 +79,9 @@ mod lists your displays every time it loads, ready to copy:
 +--------------------------------------------------------
 ```
 
-Paste the text between the quotes into **Monitor**. The list refreshes
-whenever you plug in, unplug or rearrange a display, so it always reflects
-what is actually connected.
-
-| Value | Meaning |
-|-------|---------|
-| A display name | That display only |
-| `*` | Every display |
-| *(empty)* | Falls back to the numeric **Monitor Number** field |
+The list refreshes whenever you plug in, unplug or rearrange a display, so it
+always reflects what is actually connected. The dashboard's first entry, **All
+monitors**, applies one configuration everywhere.
 
 Names come from the display's EDID, so rearranging your desktop or changing
 which display is primary never reshuffles your configuration. Two identical
@@ -73,25 +91,44 @@ Resolution is **per zone**: a name-matched entry wins for the zones it defines,
 and `*` supplies the rest. Put a shared config on `*` and override a single
 corner on one display.
 
-### Settings
+### Options
 
-| Setting | Default | What it does |
-|---------|---------|--------------|
-| Corner activation size | 6 px | How large the corner squares are |
-| Edge activation size | 6 px | How thick the edge strips are |
+The dashboard's **Options** tab, grouped as it appears there. Every one of
+these is a default that an individual zone can override on the **Zones** tab.
+
+**How big the zones are**
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| Corner size | 6 px | How large the corner squares are |
+| Edge size | 6 px | How thick the edge strips are |
+| Centre zone width | 20% | How much of an edge the centre zone takes |
+
+**When a zone fires**
+
+| Option | Default | What it does |
+|--------|---------|--------------|
 | Activation delay | 0 ms | Dwell time before firing |
 | Pass-through guard | 80 ms | Stops a zone firing when you merely cross it |
-| Knock to activate | 0 (off) | Require two quick entries before firing |
-| Require a modifier key | None | Zones stay inert unless Ctrl/Alt/Shift/Win is held |
-| Centre zone width | 20% | How much of an edge the centre zone takes |
-| Cooldown between triggers | 300 ms | Minimum gap before the same zone fires again |
-| Disable on fullscreen apps | on | Ignore corners while a game or video is fullscreen |
-| Disable during mouse drag | on | Ignore corners while a mouse button is held |
-| Excluded processes | *(empty)* | Semicolon-separated exe names to disable in |
+| Knock window | 0 (off) | Require two quick entries before firing |
+| Cooldown | 300 ms | Minimum gap before the same zone fires again |
+| Require modifier | None | Zones stay inert unless Ctrl/Alt/Shift/Win is held |
+
+**When to stay out of the way**
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| Excluded processes | *(empty)* | Semicolon-separated exe names to stay quiet in |
+| Skip while an app is fullscreen | on | Ignore zones on the display a game or video occupies |
+| Skip while dragging the mouse | on | Ignore zones while a mouse button is held |
 | Keep zones off the taskbar | off | Build zones from the work area, avoiding the taskbar |
-| Delay before blanking after lock | 1200 ms | Used by Lock and Turn Off Monitors |
+
+**Everything else**
+
+| Option | Default | What it does |
+|--------|---------|--------------|
+| Blank delay after lock | 1200 ms | Used by Lock and Turn Off Monitors |
 | List my monitors in the log | on | Prints your displays so you can copy their names |
-| Verbose logging | off | Log every trigger (diagnostics only) |
 
 ---
 
@@ -115,15 +152,11 @@ Alternate Command · Nothing
 
 ### Tray icon
 
-The mod adds a tray icon. Left-click toggles the hot corners on and off;
-right-click opens a menu to suspend them for 15/30/60 minutes, flip the
-fullscreen and drag guards, or turn verbose logging on while reproducing
-something.
-
-A Windhawk mod cannot write the settings shown on its own Settings page, so
-these tray changes are kept as *overrides* in the mod's storage and applied on
-top of your settings. **Reset to Windhawk settings** clears them and goes back
-to exactly what the Settings page says.
+Left-click toggles the hot corners on and off. Right-click opens the menu:
+**Zones & settings...** for the dashboard, suspend for 15/30/60 minutes, and
+the fullscreen and drag guards. **Reset these toggles** puts those three back
+to their defaults and cancels any suspend — it does not touch your zones. That
+is the dashboard's **Reset** button, which asks first.
 
 ### Alternate Key Press / Alternate Command
 
@@ -173,10 +206,12 @@ uac;cmd.exe          -> prefix with uac; to request elevation
 ## How it works
 
 Detection runs on its own thread inside a dedicated Windhawk process, sampling
-the cursor every 16 ms. There is no global mouse hook, so the mod adds nothing
-to the input path of your games and applications, and nothing the shell does
-can delay or starve it. Actions run on a separate worker thread, so a slow
-launch never holds up detection.
+the cursor every 16 ms whenever it is within 200 px of a zone and easing off to
+as much as 100 ms when it is not — never for longer than it would take the
+cursor to reach the nearest zone. There is no global mouse hook, so the mod
+adds nothing to the input path of your games and applications, and nothing the
+shell does can delay or starve it. Actions run on a separate worker thread, so
+a slow launch never holds up detection.
 
 Zone rectangles are recomputed whenever the display layout changes — including
 the docking, monitor-wake and RDP-reconnect cases where Windows does not send
@@ -210,10 +245,9 @@ are both bound to the same *toggle* action, crossing into the corner can fire
 both and cancel out. Raise **Pass-through guard**, or set one of them to
 `Nothing`.
 
-**Diagnosing anything else.** Turn on **Verbose logging** and watch the mod's
-log in Windhawk. It reports each trigger, the foreground window at the time,
-and any key-injection failure. Turn it back off afterwards — the logging path
-takes a system-wide lock and is not meant to be left on.
+**Diagnosing anything else.** Watch the mod's **Log** tab in Windhawk. It
+reports every trigger with the zone, the monitor and the foreground window at
+the time, every suppressed trigger and why, and any key-injection failure.
 
 ---
 
@@ -232,9 +266,9 @@ Have a suggestion or found a bug?
 - Clear descriptions, screenshots, or steps to reproduce make fixes much faster.
 - Include your Windows version and whether you run more than one display —
   most corner problems turn out to be display-layout related.
-- For anything that misbehaves at a specific corner, turn on **Verbose
-  logging** and paste the relevant lines. The log names the zone, the monitor
-  and the foreground window at the moment it fired.
+- For anything that misbehaves at a specific corner, paste the relevant lines
+  from the mod's **Log** tab. It names the zone, the monitor and the
+  foreground window at the moment it fired.
 - Suggestions for new actions or UX improvements are always welcome.
 
 Pull requests are welcome too. The whole mod is a single `.cpp` file, so a

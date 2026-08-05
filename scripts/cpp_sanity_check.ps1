@@ -183,7 +183,13 @@ $readNames = @(
     [regex]::Matches($src, 'StringSetting::make\(L"(\w+)"')
 ) | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
 $missing = $readNames | Where-Object { $_ -notin $declared }
-if ($missing) { Fail "settings read but not declared: $($missing -join ', ')" } else { Pass "all $($readNames.Count) settings read are declared" }
+if ($missing) { Fail "settings read but not declared: $($missing -join ', ')" }
+# Say it out loud rather than reporting "all 0 settings are fine", which reads
+# as a pass on something that was never examined. Since v4.1.0 this mod has no
+# settings block at all - everything lives in its own value store - so the check
+# that matters is that nothing tries to read one.
+elseif (-not $settingsBlock) { Pass "no settings block, and nothing reads a setting" }
+else { Pass "all $($readNames.Count) settings read are declared" }
 
 "`n=== 8. settings dropdowns ==="
 # Windhawk refuses to parse the entire settings block if a value carrying
@@ -209,6 +215,7 @@ for ($i = 0; $i -lt $sLines.Count; $i++) {
     }
 }
 if ($badOpts) { Fail "settings using `$options must have a string value: $($badOpts -join ', ')" }
+elseif (-not $settingsBlock) { Pass "no settings block, so no dropdown to get wrong" }
 else { Pass "every `$options list belongs to a string setting" }
 
 "`n$(if($fails -eq 0){'SANITY CHECKS PASSED'}else{"$fails PROBLEM(S) FOUND"})"

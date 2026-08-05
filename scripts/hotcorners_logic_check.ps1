@@ -361,8 +361,8 @@ $modSrc = [IO.File]::ReadAllText($Path)
 # A miss returns '', and [int]'' is 0 in PowerShell - so a renamed constant
 # would quietly zero every geometry assertion below instead of failing.
 function K($n){
-  $m = [regex]::Match($modSrc, "constexpr int $n = (\d+);")
-  if (-not $m.Success) { throw "layout constant '$n' not found in the source" }
+  $m = [regex]::Match($modSrc, "constexpr (?:int|DWORD|LONG) $n = (\d+);")
+  if (-not $m.Success) { throw "constant '$n' not found in the source" }
   [int]$m.Groups[1].Value
 }
 $Pad=K 'Pad'; $Gap=K 'Gap'; $RowH=K 'RowH'; $CheckH=K 'CheckH'; $TabH=K 'TabH'
@@ -378,7 +378,16 @@ $tzPanel = 14+20+20+6*$TzRowH
 $zonesLeft  = $Pad+$TabH+$Gap+$CtlH+$Gap+$HdrH+$ZC*$RowH
 $zonesRight = $Pad+$TabH+$Gap+$CtlH+$Gap+$DiagH+$tzPanel
 $zonesH  = [Math]::Max($zonesLeft,$zonesRight)
-$optH    = $Pad+$TabH+$Gap+10*$RowH+5*$CheckH
+# Counted out of kOpts rather than hardcoded: an option added without resizing
+# the window puts the last row under the button bar, which is exactly what this
+# assertion exists to catch.
+$SecH = K 'SecH'
+$optDefs = [regex]::Matches($modSrc, '(?m)^\s*\{IDC_\w+, L"[^"]*", (true|false),')
+if ($optDefs.Count -eq 0) { throw "kOpts entries not found in the source" }
+$nCheck = @($optDefs | Where-Object { $_.Groups[1].Value -eq 'true' }).Count
+$nEdit  = $optDefs.Count - $nCheck
+$nSec   = ([regex]::Matches($modSrc, '(?m)^\s*\{IDC_\w+, L"[^"]*", (?:true|false), L"[^"]*", L"')).Count
+$optH    = $Pad+$TabH+$Gap+$nEdit*$RowH+$nCheck*$CheckH+$nSec*$SecH
 $content = [Math]::Max($zonesH,$optH)
 $clientH = $content+$Gap*2+$BtnH+$Pad
 $btnTop  = $clientH-$Pad-$BtnH
@@ -392,6 +401,90 @@ Assert (($leftW+$Gap+$DiagW+$Pad) -le $clientW) "preview fits to the right of th
 Assert (($Pad+130+$Gap+90+$Gap+210+$Pad) -le $clientW) "three buttons fit across the window"
 Assert (($Pad+$OptLblW+$Gap+$OptCtlW+$DiagW+$Pad) -le $clientW) "widest options field stays inside the window"
 Assert ($ArgW -ge 120) "args field wide enough to be usable ($ArgW px)"
+
+''
+'--- Adaptive poll interval (#4) ---'
+# The rate is only allowed to drop while the cursor is too far away to reach a
+# zone before the next sample. Getting that wrong does not show up as a crash,
+# it shows up as a corner that sometimes ignores you.
+$kTick = K 'kTickMs'; $kIdle = K 'kIdleTickMs'; $kNear = K 'kNearPx'
+
+function ChebDist($px, $py, $l, $t, $r, $b) {
+  $dx = if ($px -lt $l) { $l - $px } elseif ($px -ge $r) { $px - $r + 1 } else { 0 }
+  $dy = if ($py -lt $t) { $t - $py } elseif ($py -ge $b) { $py - $b + 1 } else { 0 }
+  [math]::Max($dx, $dy)
+}
+function PollInterval([long]$nearest) {
+  if ($nearest -le $kNear) { return [long]$kTick }
+  $safe = [long][math]::Floor($nearest / 4)
+  if ($safe -gt $kIdle) { return [long]$kIdle }
+  return $safe
+}
+
+Assert ((ChebDist 3 3 0 0 6 6) -eq 0)    'cursor inside a zone measures zero'
+Assert ((ChebDist 10 3 0 0 6 6) -eq 5)   'distance to the right of a zone'
+Assert ((ChebDist 10 20 0 0 6 6) -eq 15) 'Chebyshev takes the larger axis'
+
+Assert ((PollInterval 0) -eq $kTick)          "inside a zone -> full rate ($kTick ms)"
+Assert ((PollInterval $kNear) -eq $kTick)     "at the near band edge -> full rate"
+Assert ((PollInterval ($kNear + 1)) -gt $kTick) 'just past the band -> the rate relaxes'
+Assert ((PollInterval 100000) -eq $kIdle)     "far away -> capped at the idle rate ($kIdle ms)"
+Assert ($kTick -lt $kIdle) 'the idle rate is genuinely slower than the full rate'
+
+# The invariant that keeps a trigger from being missed: whenever the loop
+# sleeps longer than the full rate, the cursor cannot cross the remaining gap
+# during that sleep at 4 px/ms.
+$violation = $null
+$notMonotonic = $null
+$prev = 0
+foreach ($d in 0..4000) {
+  $iv = PollInterval $d
+  if ($iv -gt $kTick -and ($iv * 4) -gt $d) { $violation = "$d px -> $iv ms"; break }
+  if ($iv -lt $prev) { $notMonotonic = "$d px -> $iv ms"; break }
+  $prev = $iv
+}
+Assert ($null -eq $violation)    "the cursor can never cross the gap during a relaxed sleep ($violation)"
+Assert ($null -eq $notMonotonic) "the interval never shortens as the cursor moves away ($notMonotonic)"
+
+''
+'--- Per-monitor fullscreen guard (#5) ---'
+# 0 = nothing fullscreen (nullptr), -1 = kAllMonitors, 1/2 = a real HMONITOR.
+function FsSkip($fsMon, $zoneMon) {
+  return ($fsMon -ne 0) -and (($fsMon -eq -1) -or ($fsMon -eq $zoneMon))
+}
+Assert (-not (FsSkip 0 1)) 'nothing fullscreen -> nothing is suppressed'
+Assert (FsSkip 1 1)        'fullscreen app suppresses zones on its own display'
+Assert (-not (FsSkip 1 2)) 'a game on display 1 leaves display 2 working'
+Assert (FsSkip -1 1)       'unknown display -> suppress everywhere (the old behaviour)'
+Assert (FsSkip -1 2)       'unknown display -> suppress everywhere, both displays'
+
+''
+'--- Split-edge alternation (#6) ---'
+# An edge with a centre zone becomes two rectangles, but it is still one edge.
+# Left half, right half, left half must give A, B, A - which only happens if
+# both halves share one flip flag.
+function EdgeFireSeq([bool]$shared) {
+  $cache = @{}
+  $halves = @()
+  foreach ($h in 1, 2) {
+    if ($shared) {
+      if (-not $cache.ContainsKey('EDGE_TOP')) { $cache['EDGE_TOP'] = @{ n = 0 } }
+      $halves += $cache['EDGE_TOP']
+    } else {
+      $halves += @{ n = 0 }
+    }
+  }
+  $seq = ''
+  foreach ($i in 0, 1, 0) {
+    $st = $halves[$i]
+    $seq += @('A', 'B')[$st.n % 2]
+    $st.n++
+  }
+  return $seq
+}
+Assert ((EdgeFireSeq $true) -eq 'ABA') "one flag per edge alternates correctly (got $(EdgeFireSeq $true))"
+Assert ((EdgeFireSeq $false) -eq 'AAB') "a flag per half does not (got $(EdgeFireSeq $false)) - this is the bug that was fixed"
+
 ''
 if ($script:fails -eq 0) { 'ALL CHECKS PASSED'; exit 0 }
 else { "$($script:fails) CHECK(S) FAILED"; exit 1 }

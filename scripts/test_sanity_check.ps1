@@ -66,8 +66,8 @@ Case 'use before declaration' $fwd 'not declared until'
 # a settings key read but never declared. Since v4.1.0 there is no settings
 # block at all, so *any* read is undeclared - which is exactly the regression
 # worth catching if someone reaches for Wh_GetIntSetting again out of habit.
-$set = $src.Replace('g_settings.cooldownMs = 300;',
-                    'g_settings.cooldownMs = Wh_GetIntSetting(L"TotallyMadeUp");')
+$set = $src.Replace('pull(L"ovr_cooldown", s.cooldownMs, 0, 60000);',
+                    's.cooldownMs = Wh_GetIntSetting(L"TotallyMadeUp");')
 Case 'setting read but not declared' $set 'settings read but not declared'
 
 # v4.0.2: a numbered dropdown made Windhawk reject the whole settings block.
@@ -83,8 +83,10 @@ $block = @'
 */
 // ==/WindhawkModSettings==
 '@ -replace "`r`n", "`n"
-$opt = $src.Replace("// ==/WindhawkModReadme==`n",
-                    "// ==/WindhawkModReadme==`n`n$block")
+# line-ending agnostic, same reason as the forward-declaration case above: a
+# clone with core.autocrlf=true would turn a literal-LF Replace into a no-op
+$opt = [regex]::Replace($src, '(?m)^// ==/WindhawkModReadme==\r?\n',
+                        "// ==/WindhawkModReadme==`n`n$block")
 Case 'numbered $options dropdown' $opt 'must have a string value'
 
 # unbalanced braces

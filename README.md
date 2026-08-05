@@ -155,8 +155,9 @@ Alternate Command · Nothing
 Left-click toggles the hot corners on and off. Right-click opens the menu:
 **Zones & settings...** for the dashboard, suspend for 15/30/60 minutes, and
 the fullscreen and drag guards. **Reset these toggles** puts those three back
-to their defaults and cancels any suspend — it does not touch your zones. That
-is the dashboard's **Reset** button, which asks first.
+to their defaults and cancels any suspend — it does not touch your zones.
+Wiping your zones is the dashboard's **Reset everything to defaults** button,
+which asks first.
 
 ### Alternate Key Press / Alternate Command
 
@@ -206,9 +207,10 @@ uac;cmd.exe          -> prefix with uac; to request elevation
 ## How it works
 
 Detection runs on its own thread inside a dedicated Windhawk process, sampling
-the cursor every 16 ms whenever it is within 200 px of a zone and easing off to
-as much as 100 ms when it is not — never for longer than it would take the
-cursor to reach the nearest zone. There is no global mouse hook, so the mod
+the cursor every 16 ms — flat, with no adaptive backoff, so a fast flick into a
+corner can never land between two samples. It idles at 100 ms only when the mod
+is switched off, suspended, or has no zones armed. There is no global
+mouse hook, so the mod
 adds nothing to the input path of your games and applications, and nothing the
 shell does can delay or starve it. Actions run on a separate worker thread, so
 a slow launch never holds up detection.

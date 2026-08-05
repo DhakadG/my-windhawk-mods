@@ -387,6 +387,9 @@ if ($optDefs.Count -eq 0) { throw "kOpts entries not found in the source" }
 $nCheck = @($optDefs | Where-Object { $_.Groups[1].Value -eq 'true' }).Count
 $nEdit  = $optDefs.Count - $nCheck
 $nSec   = ([regex]::Matches($modSrc, '(?m)^\s*\{IDC_\w+, L"[^"]*", (?:true|false), L"[^"]*", L"')).Count
+# 0 would silently shrink $optH and let the height assertions pass without ever
+# accounting for the group headings.
+if ($nSec -eq 0) { throw "no kOpts section headings matched - the regex has drifted" }
 $optH    = $Pad+$TabH+$Gap+$nEdit*$RowH+$nCheck*$CheckH+$nSec*$SecH
 $content = [Math]::Max($zonesH,$optH)
 $clientH = $content+$Gap*2+$BtnH+$Pad
@@ -403,48 +406,57 @@ Assert (($Pad+$OptLblW+$Gap+$OptCtlW+$DiagW+$Pad) -le $clientW) "widest options 
 Assert ($ArgW -ge 120) "args field wide enough to be usable ($ArgW px)"
 
 ''
-'--- Adaptive poll interval (#4) ---'
-# The rate is only allowed to drop while the cursor is too far away to reach a
-# zone before the next sample. Getting that wrong does not show up as a crash,
-# it shows up as a corner that sometimes ignores you.
-$kTick = K 'kTickMs'; $kIdle = K 'kIdleTickMs'; $kNear = K 'kNearPx'
-
-function ChebDist($px, $py, $l, $t, $r, $b) {
-  $dx = if ($px -lt $l) { $l - $px } elseif ($px -ge $r) { $px - $r + 1 } else { 0 }
-  $dy = if ($py -lt $t) { $t - $py } elseif ($py -ge $b) { $py - $b + 1 } else { 0 }
-  [math]::Max($dx, $dy)
+'--- The source still has the shape these simulations assume ---'
+# The three groups below model algorithms rather than run the C++, so on their
+# own they would keep passing after the C++ stopped doing what they model.
+# These assertions are the tether: each one fails if the property under test is
+# edited out of the source.
+function Src($pattern, $what) {
+  Assert ([regex]::IsMatch($modSrc, $pattern)) $what
 }
-function PollInterval([long]$nearest) {
-  if ($nearest -le $kNear) { return [long]$kTick }
-  $safe = [long][math]::Floor($nearest / 4)
-  if ($safe -gt $kIdle) { return [long]$kIdle }
-  return $safe
-}
+Src 'fsMon == kAllMonitors \|\| fsMon == job\.monitor' `
+    'the fullscreen guard compares the zone monitor, with an all-monitors sentinel'
+Src 'HMONITOR monitor = nullptr;' `
+    'HitZone still carries the monitor the guard compares against'
+# Both halves must not merely have an executor - they must be handed the SAME
+# one. Checking only that the cache is filled would still pass if the
+# assignment were changed back to a fresh MakeExecutor per half.
+Src '(?s)std::function<void\(\)> altExec\[ZONE_COUNT\];.*?if \(!altExec\[z\]\)\s*\n\s*altExec\[z\] = MakeExecutor[^;]*;\s*\n\s*hz\.exec = altExec\[z\];' `
+    'a split edge hands both halves one executor, so they share its A/B state'
 
-Assert ((ChebDist 3 3 0 0 6 6) -eq 0)    'cursor inside a zone measures zero'
-Assert ((ChebDist 10 3 0 0 6 6) -eq 5)   'distance to the right of a zone'
-Assert ((ChebDist 10 20 0 0 6 6) -eq 15) 'Chebyshev takes the larger axis'
-
-Assert ((PollInterval 0) -eq $kTick)          "inside a zone -> full rate ($kTick ms)"
-Assert ((PollInterval $kNear) -eq $kTick)     "at the near band edge -> full rate"
-Assert ((PollInterval ($kNear + 1)) -gt $kTick) 'just past the band -> the rate relaxes'
-Assert ((PollInterval 100000) -eq $kIdle)     "far away -> capped at the idle rate ($kIdle ms)"
+''
+'--- Poll interval (#4) ---'
+# There is deliberately no adaptive backoff. Any rule for easing off decides
+# from a sample taken BEFORE the user starts moving, so a flick can cross a
+# zone between two samples - and on a corner shared with another monitor there
+# is no screen edge to stop the pointer, so that is a lost trigger rather than
+# a late one. Two versions of that idea have already been written and removed;
+# these assertions exist to stop a third.
+$kTick = K 'kTickMs'; $kIdle = K 'kIdleTickMs'
 Assert ($kTick -lt $kIdle) 'the idle rate is genuinely slower than the full rate'
 
-# The invariant that keeps a trigger from being missed: whenever the loop
-# sleeps longer than the full rate, the cursor cannot cross the remaining gap
-# during that sleep at 4 px/ms.
-$violation = $null
-$notMonotonic = $null
-$prev = 0
-foreach ($d in 0..4000) {
-  $iv = PollInterval $d
-  if ($iv -gt $kTick -and ($iv * 4) -gt $d) { $violation = "$d px -> $iv ms"; break }
-  if ($iv -lt $prev) { $notMonotonic = "$d px -> $iv ms"; break }
-  $prev = $iv
-}
-Assert ($null -eq $violation)    "the cursor can never cross the gap during a relaxed sleep ($violation)"
-Assert ($null -eq $notMonotonic) "the interval never shortens as the cursor moves away ($notMonotonic)"
+$dt = [regex]::Match($modSrc, '(?s)static DWORD DetectTick\(\)\s*\{.*?\n\}').Value
+Assert ($dt.Length -gt 0) 'DetectTick body located in the source'
+
+# Every idle return must sit in the head of the function, before the hit test -
+# those are the paths where nothing can fire at all.
+$hitTest = $dt.IndexOf('int idx = -1;')
+$idleAt = @([regex]::Matches($dt, 'return kIdleTickMs;') | ForEach-Object { $_.Index })
+Assert ($hitTest -gt 0) 'the hit test marks where "nothing can fire" ends'
+Assert ($idleAt.Count -eq 3) "the three no-work paths return the idle rate (found $($idleAt.Count))"
+Assert (($idleAt | Where-Object { $_ -gt $hitTest }).Count -eq 0) `
+       'no idle return survives past the hit test'
+
+# ...and what it returns once a zone could fire is the flat rate, nothing else.
+Assert ([regex]::IsMatch($dt, 'const DWORD next = kTickMs;')) `
+       'the interval after the hit test is the flat full rate'
+Assert (-not [regex]::IsMatch($dt, 'nearest|kNearPx|lastPt')) `
+       'no distance or movement heuristic has crept back into the interval'
+# Those three returns are the only place the idle rate may appear at all, so a
+# backoff smuggled in as `next = cond ? kIdleTickMs : kTickMs` cannot slip past.
+$idleUses = ([regex]::Matches($dt, 'kIdleTickMs')).Count
+Assert ($idleUses -eq $idleAt.Count) `
+       "the idle rate appears only in those returns (used $idleUses times, $($idleAt.Count) returns)"
 
 ''
 '--- Per-monitor fullscreen guard (#5) ---'

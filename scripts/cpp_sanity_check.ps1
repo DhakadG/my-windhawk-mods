@@ -178,9 +178,13 @@ $settingsBlock = ([regex]::Match($src, '(?s)==WindhawkModSettings==.*?/\*(.*?)\*
 # from the settings block only - the readme above it is prose, and a line of
 # prose starting "- Word:" would otherwise register as a declared setting
 $declared = [regex]::Matches($settingsBlock, '(?m)^-\s*(\w+):') | ForEach-Object { $_.Groups[1].Value }
+# Matched on the accessor prefix, not an enumerated list. Since v4.1.0 there is
+# no settings block, so this branch runs on every clean build and reports "and
+# nothing reads a setting" - a claim it must not be able to overstate because a
+# new Wh_Get*Setting variant slipped past a hardcoded name.
 $readNames = @(
-    [regex]::Matches($src, 'Wh_Get(?:Int|String)Setting\(L"(\w+)"')
-    [regex]::Matches($src, 'StringSetting::make\(L"(\w+)"')
+    [regex]::Matches($src, 'Wh_Get\w*Setting\w*\s*\(\s*L"(\w+)"')
+    [regex]::Matches($src, 'StringSetting::make\s*\(\s*L"(\w+)"')
 ) | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
 $missing = $readNames | Where-Object { $_ -notin $declared }
 if ($missing) { Fail "settings read but not declared: $($missing -join ', ')" }

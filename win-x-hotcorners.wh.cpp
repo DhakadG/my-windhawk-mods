@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         4.1.0
+// @version         4.1.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -38,9 +38,8 @@ If all you want is one specific behaviour, a smaller mod may suit you better:
 ## Features
 
 - **Bounded latency** — a dedicated detection thread samples the cursor every
-  ~16 ms near a zone, easing off while the pointer is out in the middle of the
-  desktop. Nothing can starve it: not a busy explorer, not an elevated
-  foreground app, not a slow action.
+  ~16 ms, and only idles when nothing could fire anyway. Nothing can starve it:
+  not a busy explorer, not an elevated foreground app, not a slow action.
 - **Zero impact on the rest of the system** — no global mouse hook, so your
   games and apps keep their input path to themselves.
 - **Monitors identified by name** — zones bind to a display's friendly name
@@ -223,6 +222,36 @@ Hot corners are disabled when any excluded process is the foreground window.
 
 # Changelog
 
+## What's New in v4.1.1
+
+Review fixes on top of v4.1.0, one of them a real race.
+
+- **Fixed: a reload could briefly publish an empty zone set.** Loading the
+  configuration was two steps — write the defaults, then lay the stored values
+  over them — each taking the settings lock separately. In the gap the mod held
+  a complete, plausible, *wrong* configuration with no zones in it. Four of the
+  six things that trigger a reload run on a different thread from the detection
+  loop, and that loop re-checks the display layout twice a second, so a rebuild
+  landing in the gap would arm nothing and log "No zones are active". Loading is
+  now one transaction: the whole configuration is built off to the side and
+  swapped in under a single lock.
+- **That lock is also held for far less time.** It used to cover several hundred
+  value-store reads, an action built per zone, and two log writes — while the
+  detection thread, the action worker and the tray menu all waited on it.
+- **The adaptive poll rate is gone.** v4.1.0 eased the sampling interval off
+  while the cursor was far from every zone. Whichever way that decision is
+  made, it is made from a sample taken *before* the user starts moving, so a
+  flick could cross a zone entirely between two samples. On the outer perimeter
+  that costs a late trigger, because the pointer stops against the screen edge —
+  but a corner shared with a second monitor has no edge to stop against, and
+  there it was a lost one. Detection is back to a flat 16 ms whenever a zone
+  could fire; it still idles at 100 ms when the mod is switched off, suspended,
+  or has no zones armed, where nothing can be missed because nothing can fire.
+- **The dashboard's Reset button said "Reset to Windhawk settings".** There is
+  no Windhawk settings page to go back to. It now says what it does.
+- **The monitor list in the log** still told you to copy a name into the
+  "Monitor" setting, which no longer exists.
+
 ## What's New in v4.1.0
 
 **The Settings page is gone. Everything is in the tray icon now.**
@@ -268,12 +297,10 @@ Hot corners are disabled when any excluded process is the foreground window.
   and **Alternate Key Press** / **Alternate Command** kept a separate A/B
   position for each half. Walking into the left strip and then the right gave
   you A twice. They now share one position.
-- **The detection thread idles.** It sampled the cursor every 16 ms regardless
-  of where the cursor was. It now backs off to as much as 100 ms while the
-  pointer is far from every zone, and returns to the full rate within 200 px of
-  one. The interval is never longer than it would take the cursor to reach the
-  nearest zone, so nothing is missed — and since every zone hugs the screen
-  perimeter, anywhere near an edge is already at the full rate.
+- **The detection thread idles when nothing can fire.** It sampled the cursor
+  every 16 ms even with the mod switched off, suspended, or with no zones
+  armed. Those three cases now tick at 100 ms. *(v4.1.0 also eased off while
+  the cursor was merely far away; v4.1.1 removed that — see below.)*
 
 ## What's New in v4.0.5
 
@@ -507,7 +534,6 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
 
 #include <algorithm>
 #include <atomic>
-#include <climits>   // LONG_MAX, for the adaptive poll interval
 // swprintf_s / _wtoi / memcmp are used directly; they only reached this file
 // through <windows.h> before.
 #include <cstdio>
@@ -672,7 +698,9 @@ struct ZoneSet
 // Globals
 // =====================================================================
 
-static struct
+// Named, not anonymous, so ReloadConfig can build a whole configuration in a
+// local and swap it in under one lock acquisition.
+struct ModSettings
 {
     int cornerSize = 6;
     int edgeSize = 6;
@@ -687,7 +715,8 @@ static struct
     bool disableDuringDrag = true;
     std::vector<std::wstring> excludedProcesses;
     std::vector<MonitorZoneConfig> monitorConfigs;
-} g_settings;
+};
+static ModSettings g_settings;
 
 // g_settings is written by Windhawk's thread and read by the detection thread
 // only when it rebuilds zones. Everything the detection loop needs at runtime
@@ -701,14 +730,11 @@ static std::shared_ptr<const ZoneSet> g_zones;
 
 static std::vector<MonitorInfo> g_monitors; // detection thread only
 
-// Detection thread. 16 ms is the rate that matters; the cursor only needs
-// sampling that often when it is somewhere a zone could plausibly be reached
-// from. Parked in the middle of a 4K screen, once every kIdleTickMs is enough
-// and costs the CPU almost nothing.
+// Detection thread. 16 ms whenever a zone could fire - see DetectTick for why
+// there is no cleverness here. kIdleTickMs is used only on the paths where
+// nothing can fire at all: the mod switched off, suspended, or no zones armed.
 static constexpr DWORD kTickMs = 16;
 static constexpr DWORD kIdleTickMs = 100;
-// Inside this many pixels of any zone, always sample at the full rate.
-static constexpr LONG kNearPx = 200;
 static HANDLE g_hDetectThread = nullptr;
 static DWORD g_dwDetectThreadId = 0;
 static HWND g_hDetectWnd = nullptr;
@@ -767,7 +793,6 @@ static RECT g_topoWorkArea = {};
 static constexpr UINT WM_APP_REBUILD = WM_APP + 1;
 
 // Forward declarations
-static void LoadSettings();
 static const wchar_t *ZoneToString(Zone z);
 static const wchar_t *ActionToString(CornerAction a);
 
@@ -1189,7 +1214,7 @@ static void RefreshMonitors()
     // rather than guessed. Once per load and per display change only.
     Wh_Log(L" ");
     Wh_Log(L"+-- Your monitors ---------------------------------------");
-    Wh_Log(L"|  Copy a name below into this mod's \"Monitor\" setting.");
+    Wh_Log(L"|  These are the displays in the dashboard's monitor selector.");
     Wh_Log(L"|  Use  *  to apply one configuration to every monitor.");
     Wh_Log(L"|");
     for (const auto &m : g_monitors)
@@ -2412,7 +2437,6 @@ static DWORD DetectTick()
         return kIdleTickMs;
 
     int idx = -1;
-    LONG nearest = LONG_MAX;
     for (size_t i = 0; i < zones->zones.size(); i++)
     {
         const RECT &z = zones->zones[i].rect;
@@ -2420,34 +2444,21 @@ static DWORD DetectTick()
             pt.y < z.bottom)
         {
             idx = (int)i;
-            nearest = 0;
             break;
         }
-        // Chebyshev, not Euclidean: no square root, and it never overstates
-        // the gap, so the rate is only relaxed when the cursor is definitely
-        // far away.
-        LONG dx = pt.x < z.left ? z.left - pt.x
-                                : (pt.x >= z.right ? pt.x - z.right + 1 : 0);
-        LONG dy = pt.y < z.top ? z.top - pt.y
-                               : (pt.y >= z.bottom ? pt.y - z.bottom + 1 : 0);
-        LONG d = dx > dy ? dx : dy;
-        if (d < nearest)
-            nearest = d;
     }
 
-    // Every zone hugs the screen perimeter, so being anywhere near the border
-    // keeps the full rate. Out in the middle of the desktop, back off in
-    // proportion to the distance: 4 px/ms is a brisk flick, and even beating it
-    // only costs a slightly late first trigger, never a lost one - the pointer
-    // stops dead against the screen edge that every zone sits on.
-    DWORD next = kTickMs;
-    if (nearest > kNearPx && nearest != LONG_MAX)
-    {
-        DWORD safe = (DWORD)(nearest / 4);
-        next = safe > kIdleTickMs ? kIdleTickMs : safe;
-    }
-
+    // Full rate whenever a zone could fire, with no exceptions. Two attempts at
+    // easing off while the cursor was far away are gone: both scheduled a long
+    // sleep from a sample taken *before* the user started moving, so a flick
+    // could cross a zone entirely between two samples. On the outer perimeter
+    // that only costs a late trigger, because the pointer stops against the
+    // screen edge - but a corner shared with a second monitor has no edge to
+    // stop against, and there it was a lost one. No polling interval can close
+    // that; only an event source could, and 16 ms of GetCursorPos plus a dozen
+    // rectangle compares was never the cost worth taking the risk for.
     ULONGLONG now = GetTickCount64();
+    const DWORD next = kTickMs;
 
     // Enter/leave edge detection, the same shape macOS uses: a zone fires
     // once on entry and re-arms only after the cursor leaves it.
@@ -2615,42 +2626,6 @@ done:
     UnregisterClass(kClass, hInst);
     Wh_Log(L"Detection thread exiting");
     return 0;
-}
-
-// =====================================================================
-// Settings
-// =====================================================================
-
-// Defaults, and nothing else. Every value the user has actually chosen lives in
-// this mod's own value store and is layered on top by ApplyStoredConfig(), so a
-// store that has never been written leaves exactly what is set here.
-//
-// There is no Windhawk settings page any more. Twelve zones times a forty-entry
-// action list made that page a tree nobody could navigate, and a mod cannot
-// write its own settings from code — so the page and the tray dashboard
-// disagreed the moment you touched either one. The dashboard won.
-static void LoadSettings()
-{
-    EnterCriticalSection(&g_settingsLock);
-
-    g_settings.cornerSize = 6;
-    g_settings.edgeSize = 6;
-    g_settings.activationDelay = 0;
-    g_settings.settleMs = 80;
-    g_settings.knockWindowMs = 0;
-    g_settings.cooldownMs = 300;
-    g_settings.centerZonePercent = 20;
-    g_settings.requireModifier = 0;
-    g_settings.avoidTaskbar = false;
-    g_settings.disableOnFullscreen = true;
-    g_settings.disableDuringDrag = true;
-    g_settings.excludedProcesses.clear();
-    g_settings.monitorConfigs.clear();
-
-    g_showMonitorNames = true;
-    g_lockBlankDelayMs = 1200;
-
-    LeaveCriticalSection(&g_settingsLock);
 }
 
 // =====================================================================
@@ -2858,7 +2833,7 @@ static void UpdateTrayIcon(bool add)
 //
 // This is the whole of the mod's persistence. There is no Windhawk settings
 // page to fall back on, so what is written here is what the mod runs with, and
-// a key that has never been written falls back to the default LoadSettings set.
+// a key that has never been written falls back to the default ReloadConfig set.
 //
 // One key per field rather than a packed string: wordy, but it survives partial
 // writes and is readable if anything ever needs debugging by hand.
@@ -2883,14 +2858,17 @@ static std::wstring GuiKey(int cfg, int zone, const wchar_t *what)
     return k;
 }
 
-// Replaces g_settings.monitorConfigs when the dashboard has saved a layout.
-// Caller must hold g_settingsLock.
-static bool ApplyDashboardZones()
+// The saved zone layout, or an empty vector if there is not one yet. Returns it
+// rather than assigning g_settings.monitorConfigs: this reads several hundred
+// value-store keys and builds a std::function per zone, and holding
+// g_settingsLock across all of that would stall the detection thread, the
+// action worker and the tray menu.
+static std::vector<MonitorZoneConfig> ReadDashboardZones()
 {
-    if (Wh_GetIntValue(L"gui_active", 0) == 0)
-        return false;
-
     std::vector<MonitorZoneConfig> configs;
+    if (Wh_GetIntValue(L"gui_active", 0) == 0)
+        return configs;
+
     for (int i = 0; i < kMaxGuiConfigs; i++)
     {
         std::wstring id = GetStrValue(GuiKey(i, -1, L"id").c_str());
@@ -2922,15 +2900,7 @@ static bool ApplyDashboardZones()
         if (any)
             configs.push_back(std::move(cfg));
     }
-
-    if (configs.empty())
-        return false;
-
-    g_settings.monitorConfigs = std::move(configs);
-    Wh_Log(L"Using the dashboard's zone layout (%d configuration%s)",
-           (int)g_settings.monitorConfigs.size(),
-           g_settings.monitorConfigs.size() == 1 ? L"" : L"s");
-    return true;
+    return configs;
 }
 
 // Back to a fresh install. -1 is the "never written" marker every reader tests
@@ -2961,29 +2931,39 @@ static void ClearStoredConfig()
     }
 }
 
-// Lays the stored configuration over the defaults LoadSettings just set. Keys
-// still carry the historical "ovr_" prefix - back when a Windhawk settings page
-// existed these were overrides on top of it. They are now the configuration
-// itself; the prefix stays only so an existing setup is not orphaned.
+// The whole of this mod's configuration, read and applied as one transaction.
 //
-// An unset key reads back as -1, which fails every range test below, so a value
-// the user has never touched simply keeps its default.
-static void ApplyStoredConfig()
+// Built into a local first, with no lock held: this reads every key in the
+// value store and constructs a std::function per zone, and three other threads
+// want g_settingsLock while that happens - the detection thread in
+// BuildZoneSet, the action worker before every trigger, and the tray thread
+// building its menu. The lock is taken once, for the swap.
+//
+// Doing it in two phases (defaults, then the stored values on top) left a
+// window in which g_settings was a complete, plausible, *wrong* configuration:
+// a rebuild landing in that window published an empty zone set and logged "No
+// zones are active". Four of the six callers run on a thread other than the
+// one that starts the mod, so that window was reachable.
+//
+// Keys still carry the historical "ovr_" prefix - back when there was a
+// Windhawk settings page these were overrides on top of it. They are the
+// configuration itself now; the prefix stays so an existing setup is not
+// orphaned. An unset key reads back as -1, which fails every range test below,
+// so a value the user has never touched simply keeps its default.
+static void ReloadConfig()
 {
+    ModSettings s;   // the member initialisers are the defaults
+
     int v = Wh_GetIntValue(kOvrEnabled, -1);
     g_trayEnabled = (v < 0) ? true : (v != 0);
 
-    // g_settings is read by the worker thread under this lock, so take it
-    // here too rather than writing the fields from underneath it.
-    EnterCriticalSection(&g_settingsLock);
-
     v = Wh_GetIntValue(kOvrFullscreen, -1);
     if (v >= 0)
-        g_settings.disableOnFullscreen = (v != 0);
+        s.disableOnFullscreen = (v != 0);
 
     v = Wh_GetIntValue(kOvrDrag, -1);
     if (v >= 0)
-        g_settings.disableDuringDrag = (v != 0);
+        s.disableDuringDrag = (v != 0);
 
     auto pull = [](const wchar_t *k, int &dst, int lo, int hi)
     {
@@ -2991,29 +2971,29 @@ static void ApplyStoredConfig()
         if (x >= lo && x <= hi)
             dst = x;
     };
-    pull(L"ovr_corner", g_settings.cornerSize, 1, 500);
-    pull(L"ovr_edge", g_settings.edgeSize, 1, 500);
-    pull(L"ovr_delay", g_settings.activationDelay, 0, 10000);
-    pull(L"ovr_settle", g_settings.settleMs, 0, 10000);
-    pull(L"ovr_knock", g_settings.knockWindowMs, 0, 10000);
-    pull(L"ovr_cooldown", g_settings.cooldownMs, 0, 60000);
-    pull(L"ovr_centre", g_settings.centerZonePercent, 1, 90);
-    pull(L"ovr_modifier", g_settings.requireModifier, 0, 4);
-    // Via a local: pull takes int&, and the global is atomic because the
-    // worker thread reads it while this runs.
-    int lockBlank = g_lockBlankDelayMs;
-    pull(L"ovr_lockblank", lockBlank, 0, 10000);
-    g_lockBlankDelayMs = lockBlank;
+    pull(L"ovr_corner", s.cornerSize, 1, 500);
+    pull(L"ovr_edge", s.edgeSize, 1, 500);
+    pull(L"ovr_delay", s.activationDelay, 0, 10000);
+    pull(L"ovr_settle", s.settleMs, 0, 10000);
+    pull(L"ovr_knock", s.knockWindowMs, 0, 10000);
+    pull(L"ovr_cooldown", s.cooldownMs, 0, 60000);
+    pull(L"ovr_centre", s.centerZonePercent, 1, 90);
+    pull(L"ovr_modifier", s.requireModifier, 0, 4);
 
     int x = Wh_GetIntValue(L"ovr_taskbar", -1);
     if (x >= 0)
-        g_settings.avoidTaskbar = (x != 0);
-    x = Wh_GetIntValue(L"ovr_monnames", -1);
-    if (x >= 0)
-        g_showMonitorNames = (x != 0);
+        s.avoidTaskbar = (x != 0);
 
-    // LoadSettings already emptied the list, so clearing the field in the
-    // dashboard genuinely clears it - no "if non-empty" guard needed.
+    // Via a local: pull takes int&, and these two globals are atomic because
+    // other threads read them while this runs.
+    int lockBlank = 1200;
+    pull(L"ovr_lockblank", lockBlank, 0, 10000);
+    g_lockBlankDelayMs = lockBlank;
+    x = Wh_GetIntValue(L"ovr_monnames", -1);
+    g_showMonitorNames = (x < 0) ? true : (x != 0);
+
+    // s starts empty, so clearing the field in the dashboard genuinely clears
+    // the list - no "if the stored string is non-empty" guard needed.
     std::wstring rest = GetStrValue(L"ovr_excluded");
     while (!rest.empty())
     {
@@ -3030,23 +3010,33 @@ static void ApplyStoredConfig()
             rest.clear();
         }
         if (!tok.empty())
-            g_settings.excludedProcesses.push_back(ToLowerStr(tok));
+            s.excludedProcesses.push_back(ToLowerStr(tok));
     }
 
-    ApplyDashboardZones();
+    s.monitorConfigs = ReadDashboardZones();
 
+    // Copied out before the move, so the summary can be logged after the lock
+    // is released - Wh_Log goes through OutputDebugString and takes a
+    // machine-wide lock of its own.
+    const int zoneCount = (int)s.monitorConfigs.size();
+    const int cs = s.cornerSize, es = s.edgeSize, dl = s.activationDelay;
+    const int st = s.settleMs, cd = s.cooldownMs;
+    const int nx = (int)s.excludedProcesses.size();
+    const bool fs = s.disableOnFullscreen, dg = s.disableDuringDrag;
+
+    EnterCriticalSection(&g_settingsLock);
+    g_settings = std::move(s);
+    LeaveCriticalSection(&g_settingsLock);
+
+    if (zoneCount)
+        Wh_Log(L"Using the dashboard's zone layout (%d configuration%s)",
+               zoneCount, zoneCount == 1 ? L"" : L"s");
     Wh_Log(L"Sizes: corner %dpx, edge %dpx.  Timing: delay %dms, "
            L"pass-through guard %dms, cooldown %dms.",
-           g_settings.cornerSize, g_settings.edgeSize,
-           g_settings.activationDelay, g_settings.settleMs,
-           g_settings.cooldownMs);
+           cs, es, dl, st, cd);
     Wh_Log(L"Skip while fullscreen: %s.  Skip while dragging: %s.  "
            L"Excluded apps: %d.",
-           g_settings.disableOnFullscreen ? L"yes" : L"no",
-           g_settings.disableDuringDrag ? L"yes" : L"no",
-           (int)g_settings.excludedProcesses.size());
-
-    LeaveCriticalSection(&g_settingsLock);
+           fs ? L"yes" : L"no", dg ? L"yes" : L"no", nx);
 }
 
 static void ShowTrayMenu(POINT pt)
@@ -3167,8 +3157,7 @@ static void HandleTrayCommand(UINT id)
         Wh_SetIntValue(kOvrFullscreen, -1);
         Wh_SetIntValue(kOvrDrag, -1);
         g_suspendUntil = 0;
-        LoadSettings();
-        ApplyStoredConfig();
+        ReloadConfig();
         RequestRebuild();
         Wh_Log(L"Tray: toggles reset to defaults");
         break;
@@ -4137,7 +4126,7 @@ static void DashSave(HWND hWnd, DashState *s)
             continue;
 
         // A machine with more displays than the value store has slots would
-        // write keys that ApplyDashboardZones' kMaxGuiConfigs loop never reads
+        // write keys that ReadDashboardZones' kMaxGuiConfigs loop never reads
         // back — the edit would vanish on reload with nothing said.
         if (sel >= kMaxGuiConfigs)
         {
@@ -4189,8 +4178,7 @@ static void DashSave(HWND hWnd, DashState *s)
     Wh_SetIntValue(L"ovr_taskbar", IsDlgButtonChecked(hWnd, IDC_CB_TASKBAR));
     Wh_SetIntValue(L"ovr_monnames", IsDlgButtonChecked(hWnd, IDC_CB_MONNAMES));
 
-    LoadSettings();
-    ApplyStoredConfig();
+    ReloadConfig();
     RequestRebuild();
     UpdateTrayIcon(false);
     Wh_Log(L"Dashboard: settings saved and applied");
@@ -4342,7 +4330,7 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                       BS_DEFPUSHBUTTON | WS_VISIBLE | WS_TABSTOP, IDC_SAVE);
         s->hCancel = mk(L"BUTTON", L"Close",
                         BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP, IDC_CANCEL);
-        s->hReset = mk(L"BUTTON", L"Reset to Windhawk settings",
+        s->hReset = mk(L"BUTTON", L"Reset everything to defaults",
                        BS_PUSHBUTTON | WS_VISIBLE | WS_TABSTOP, IDC_RESET);
 
         // One tooltip control serving every field. Descriptions live next to
@@ -4553,8 +4541,7 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                 IDYES)
             {
                 ClearStoredConfig();
-                LoadSettings();
-                ApplyStoredConfig();
+                ReloadConfig();
                 RequestRebuild();
                 DashLoad(hWnd, s);
             }
@@ -4810,8 +4797,7 @@ BOOL WhTool_ModInit()
         return FALSE;
     }
 
-    LoadSettings();
-    ApplyStoredConfig();
+    ReloadConfig();
 
     g_hWorkerThread =
         CreateThread(nullptr, 0, ActionWorkerThread, nullptr, 0, nullptr);
@@ -4840,8 +4826,7 @@ BOOL WhTool_ModInit()
 
 void WhTool_ModSettingsChanged()
 {
-    LoadSettings();
-    ApplyStoredConfig();
+    ReloadConfig();
     UpdateTrayIcon(false);
     // The zone rebuild has to happen on the detection thread, which owns the
     // DPI context and the monitor list. Post, never send — Windhawk's thread

@@ -9,6 +9,19 @@ Every zone is configurable per monitor.
 
 Inspired by [WinXCorners](https://github.com/vhanla/winxcorners).
 
+### Related mods
+
+If you only want one specific behaviour, a smaller Windhawk mod may suit you
+better:
+
+- [edge-hot-corner-desktop-switch](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/edge-hot-corner-desktop-switch.wh.cpp)
+  — hovering the left or right screen edge switches virtual desktop. That is
+  one of the actions here, so this mod is a superset, but if it is all you
+  need that one is far simpler.
+- [hotcorner-hotkeys](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/hotcorner-hotkeys.wh.cpp)
+  — sends a key combination from a corner, dispatching on a hotkey rather than
+  on hover.
+
 ---
 
 ## Install

@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         4.0.4
+// @version         4.0.5
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -23,6 +23,17 @@ independently.
 
 Inspired by [WinXCorners](https://github.com/vhanla/winxcorners), rebuilt as a
 Windhawk mod.
+
+### Related mods
+
+If all you want is one specific behaviour, a smaller mod may suit you better:
+
+- **edge-hot-corner-desktop-switch** — hovering the left or right screen edge
+  switches virtual desktop. This mod does that too, as one of the actions you
+  can assign, but if it is the only thing you are after that one is far
+  simpler.
+- **hotcorner-hotkeys** — sends a key combination from a corner. Different
+  trigger model: it dispatches on a hotkey rather than on hover.
 
 ## Features
 
@@ -187,6 +198,20 @@ Hot corners are disabled when any excluded process is the foreground window.
 **Example:** `photoshop.exe;premiere.exe;blender.exe`
 
 # Changelog
+
+## What's New in v4.0.5
+
+- **Fixed: "Turn Off Monitors", "Start Screen Saver" and "Lock and Turn Off
+  Monitors" could stall every other action behind them.** They ask every
+  window on the desktop to act, and the old call waited up to half a second
+  for *each* one — so a single slow application could tie up the action
+  thread for seconds while the mod appeared to have stopped responding. The
+  request is now sent without waiting.
+- Added a note on which smaller mods overlap with this one, so it is easier to
+  tell which is the right tool.
+- Internal tidying: dropped snapshot fields nothing read, the theme helper
+  resolves its entry point once instead of on every control, and the tray
+  icon's mask is explicitly zeroed rather than left undefined.
 
 ## What's New in v4.0.4
 
@@ -1071,6 +1096,11 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
 
 #include <algorithm>
 #include <atomic>
+// swprintf_s / _wtoi / memcmp are used directly; they only reached this file
+// through <windows.h> before.
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <cwctype>
 #include <deque>
 #include <functional>
@@ -1200,7 +1230,6 @@ struct HitZone
     int knock = 0;
     int cooldown = 300;
     int modifier = 0;
-    int size = 6;
     Zone zone = ZONE_TOP_LEFT;
 };
 
@@ -1213,11 +1242,10 @@ struct ZoneSet
     // snapshot so the dashboard thread can list monitors without reading
     // g_monitors, which the detection thread clears and refills underneath it.
     std::vector<std::wstring> monitorNames;
-    int activationDelay = 0;
-    int settleMs = 80;
-    int knockWindowMs = 0;
-    int requireModifier = 0;
-    int cooldownMs = 0;
+    // Only what the detection loop actually reads. The timings live on each
+    // HitZone, resolved at build time, which is the whole point of resolving
+    // them there; a second copy here would just be a second thing to keep
+    // in step.
     bool disableDuringDrag = true;
 };
 
@@ -2093,11 +2121,18 @@ static void ActionTaskView() { SendKeys({VK_LWIN, VK_TAB}); }
 //
 // Broadcasting reaches every top-level window, so at least one will route it.
 // Runs on the worker thread, so the blocking call cannot delay detection.
+// Broadcast, because posting to the foreground window does not work: after
+// LockWorkStation there is no foreground window on this desktop, and the
+// GetDesktopWindow fallback handles nothing.
+//
+// SendNotifyMessage rather than SendMessageTimeout: a broadcast applies the
+// timeout to *every* top-level window in turn, so one slow process could hold
+// the worker thread for seconds and stall every queued action behind it.
+// SendNotifyMessage returns immediately for windows owned by other threads,
+// which is all of them here.
 static void BroadcastSysCommand(WPARAM command, LPARAM param)
 {
-    DWORD_PTR result = 0;
-    SendMessageTimeoutW(HWND_BROADCAST, WM_SYSCOMMAND, command, param,
-                        SMTO_ABORTIFHUNG, 500, &result);
+    SendNotifyMessageW(HWND_BROADCAST, WM_SYSCOMMAND, command, param);
 }
 
 static void ActionScreenSaver()
@@ -2649,11 +2684,6 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
     int csCfg = g_settings.cornerSize > 0 ? g_settings.cornerSize : 1;
     int esCfg = g_settings.edgeSize > 0 ? g_settings.edgeSize : 1;
 
-    set->activationDelay = g_settings.activationDelay;
-    set->settleMs = g_settings.settleMs;
-    set->knockWindowMs = g_settings.knockWindowMs;
-    set->requireModifier = g_settings.requireModifier;
-    set->cooldownMs = g_settings.cooldownMs;
     set->disableDuringDrag = g_settings.disableDuringDrag;
 
     for (const auto &mon : g_monitors)
@@ -3470,7 +3500,11 @@ static HICON MakeTrayIcon(bool enabled)
         }
     }
 
-    HBITMAP hMask = CreateBitmap(sz, sz, 1, 1, nullptr);
+    // Explicitly zeroed. Transparency here comes from the colour bitmap's
+    // alpha channel, so undefined mask bits happen to work, but "happens to"
+    // is not a property worth relying on.
+    std::vector<BYTE> maskBits(((sz + 15) / 16) * 2 * sz, 0);
+    HBITMAP hMask = CreateBitmap(sz, sz, 1, 1, maskBits.data());
     ICONINFO ii = {};
     ii.fIcon = TRUE;
     ii.hbmColor = hColor;
@@ -4105,14 +4139,21 @@ static bool ZoneHasTwoParts(Zone z)
 static void ThemeControl(HWND h, const wchar_t *theme,
                          const wchar_t *subIdList = nullptr)
 {
-    HMODULE ux = GetModuleHandleW(L"uxtheme.dll");
-    if (!ux)
-        ux = LoadLibraryExW(L"uxtheme.dll", nullptr,
-                            LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if (!ux)
-        return;
+    // Resolved once: this runs about forty times while the dashboard is built,
+    // and the LoadLibraryEx fallback took a reference every time without ever
+    // releasing it.
     using Fn = HRESULT(WINAPI *)(HWND, LPCWSTR, LPCWSTR);
-    auto fn = reinterpret_cast<Fn>(GetProcAddress(ux, "SetWindowTheme"));
+    static Fn fn = []() -> Fn
+    {
+        HMODULE ux = GetModuleHandleW(L"uxtheme.dll");
+        if (!ux)
+            ux = LoadLibraryExW(L"uxtheme.dll", nullptr,
+                                LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!ux)
+            return nullptr;
+        return reinterpret_cast<Fn>(GetProcAddress(ux, "SetWindowTheme"));
+    }();
+
     if (fn)
         fn(h, theme, subIdList);
 }

@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         4.1.1
+// @version         4.1.2
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -221,6 +221,23 @@ Hot corners are disabled when any excluded process is the foreground window.
 **Example:** `photoshop.exe;premiere.exe;blender.exe`
 
 # Changelog
+
+## What's New in v4.1.2
+
+Two more review fixes, both about threads.
+
+- **Two reloads could finish out of order.** Reloading builds the whole
+  configuration off to the side and swaps it in at the end — which is what keeps
+  the settings lock held briefly, but meant two reloads started close together
+  could publish in the wrong order, leaving the live configuration stale against
+  what was actually saved. Saving from the dashboard, resetting, and the tray's
+  own toggles now hold one lock across both the write and the reload that reads
+  it back, so a reload always sees a settled store.
+- **A failed cursor read slowed detection to the idle rate.** `GetCursorPos`
+  failing is transient, and the zones are still armed while it does — so the
+  right answer is to try again on the next 16 ms tick, not to wait 100 ms. Only
+  the states where nothing can fire at all use the idle rate, which is what the
+  documentation already claimed.
 
 ## What's New in v4.1.1
 
@@ -722,6 +739,20 @@ static ModSettings g_settings;
 // only when it rebuilds zones. Everything the detection loop needs at runtime
 // lives in the published ZoneSet instead, so this is never taken per tick.
 static CRITICAL_SECTION g_settingsLock;
+
+// Serialises a whole write-then-reload, so two of them cannot interleave.
+// ReloadConfig builds its result outside g_settingsLock on purpose - that is
+// what keeps the hold short - but it means two reloads racing could publish out
+// of order and leave the older one winning, with the runtime configuration
+// stale against what is actually stored. The dashboard's Save, the dashboard's
+// Reset and the tray's reset take this around their value-store writes *and*
+// the reload that follows, so a reload always sees a settled store. Recursive
+// by nature, which is why those callers can hold it across ReloadConfig's own
+// acquisition.
+//
+// Order is always g_reloadLock then g_settingsLock; nothing takes them the
+// other way round.
+static CRITICAL_SECTION g_reloadLock;
 
 // Published zone snapshot. Swapped wholesale on rebuild; readers take a
 // shared_ptr copy, so an in-flight tick can never see a half-rebuilt vector.
@@ -2434,7 +2465,7 @@ static DWORD DetectTick()
 
     POINT pt;
     if (!GetCursorPos(&pt))
-        return kIdleTickMs;
+        return kTickMs;   // transient, and zones are armed - do not slow down
 
     int idx = -1;
     for (size_t i = 0; i < zones->zones.size(); i++)
@@ -2952,6 +2983,8 @@ static void ClearStoredConfig()
 // so a value the user has never touched simply keeps its default.
 static void ReloadConfig()
 {
+    EnterCriticalSection(&g_reloadLock);
+
     ModSettings s;   // the member initialisers are the defaults
 
     int v = Wh_GetIntValue(kOvrEnabled, -1);
@@ -3037,6 +3070,8 @@ static void ReloadConfig()
     Wh_Log(L"Skip while fullscreen: %s.  Skip while dragging: %s.  "
            L"Excluded apps: %d.",
            fs ? L"yes" : L"no", dg ? L"yes" : L"no", nx);
+
+    LeaveCriticalSection(&g_reloadLock);
 }
 
 static void ShowTrayMenu(POINT pt)
@@ -3128,23 +3163,30 @@ static void HandleTrayCommand(UINT id)
         Wh_Log(L"Tray: resumed");
         break;
 
+    // These two mutate the live configuration and write the key behind it, so
+    // they take g_reloadLock for the same reason a save does: a reload landing
+    // between the two halves would either lose the toggle or read it twice.
     case IDM_FULLSCREEN:
     {
+        EnterCriticalSection(&g_reloadLock);
         EnterCriticalSection(&g_settingsLock);
         g_settings.disableOnFullscreen = !g_settings.disableOnFullscreen;
         int v = g_settings.disableOnFullscreen ? 1 : 0;
         LeaveCriticalSection(&g_settingsLock);
         Wh_SetIntValue(kOvrFullscreen, v);
+        LeaveCriticalSection(&g_reloadLock);
         break;
     }
 
     case IDM_DRAG:
     {
+        EnterCriticalSection(&g_reloadLock);
         EnterCriticalSection(&g_settingsLock);
         g_settings.disableDuringDrag = !g_settings.disableDuringDrag;
         int v = g_settings.disableDuringDrag ? 1 : 0;
         LeaveCriticalSection(&g_settingsLock);
         Wh_SetIntValue(kOvrDrag, v);
+        LeaveCriticalSection(&g_reloadLock);
         RequestRebuild();
         break;
     }
@@ -3153,11 +3195,13 @@ static void HandleTrayCommand(UINT id)
     // zone layout from a menu item with no confirmation would be a trap; the
     // dashboard's Reset button does that, behind a prompt.
     case IDM_CLEAR_OVERRIDES:
+        EnterCriticalSection(&g_reloadLock);
         Wh_SetIntValue(kOvrEnabled, -1);
         Wh_SetIntValue(kOvrFullscreen, -1);
         Wh_SetIntValue(kOvrDrag, -1);
         g_suspendUntil = 0;
         ReloadConfig();
+        LeaveCriticalSection(&g_reloadLock);
         RequestRebuild();
         Wh_Log(L"Tray: toggles reset to defaults");
         break;
@@ -4113,6 +4157,11 @@ static void DashLoad(HWND hWnd, DashState *s)
 
 static void DashSave(HWND hWnd, DashState *s)
 {
+    // Held across the writes and the reload that follows them, so a reload
+    // started elsewhere - the tray's reset, or Windhawk - cannot read the store
+    // halfway through this save and publish a mixture of the two.
+    EnterCriticalSection(&g_reloadLock);
+
     // Fold what is on screen back into its slot, then write every slot the
     // window has touched. Writing only the visible one meant a two-monitor
     // setup could not be configured in a single session: the other display's
@@ -4179,6 +4228,8 @@ static void DashSave(HWND hWnd, DashState *s)
     Wh_SetIntValue(L"ovr_monnames", IsDlgButtonChecked(hWnd, IDC_CB_MONNAMES));
 
     ReloadConfig();
+    LeaveCriticalSection(&g_reloadLock);
+
     RequestRebuild();
     UpdateTrayIcon(false);
     Wh_Log(L"Dashboard: settings saved and applied");
@@ -4540,8 +4591,13 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                             L"Win-X Hot Corners", MB_YESNO | MB_ICONQUESTION) ==
                 IDYES)
             {
+                // Same pairing as DashSave: the wipe and the reload that reads
+                // it back have to look atomic to any other thread.
+                EnterCriticalSection(&g_reloadLock);
                 ClearStoredConfig();
                 ReloadConfig();
+                LeaveCriticalSection(&g_reloadLock);
+
                 RequestRebuild();
                 DashLoad(hWnd, s);
             }
@@ -4786,6 +4842,7 @@ BOOL WhTool_ModInit()
            L"the clock) and choose \"Zones & settings...\".");
 
     InitializeCriticalSection(&g_settingsLock);
+    InitializeCriticalSection(&g_reloadLock);
     InitializeCriticalSection(&g_zonesLock);
     InitializeCriticalSection(&g_queueLock);
 
@@ -4922,6 +4979,7 @@ void WhTool_ModUninit()
 
     DeleteCriticalSection(&g_queueLock);
     DeleteCriticalSection(&g_zonesLock);
+    DeleteCriticalSection(&g_reloadLock);
     DeleteCriticalSection(&g_settingsLock);
 
     Wh_Log(L"Uninit done");

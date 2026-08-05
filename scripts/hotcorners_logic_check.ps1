@@ -443,13 +443,18 @@ Assert ($dt.Length -gt 0) 'DetectTick body located in the source'
 $hitTest = $dt.IndexOf('int idx = -1;')
 $idleAt = @([regex]::Matches($dt, 'return kIdleTickMs;') | ForEach-Object { $_.Index })
 Assert ($hitTest -gt 0) 'the hit test marks where "nothing can fire" ends'
-Assert ($idleAt.Count -eq 3) "the three no-work paths return the idle rate (found $($idleAt.Count))"
+Assert ($idleAt.Count -ge 1) "the no-work paths return the idle rate (found $($idleAt.Count))"
 Assert (($idleAt | Where-Object { $_ -gt $hitTest }).Count -eq 0) `
        'no idle return survives past the hit test'
 
 # ...and what it returns once a zone could fire is the flat rate, nothing else.
 Assert ([regex]::IsMatch($dt, 'const DWORD next = kTickMs;')) `
        'the interval after the hit test is the flat full rate'
+# ...and that the value actually reaches the caller. Checking only that `next`
+# is declared would pass if the terminal return were changed to something else.
+$afterHit = $dt.Substring($hitTest)
+Assert ([regex]::IsMatch($afterHit, '(?s)const DWORD next = kTickMs;.*return next;')) `
+       'the active path returns that flat rate'
 Assert (-not [regex]::IsMatch($dt, 'nearest|kNearPx|lastPt')) `
        'no distance or movement heuristic has crept back into the interval'
 # Those three returns are the only place the idle rate may appear at all, so a

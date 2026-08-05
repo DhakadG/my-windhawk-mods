@@ -4009,8 +4009,20 @@ struct DashState
     bool showZones = true;
     int hoverZone = -1;   // zone highlighted in the preview
     int selZone = 0;      // zone whose per-zone settings are being edited
-    ZoneTuning tuning[ZONE_COUNT];
+    ZoneTuning tuning[ZONE_COUNT];   // the slot currently on screen
     int cfgIndex = 0;   // which slot in the value store we are editing
+
+    // Every slot the window has touched, so switching displays does not throw
+    // the previous display's edits away and Save can write all of them. The
+    // controls only ever show one slot; this is where the other ones live.
+    struct Slot
+    {
+        bool loaded = false;
+        int action[ZONE_COUNT] = {};
+        std::wstring args[ZONE_COUNT];
+        ZoneTuning tuning[ZONE_COUNT];
+    };
+    std::vector<Slot> slots;
 
     HWND hMonitor = nullptr;
     HWND hZoneLabel[ZONE_COUNT] = {};
@@ -4136,26 +4148,91 @@ static bool ZoneHasTwoParts(Zone z)
 // SetWindowTheme only stops theming a control when *both* strings are empty,
 // and a still-themed control ignores colour messages such as
 // TTM_SETTIPBKCOLOR — which is why the tooltip stayed light.
+// Resolved once: theming runs about forty times while the dashboard is built,
+// and the LoadLibraryEx fallback used to take a reference every time without
+// ever releasing it.
+static HMODULE UxTheme()
+{
+    static HMODULE ux = []() -> HMODULE
+    {
+        HMODULE m = GetModuleHandleW(L"uxtheme.dll");
+        if (!m)
+            m = LoadLibraryExW(L"uxtheme.dll", nullptr,
+                               LOAD_LIBRARY_SEARCH_SYSTEM32);
+        return m;
+    }();
+    return ux;
+}
+
 static void ThemeControl(HWND h, const wchar_t *theme,
                          const wchar_t *subIdList = nullptr)
 {
-    // Resolved once: this runs about forty times while the dashboard is built,
-    // and the LoadLibraryEx fallback took a reference every time without ever
-    // releasing it.
     using Fn = HRESULT(WINAPI *)(HWND, LPCWSTR, LPCWSTR);
-    static Fn fn = []() -> Fn
-    {
-        HMODULE ux = GetModuleHandleW(L"uxtheme.dll");
-        if (!ux)
-            ux = LoadLibraryExW(L"uxtheme.dll", nullptr,
-                                LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (!ux)
-            return nullptr;
-        return reinterpret_cast<Fn>(GetProcAddress(ux, "SetWindowTheme"));
-    }();
-
+    static Fn fn =
+        UxTheme() ? reinterpret_cast<Fn>(
+                        GetProcAddress(UxTheme(), "SetWindowTheme"))
+                  : nullptr;
     if (fn)
         fn(h, theme, subIdList);
+}
+
+// Dark mode for the standard controls is only reachable through uxtheme
+// exports that have no names, just ordinals. This matters more than it looks:
+// naming a control's theme "DarkMode_CFD" does *nothing* until the process has
+// asked for dark mode here first. Without these two calls the combo boxes,
+// edits, buttons and check boxes stay on the light theme and paint their own
+// text in near-black — over the dark background this window draws — and no
+// amount of WM_CTLCOLOR* can override it, because the theme does that drawing,
+// not the parent.
+//
+// Ordinal 135 is SetPreferredAppMode on 1903 and later, and AllowDarkModeForApp
+// on 1809; both take an int and both do the right thing with ForceDark.
+// Ordinal 133 is AllowDarkModeForWindow. Missing ordinals just leave the window
+// light, which is exactly the old behaviour.
+enum DarkAppMode
+{
+    kAppModeDefault = 0,
+    kAppModeAllowDark = 1,
+    kAppModeForceDark = 2,
+    kAppModeForceLight = 3,
+};
+
+static void SetProcessDarkMode(bool dark)
+{
+    using Fn = int(WINAPI *)(int);
+    static Fn fn = UxTheme() ? reinterpret_cast<Fn>(GetProcAddress(
+                                   UxTheme(), MAKEINTRESOURCEA(135)))
+                             : nullptr;
+    if (fn)
+        fn(dark ? kAppModeForceDark : kAppModeForceLight);
+}
+
+static void AllowDarkModeForControl(HWND h, bool dark)
+{
+    using Fn = BOOL(WINAPI *)(HWND, BOOL);
+    static Fn fn = UxTheme() ? reinterpret_cast<Fn>(GetProcAddress(
+                                   UxTheme(), MAKEINTRESOURCEA(133)))
+                             : nullptr;
+    if (fn)
+        fn(h, dark ? TRUE : FALSE);
+}
+
+// The theme class a control needs depends on what it is: the "common file
+// dialog" classes cover combo boxes and edits, Explorer's cover buttons and
+// check boxes. Getting this wrong is silent - the control simply stays light.
+static void ApplyControlTheme(HWND h, const wchar_t *cls)
+{
+    if (!h)
+        return;
+
+    AllowDarkModeForControl(h, !g_lightTheme);
+
+    if (_wcsicmp(cls, L"BUTTON") == 0)
+        ThemeControl(h, g_lightTheme ? L"Explorer" : L"DarkMode_Explorer");
+    else
+        ThemeControl(h, g_lightTheme ? L"CFD" : L"DarkMode_CFD");
+
+    SendMessageW(h, WM_THEMECHANGED, 0, 0);
 }
 
 // Dark title bar, and Mica where the build supports it. Both are no-ops on
@@ -4540,63 +4617,146 @@ static void DashCaptureZoneTuning(DashState *s)
     tn.modifier = (m <= 0) ? -1 : m - 1;
 }
 
-static void DashLoadZones(DashState *s)
+// The monitor name a combo entry stands for. Entry 0 is the wildcard.
+static std::wstring DashSlotMonitorId(DashState *s, int index)
 {
-    int sel = (int)SendMessageW(s->hMonitor, CB_GETCURSEL, 0, 0);
-    if (sel < 0)
-        sel = 0;
-    s->cfgIndex = sel;
+    if (index <= 0)
+        return L"*";
+    wchar_t buf[256] = {};
+    if (SendMessageW(s->hMonitor, CB_GETLBTEXT, index, (LPARAM)buf) == CB_ERR)
+        return L"";
+    return buf;
+}
+
+// Reads persistence into a slot, once. Everything after that comes from the
+// in-memory copy, so an edit is never re-read over.
+static void DashFillSlotFromStore(DashState *s, int index)
+{
+    if (index < 0 || index >= (int)s->slots.size() || s->slots[index].loaded)
+        return;
+
+    DashState::Slot &sl = s->slots[index];
+    sl.loaded = true;
 
     bool fromGui = Wh_GetIntValue(L"gui_active", 0) != 0;
+
+    // Seeding from the Windhawk settings has to match on the display this slot
+    // represents. Indexing monitorConfigs by the combo position bound entry 0
+    // to "All monitors", so a configuration written for one display was shown
+    // as the wildcard - and saving it then fired it on every display.
+    const ZoneConfig *seed = nullptr;
+    std::wstring want = DashSlotMonitorId(s, index);
+    EnterCriticalSection(&g_settingsLock);
+    if (!fromGui)
+    {
+        for (const auto &cfg : g_settings.monitorConfigs)
+        {
+            if (_wcsicmp(cfg.monitorId.c_str(), want.c_str()) == 0)
+            {
+                seed = &cfg;
+                break;
+            }
+        }
+    }
 
     for (int z = 0; z < ZONE_COUNT; z++)
     {
         std::wstring act, args;
         if (fromGui)
         {
-            act = GetStrValue(GuiKey(sel, z, L"a").c_str());
-            args = GetStrValue(GuiKey(sel, z, L"g").c_str());
+            act = GetStrValue(GuiKey(index, z, L"a").c_str());
+            args = GetStrValue(GuiKey(index, z, L"g").c_str());
         }
-        else
+        else if (seed)
         {
-            // First run: seed from whatever the Windhawk settings say.
-            EnterCriticalSection(&g_settingsLock);
-            if (sel < (int)g_settings.monitorConfigs.size())
-            {
-                act = ActionIdFromEnum(g_settings.monitorConfigs[sel].zones[z].action);
-                args = g_settings.monitorConfigs[sel].zones[z].args;
-            }
-            LeaveCriticalSection(&g_settingsLock);
+            act = ActionIdFromEnum(seed->zones[z].action);
+            args = seed->zones[z].args;
         }
 
-        int idx = 0;
+        sl.action[z] = 0;
         for (int a = 0; a < kActionCount; a++)
         {
             if (act == kActionIds[a])
             {
-                idx = a;
+                sl.action[z] = a;
                 break;
             }
         }
-        SendMessageW(s->hZoneAction[z], CB_SETCURSEL, idx, 0);
-        SetWindowTextW(s->hZoneArgs[z], args.c_str());
+        sl.args[z] = args;
 
-        ZoneTuning &tn = s->tuning[z];
         if (fromGui)
         {
-            tn.size = Wh_GetIntValue(GuiKey(sel, z, L"sz").c_str(), -1);
-            tn.delay = Wh_GetIntValue(GuiKey(sel, z, L"dl").c_str(), -1);
-            tn.settle = Wh_GetIntValue(GuiKey(sel, z, L"gd").c_str(), -1);
-            tn.knock = Wh_GetIntValue(GuiKey(sel, z, L"kn").c_str(), -1);
-            tn.cooldown = Wh_GetIntValue(GuiKey(sel, z, L"cd").c_str(), -1);
-            tn.modifier = Wh_GetIntValue(GuiKey(sel, z, L"md").c_str(), -1);
+            ZoneTuning &tn = sl.tuning[z];
+            tn.size = Wh_GetIntValue(GuiKey(index, z, L"sz").c_str(), -1);
+            tn.delay = Wh_GetIntValue(GuiKey(index, z, L"dl").c_str(), -1);
+            tn.settle = Wh_GetIntValue(GuiKey(index, z, L"gd").c_str(), -1);
+            tn.knock = Wh_GetIntValue(GuiKey(index, z, L"kn").c_str(), -1);
+            tn.cooldown = Wh_GetIntValue(GuiKey(index, z, L"cd").c_str(), -1);
+            tn.modifier = Wh_GetIntValue(GuiKey(index, z, L"md").c_str(), -1);
         }
-        else
+        else if (seed)
         {
-            tn = ZoneTuning{};
+            sl.tuning[z] = seed->zones[z].tuning;
         }
     }
+    LeaveCriticalSection(&g_settingsLock);
+}
+
+// Controls -> the slot they were showing.
+static void DashCaptureSlot(DashState *s)
+{
+    if (s->cfgIndex < 0 || s->cfgIndex >= (int)s->slots.size())
+        return;
+
+    DashCaptureZoneTuning(s);
+    DashState::Slot &sl = s->slots[s->cfgIndex];
+    for (int z = 0; z < ZONE_COUNT; z++)
+    {
+        sl.action[z] =
+            (int)SendMessageW(s->hZoneAction[z], CB_GETCURSEL, 0, 0);
+        if (sl.action[z] < 0)
+            sl.action[z] = 0;
+        wchar_t buf[512] = {};
+        GetWindowTextW(s->hZoneArgs[z], buf, ARRAYSIZE(buf));
+        sl.args[z] = buf;
+        sl.tuning[z] = s->tuning[z];
+    }
+    sl.loaded = true;
+}
+
+// The slot -> the controls.
+static void DashShowSlot(DashState *s)
+{
+    if (s->cfgIndex < 0 || s->cfgIndex >= (int)s->slots.size())
+        return;
+
+    const DashState::Slot &sl = s->slots[s->cfgIndex];
+    for (int z = 0; z < ZONE_COUNT; z++)
+    {
+        SendMessageW(s->hZoneAction[z], CB_SETCURSEL, sl.action[z], 0);
+        SetWindowTextW(s->hZoneArgs[z], sl.args[z].c_str());
+        s->tuning[z] = sl.tuning[z];
+    }
     DashShowZoneTuning(s);
+}
+
+// Switches the window to whichever display the combo now shows, keeping what
+// was on screen for the previous one.
+static void DashLoadZones(DashState *s)
+{
+    int sel = (int)SendMessageW(s->hMonitor, CB_GETCURSEL, 0, 0);
+    if (sel < 0)
+        sel = 0;
+
+    if (sel != s->cfgIndex)
+        DashCaptureSlot(s);
+
+    s->cfgIndex = sel;
+    if (sel >= (int)s->slots.size())
+        s->slots.resize(sel + 1);
+
+    DashFillSlotFromStore(s, sel);
+    DashShowSlot(s);
 }
 
 static void DashLoad(HWND hWnd, DashState *s)
@@ -4618,6 +4778,10 @@ static void DashLoad(HWND hWnd, DashState *s)
     for (const auto &n : names)
         SendMessageW(s->hMonitor, CB_ADDSTRING, 0, (LPARAM)n.c_str());
     SendMessageW(s->hMonitor, CB_SETCURSEL, 0, 0);
+
+    // One slot per combo entry: the wildcard plus every detected display.
+    s->slots.assign(names.size() + 1, DashState::Slot{});
+    s->cfgIndex = 0;
 
     EnterCriticalSection(&g_settingsLock);
     DashSetInt(s, IDC_CORNER, g_settings.cornerSize);
@@ -4655,47 +4819,47 @@ static void DashLoad(HWND hWnd, DashState *s)
 
 static void DashSave(HWND hWnd, DashState *s)
 {
-    DashCaptureZoneTuning(s);
-    // Zones for the slot currently on screen.
-    int sel = s->cfgIndex;
+    // Fold what is on screen back into its slot, then write every slot the
+    // window has touched. Writing only the visible one meant a two-monitor
+    // setup could not be configured in a single session: the other display's
+    // edits were still in memory and never reached the store.
+    DashCaptureSlot(s);
 
-    // The slot is the monitor combo's index, so a machine with more displays
-    // than the value store has slots would write keys that DashLoad's
-    // kMaxGuiConfigs loop never reads back — the edit would vanish on reload
-    // with nothing said. Refuse loudly instead.
-    if (sel < 0 || sel >= kMaxGuiConfigs)
+    for (int sel = 0; sel < (int)s->slots.size(); sel++)
     {
-        Wh_Log(L"Dashboard: display %d is beyond the %d configuration slots; "
-               L"not saved",
-               sel, kMaxGuiConfigs);
-        return;
-    }
+        const DashState::Slot &sl = s->slots[sel];
+        if (!sl.loaded)
+            continue;
 
-    wchar_t monName[256] = {};
-    int cur = (int)SendMessageW(s->hMonitor, CB_GETCURSEL, 0, 0);
-    if (cur == 0)
-        wcscpy_s(monName, L"*");
-    else if (cur > 0)
-        SendMessageW(s->hMonitor, CB_GETLBTEXT, cur, (LPARAM)monName);
+        // A machine with more displays than the value store has slots would
+        // write keys that ApplyDashboardZones' kMaxGuiConfigs loop never reads
+        // back — the edit would vanish on reload with nothing said.
+        if (sel >= kMaxGuiConfigs)
+        {
+            Wh_Log(L"Dashboard: display %d is beyond the %d configuration "
+                   L"slots; not saved",
+                   sel, kMaxGuiConfigs);
+            continue;
+        }
 
-    Wh_SetStringValue(GuiKey(sel, -1, L"id").c_str(), monName);
-    for (int z = 0; z < ZONE_COUNT; z++)
-    {
-        int idx = (int)SendMessageW(s->hZoneAction[z], CB_GETCURSEL, 0, 0);
-        if (idx < 0 || idx >= kActionCount)
-            idx = 0;
-        wchar_t args[512] = {};
-        GetWindowTextW(s->hZoneArgs[z], args, ARRAYSIZE(args));
-        Wh_SetStringValue(GuiKey(sel, z, L"a").c_str(), kActionIds[idx]);
-        Wh_SetStringValue(GuiKey(sel, z, L"g").c_str(), args);
+        std::wstring monName = DashSlotMonitorId(s, sel);
+        Wh_SetStringValue(GuiKey(sel, -1, L"id").c_str(), monName.c_str());
+        for (int z = 0; z < ZONE_COUNT; z++)
+        {
+            int idx = sl.action[z];
+            if (idx < 0 || idx >= kActionCount)
+                idx = 0;
+            Wh_SetStringValue(GuiKey(sel, z, L"a").c_str(), kActionIds[idx]);
+            Wh_SetStringValue(GuiKey(sel, z, L"g").c_str(), sl.args[z].c_str());
 
-        const ZoneTuning &tn = s->tuning[z];
-        Wh_SetIntValue(GuiKey(sel, z, L"sz").c_str(), tn.size);
-        Wh_SetIntValue(GuiKey(sel, z, L"dl").c_str(), tn.delay);
-        Wh_SetIntValue(GuiKey(sel, z, L"gd").c_str(), tn.settle);
-        Wh_SetIntValue(GuiKey(sel, z, L"kn").c_str(), tn.knock);
-        Wh_SetIntValue(GuiKey(sel, z, L"cd").c_str(), tn.cooldown);
-        Wh_SetIntValue(GuiKey(sel, z, L"md").c_str(), tn.modifier);
+            const ZoneTuning &tn = sl.tuning[z];
+            Wh_SetIntValue(GuiKey(sel, z, L"sz").c_str(), tn.size);
+            Wh_SetIntValue(GuiKey(sel, z, L"dl").c_str(), tn.delay);
+            Wh_SetIntValue(GuiKey(sel, z, L"gd").c_str(), tn.settle);
+            Wh_SetIntValue(GuiKey(sel, z, L"kn").c_str(), tn.knock);
+            Wh_SetIntValue(GuiKey(sel, z, L"cd").c_str(), tn.cooldown);
+            Wh_SetIntValue(GuiKey(sel, z, L"md").c_str(), tn.modifier);
+        }
     }
     Wh_SetIntValue(L"gui_active", 1);
 
@@ -4761,6 +4925,10 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         s->hField = CreateSolidBrush(g_pal.field);
         s->hPanel = CreateSolidBrush(g_pal.panel);
 
+        // Every control is themed here rather than at its call site: the six
+        // scattered calls this replaces covered the combo boxes and edits and
+        // missed every button and check box, which is why those kept painting
+        // black text on the dark background.
         auto mk = [&](const wchar_t *cls, const wchar_t *txt, DWORD style,
                       int id) -> HWND
         {
@@ -4768,7 +4936,10 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                                      10, hWnd, (HMENU)(INT_PTR)id,
                                      cs->hInstance, nullptr);
             if (h)
+            {
                 SendMessageW(h, WM_SETFONT, (WPARAM)s->hFont, TRUE);
+                ApplyControlTheme(h, cls);
+            }
             return h;
         };
 
@@ -4780,7 +4951,6 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         s->hMonitor = mk(L"COMBOBOX", nullptr,
                          CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
                          IDC_MONITOR);
-        ThemeControl(s->hMonitor, g_lightTheme ? L"CFD" : L"DarkMode_CFD");
 
         for (int z = 0; z < ZONE_COUNT; z++)
         {
@@ -4789,7 +4959,6 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                 mk(L"COMBOBOX", nullptr,
                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
                    IDC_ZONE_ACTION + z);
-            ThemeControl(s->hZoneAction[z], g_lightTheme ? L"CFD" : L"DarkMode_CFD");
             for (int a = 0; a < kActionCount; a++)
             {
                 SendMessageW(s->hZoneAction[z], CB_ADDSTRING, 0,
@@ -4798,7 +4967,6 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
             s->hZoneArgs[z] = mk(L"EDIT", nullptr,
                                  WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP,
                                  IDC_ZONE_ARGS + z);
-            ThemeControl(s->hZoneArgs[z], g_lightTheme ? L"CFD" : L"DarkMode_CFD");
         }
 
         for (int i = 0; i < kOptCount; i++)
@@ -4828,7 +4996,6 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                                     WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP,
                                     kOpts[i].id);
                 }
-                ThemeControl(s->hOpt[i], g_lightTheme ? L"CFD" : L"DarkMode_CFD");
             }
         }
 
@@ -4860,7 +5027,6 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                                    WS_TABSTOP,
                                kTz[i].id);
             }
-            ThemeControl(s->hTz[i], g_lightTheme ? L"CFD" : L"DarkMode_CFD");
         }
 
         s->hSave = mk(L"BUTTON", L"Save and Apply",
@@ -5159,6 +5325,13 @@ static DWORD WINAPI DashThread(LPVOID)
             dpi = 96;
     }
 
+    // Dark mode must be asked for before the window and its controls exist:
+    // the theme classes applied to each control later have no effect until the
+    // process has opted in, and opting in afterwards does not repaint what has
+    // already been created.
+    BuildPalette();
+    SetProcessDarkMode(!g_lightTheme);
+
     // WS_CLIPCHILDREN so the parent can never paint inside a child's rectangle.
     // Without it, anything drawn in WM_PAINT that lands under a control stays
     // on screen as residue, because the child is not repainted to cover it.
@@ -5180,6 +5353,8 @@ static DWORD WINAPI DashThread(LPVOID)
         UnregisterClassW(kClass, hInst);
         return 1;
     }
+
+    AllowDarkModeForControl(hWnd, !g_lightTheme);
 
     g_hDashWnd = hWnd;
     ShowWindow(hWnd, SW_SHOW);

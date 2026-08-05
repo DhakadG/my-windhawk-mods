@@ -2,6 +2,11 @@
 # geometry, and DetectTick(). No C++ toolchain here, so the branch-heavy logic
 # is verified by simulation. Geometry is done in C# because PowerShell's
 # implicit array coercion silently corrupts the arithmetic.
+#
+# Defaults to the tracked mod file so a fresh clone can run it; pass -Path to
+# check the working copy before it has been copied over.
+
+param([string]$Path = (Join-Path $PSScriptRoot '..\win-x-hotcorners.wh.cpp'))
 
 $script:fails = 0
 function Assert($cond, $msg) {
@@ -340,7 +345,7 @@ Assert ($f.Count -eq 1) "modifier not required -> unchanged behaviour (got $($f.
 ''
 '--- Dashboard layout geometry (no overlaps) ---'
 # Parsed straight out of the source so the test cannot drift from the code.
-$modSrc = [IO.File]::ReadAllText('C:\Users\lost_husky\Downloads\Programs\VS Code Works\WindHawk Mods\Win-x-HotCorners.cpp')
+$modSrc = [IO.File]::ReadAllText($Path)
 function K($n){ [int]([regex]::Match($modSrc, "constexpr int $n = (\d+);")).Groups[1].Value }
 $Pad=K 'Pad'; $Gap=K 'Gap'; $RowH=K 'RowH'; $CheckH=K 'CheckH'; $TabH=K 'TabH'
 $CtlH=K 'CtlH'; $BtnH=K 'BtnH'; $LblW=K 'LblW'; $CmbW=K 'CmbW'; $ArgW=K 'ArgW'

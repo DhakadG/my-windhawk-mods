@@ -5,7 +5,7 @@
 # comforting noise generator.
 
 $chk  = Join-Path $PSScriptRoot 'cpp_sanity_check.ps1'
-$good = 'C:\Users\lost_husky\Downloads\Programs\VS Code Works\WindHawk Mods\Win-x-HotCorners.cpp'
+$good = Join-Path $PSScriptRoot '..\win-x-hotcorners.wh.cpp'
 $work = Join-Path ([IO.Path]::GetTempPath()) 'sanitycase.cpp'
 $src  = [IO.File]::ReadAllText($good)
 $fails = 0

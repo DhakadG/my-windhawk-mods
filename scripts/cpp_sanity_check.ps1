@@ -12,9 +12,11 @@
 #   6. brace / paren balance
 #   7. @version present, settings keys read
 #
-# Usage: cpp_sanity_check.ps1 <path-to-mod.cpp>
+# Usage: cpp_sanity_check.ps1 [path-to-mod.cpp]
+# Defaults to the tracked mod file; pass a path to check the working copy
+# before it has been copied over.
 
-param([Parameter(Mandatory=$true)][string]$Path)
+param([string]$Path = (Join-Path $PSScriptRoot '..\win-x-hotcorners.wh.cpp'))
 
 $src   = [IO.File]::ReadAllText($Path)
 $lines = [IO.File]::ReadAllLines($Path)

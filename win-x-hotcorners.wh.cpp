@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         4.0.0
+// @version         4.0.2
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -33,7 +33,8 @@ Windhawk mod.
   games and apps keep their input path to themselves.
 - **Monitors identified by name** — zones bind to a display's friendly name
   (e.g. `Dell U2720Q`), so rearranging your desktop or changing which display
-  is primary never reshuffles your configuration.
+  is primary never reshuffles your configuration. (Two displays of the same
+  model are the one exception — see *Identifying your monitors*.)
 - **Per-monitor DPI correct** — detection runs per-monitor-DPI-aware, so
   zones land in the right place on mixed-scaling setups.
 - **Screen edges** — trigger actions on the top, bottom, left, or right edge
@@ -115,7 +116,11 @@ Monitor 2           id='BOE0998'     device=\\.\DISPLAY2 (3840,0)-(5760,1080)
 ```
 
 Copy the text inside the quotes. If you own two identical displays they get a
-` #2`, ` #3` suffix so each stays separately configurable.
+` #2`, ` #3` suffix so each stays separately configurable. Those suffixes are
+handed out in listed order — primary first, then left to right — so unlike the
+names themselves they are not fixed: making the other twin primary swaps which
+one is ` #2`, and swaps the configuration with it. Check the log after such a
+change.
 
 Special values:
 
@@ -180,6 +185,83 @@ Semicolon-separated list of process names (case-insensitive).
 Hot corners are disabled when any excluded process is the foreground window.
 
 **Example:** `photoshop.exe;premiere.exe;blender.exe`
+
+# Changelog
+
+## What's New in v4.0.2
+
+- **Fixed: zones could stop matching after a display change.** Windows reports
+  a layout that changed while it was being read as a buffer error, and that is
+  precisely when this runs — a layout change is what calls it. The mod treated
+  that as fatal and dropped every display name for the rebuild, leaving zones
+  bound to a name unmatched until the next display change. It now re-reads
+  instead.
+- Documentation corrections: two identical displays are the one case where
+  changing the primary display can move a configuration, because the ` #2`
+  suffix follows listed order rather than the display itself. That is now
+  stated instead of implied otherwise.
+
+## What's New in v4.0.1
+
+- **Fixed: stray text showing through the per-zone settings panel.** The
+  preview's hover card was drawn into the same strip of the window that the
+  per-zone fields occupy, so it was never readable and its lines leaked out
+  through the gaps between the fields. The card is gone — the panel below the
+  preview already shows those values for the selected zone, and clicking a
+  zone in the preview selects it.
+- **Fixed: tooltips were unreadable dark-on-dark.** A themed tooltip silently
+  ignores the colour messages that were meant to restyle it, so it kept the
+  system colours while the rest of the dashboard followed the palette.
+  Tooltips now use the dashboard's own background, text colour and font, in
+  both light and dark themes.
+- The dashboard window now clips its children, so nothing painted by the
+  window can leave residue underneath a control.
+- **Fixed a crash risk when opening the dashboard.** It listed your monitors
+  by reading the detection thread's own monitor table, which that thread
+  clears and rebuilds whenever the display layout is re-checked — freeing the
+  name strings mid-read. The names now travel inside the same immutable
+  snapshot the detection loop already uses.
+
+## What's New in v4.0.0
+
+- **Per-zone settings.** Size, delay, pass-through guard, knock window,
+  cooldown and required modifier can each be overridden for a single zone.
+  Blank means inherit, so existing configurations behave exactly as before.
+- The dashboard follows the system light/dark theme instead of being fixed
+  dark, which made it near-unreadable on a light desktop.
+- Preview fixes: edges are split around their centre blocks, so hovering a
+  centre no longer highlights the whole edge.
+
+## What's New in v3.9.0
+
+- **Settings dashboard**, opened from the tray icon: all twelve zones per
+  monitor, the global options, and a clickable preview of your screen.
+  Windhawk's own settings page stays available and can be restored at any
+  time with *Reset to Windhawk settings*.
+
+## What's New in v3.8.0
+
+- **Tray icon** with enable/suspend controls and quick access to the log.
+
+## What's New in v3.7.0
+
+- **Alternating actions** — one zone that runs two different actions on
+  successive triggers, written as `first|second` in the argument field.
+- **Keep zones off the taskbar**, so an edge zone stops at the work area
+  instead of fighting the taskbar's peek-at-desktop strip.
+
+## What's New in v3.6.0
+
+- **Knock to activate** — require entering a zone twice in quick succession.
+- **Modifier gating** — zones stay inert unless a chosen key is held.
+- **Edge-centre zones**, plus four new actions.
+- v3.6.1: the display actually blanks after *Lock and Turn Off Monitors*.
+  `WM_SYSCOMMAND` was posted to the foreground window, which is null once
+  `LockWorkStation` has switched desktop; it is now broadcast.
+
+## What's New in v3.5.0
+
+- First public release.
 
 ## What's New in v3.4.0
 
@@ -323,7 +405,7 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
   $description: >-
     Writes your connected displays to this mod's log every time it loads or
     your display layout changes, so you can copy a name straight into the
-    Monitor field above instead of guessing it. Harmless to leave on - it
+    Monitor field below instead of guessing it. Harmless to leave on - it
     only writes a few lines, and only when something actually changes.
 - VerboseLogging: false
   $name: Verbose logging
@@ -1100,6 +1182,10 @@ struct HitZone
 struct ZoneSet
 {
     std::vector<HitZone> zones;
+    // Friendly names of the displays this set was built from. They ride in the
+    // snapshot so the dashboard thread can list monitors without reading
+    // g_monitors, which the detection thread clears and refills underneath it.
+    std::vector<std::wstring> monitorNames;
     int activationDelay = 0;
     int settleMs = 80;
     int knockWindowMs = 0;
@@ -1491,19 +1577,36 @@ static void QueryMonitorFriendlyNames(
     std::unordered_map<std::wstring, std::wstring> &out)
 {
     UINT32 pathCount = 0, modeCount = 0;
-    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount,
-                                    &modeCount) != ERROR_SUCCESS)
-    {
-        Wh_Log(L"GetDisplayConfigBufferSizes failed");
-        return;
-    }
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes;
 
-    std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
-    std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
-    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(),
-                           &modeCount, modes.data(), nullptr) != ERROR_SUCCESS)
+    // The display layout can change between sizing the buffers and filling
+    // them — which is exactly when this runs, since a layout change is what
+    // calls it. The API reports that as ERROR_INSUFFICIENT_BUFFER and expects
+    // the caller to size and query again. Without the retry every friendly
+    // name is lost for that rebuild, and every zone bound to a name silently
+    // stops matching until the next display change.
+    // ponytail: 3 attempts. A layout that changes three times inside one
+    // rebuild will fix itself on the next WM_DISPLAYCHANGE anyway.
+    LONG qc = ERROR_INSUFFICIENT_BUFFER;
+    for (int attempt = 0; attempt < 3 && qc == ERROR_INSUFFICIENT_BUFFER;
+         attempt++)
     {
-        Wh_Log(L"QueryDisplayConfig failed");
+        if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount,
+                                        &modeCount) != ERROR_SUCCESS)
+        {
+            Wh_Log(L"GetDisplayConfigBufferSizes failed");
+            return;
+        }
+
+        paths.assign(pathCount, DISPLAYCONFIG_PATH_INFO{});
+        modes.assign(modeCount, DISPLAYCONFIG_MODE_INFO{});
+        qc = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(),
+                                &modeCount, modes.data(), nullptr);
+    }
+    if (qc != ERROR_SUCCESS)
+    {
+        Wh_Log(L"QueryDisplayConfig failed: %ld", qc);
         return;
     }
 
@@ -2510,6 +2613,9 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
     set->requireModifier = g_settings.requireModifier;
     set->cooldownMs = g_settings.cooldownMs;
     set->disableDuringDrag = g_settings.disableDuringDrag;
+
+    for (const auto &mon : g_monitors)
+        set->monitorNames.push_back(mon.id);
 
     for (const auto &mon : g_monitors)
     {
@@ -3924,7 +4030,13 @@ static bool ZoneHasTwoParts(Zone z)
            z == ZONE_EDGE_RIGHT;
 }
 
-static void ThemeControl(HWND h, const wchar_t *theme)
+// subIdList is nullptr for "keep the default part list", which is what naming
+// a theme (DarkMode_CFD) wants. Disabling theming outright is the exception:
+// SetWindowTheme only stops theming a control when *both* strings are empty,
+// and a still-themed control ignores colour messages such as
+// TTM_SETTIPBKCOLOR — which is why the tooltip stayed light.
+static void ThemeControl(HWND h, const wchar_t *theme,
+                         const wchar_t *subIdList = nullptr)
 {
     HMODULE ux = GetModuleHandleW(L"uxtheme.dll");
     if (!ux)
@@ -3935,7 +4047,7 @@ static void ThemeControl(HWND h, const wchar_t *theme)
     using Fn = HRESULT(WINAPI *)(HWND, LPCWSTR, LPCWSTR);
     auto fn = reinterpret_cast<Fn>(GetProcAddress(ux, "SetWindowTheme"));
     if (fn)
-        fn(h, theme, nullptr);
+        fn(h, theme, subIdList);
 }
 
 // Dark title bar, and Mica where the build supports it. Both are no-ops on
@@ -4264,76 +4376,11 @@ static void DashPaintDiagram(HWND hWnd, DashState *s, HDC hdc)
     DeleteObject(unset);
     DeleteObject(sel);
 
-    // Hover card: what this zone will actually do, without clicking anything.
-    if (s->hoverZone >= 0)
-    {
-        Zone hz = (Zone)s->hoverZone;
-        RECT card = {dg.left, dg.bottom + Sc(10, d), dg.right,
-                     dg.bottom + Sc(112, d)};
-        HBRUSH cb = CreateSolidBrush(g_pal.panel);
-        FillRect(hdc, &card, cb);
-        DeleteObject(cb);
-        HPEN cp = CreatePen(PS_SOLID, 1, g_pal.border);
-        HPEN op = (HPEN)SelectObject(hdc, cp);
-        HBRUSH ob2 = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        Rectangle(hdc, card.left, card.top, card.right, card.bottom);
-        SelectObject(hdc, ob2);
-        SelectObject(hdc, op);
-        DeleteObject(cp);
-
-        int actIdx = (int)SendMessageW(s->hZoneAction[hz], CB_GETCURSEL, 0, 0);
-        if (actIdx < 0 || actIdx >= kActionCount)
-            actIdx = 0;
-
-        const ZoneTuning &tn = s->tuning[hz];
-        auto val = [&](int v, int global) -> std::wstring
-        {
-            wchar_t b2[48];
-            if (v < 0)
-            {
-                _snwprintf_s(b2, _countof(b2), _TRUNCATE, L"%d (global)", global);
-            }
-            else
-            {
-                _snwprintf_s(b2, _countof(b2), _TRUNCATE, L"%d", v);
-            }
-            return b2;
-        };
-
-        EnterCriticalSection(&g_settingsLock);
-        std::wstring line2 = L"Size " + val(tn.size, g_settings.cornerSize) +
-                             L"px   ·   Delay " +
-                             val(tn.delay, g_settings.activationDelay) +
-                             L"ms   ·   Guard " +
-                             val(tn.settle, g_settings.settleMs) + L"ms";
-        std::wstring line3 = L"Knock " + val(tn.knock, g_settings.knockWindowMs) +
-                             L"ms   ·   Cooldown " +
-                             val(tn.cooldown, g_settings.cooldownMs) + L"ms";
-        static const wchar_t *modNames[] = {L"None", L"Ctrl", L"Alt", L"Shift",
-                                            L"Win"};
-        int m = tn.modifier >= 0 ? tn.modifier : g_settings.requireModifier;
-        std::wstring line4 =
-            std::wstring(L"Modifier ") +
-            modNames[(m >= 0 && m < 5) ? m : 0] +
-            (tn.modifier < 0 ? L" (global)" : L"");
-        LeaveCriticalSection(&g_settingsLock);
-
-        int pad2 = Sc(8, d), lh = Sc(19, d), ty = card.top + pad2;
-        RECT tr = {card.left + pad2, ty, card.right - pad2, ty + lh};
-        SetTextColor(hdc, g_pal.text);
-        DrawTextW(hdc, ZoneToString(hz), -1, &tr, DT_LEFT | DT_SINGLELINE);
-        SetTextColor(hdc, g_pal.accent);
-        tr.top += lh; tr.bottom += lh;
-        DrawTextW(hdc, ActionToString(ParseActionType(kActionIds[actIdx])), -1,
-                  &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
-        SetTextColor(hdc, g_pal.dim);
-        tr.top += lh; tr.bottom += lh;
-        DrawTextW(hdc, line2.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE);
-        tr.top += lh; tr.bottom += lh;
-        DrawTextW(hdc, line3.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE);
-        tr.top += lh; tr.bottom += lh;
-        DrawTextW(hdc, line4.c_str(), -1, &tr, DT_LEFT | DT_SINGLELINE);
-    }
+    // ponytail: no hover card. It used to be drawn from dg.bottom+10 to
+    // dg.bottom+112 — the exact strip the per-zone panel's controls occupy, so
+    // it was never readable and its leftovers showed through the gaps between
+    // the fields. The panel below already shows the same numbers for the
+    // selected zone, and clicking a zone in the preview selects it.
 
     SelectObject(hdc, old);
 }
@@ -4449,11 +4496,17 @@ static void DashLoad(HWND hWnd, DashState *s)
     // Monitor selector: one slot per detected display, plus a wildcard.
     SendMessageW(s->hMonitor, CB_RESETCONTENT, 0, 0);
     SendMessageW(s->hMonitor, CB_ADDSTRING, 0, (LPARAM)L"All monitors  ( * )");
+    // Take a reference to the snapshot under the lock, then read it outside:
+    // it is immutable and shared_ptr keeps it alive even if the detection
+    // thread publishes a new one mid-loop. Reading g_monitors directly here
+    // was a use-after-free — RefreshMonitors clears that vector and frees
+    // every id string while this thread walks it.
     EnterCriticalSection(&g_zonesLock);
-    std::vector<std::wstring> names;
+    std::shared_ptr<const ZoneSet> snap = g_zones;
     LeaveCriticalSection(&g_zonesLock);
-    for (const auto &m : g_monitors)
-        names.push_back(m.id);
+    std::vector<std::wstring> names;
+    if (snap)
+        names = snap->monitorNames;
     for (const auto &n : names)
         SendMessageW(s->hMonitor, CB_ADDSTRING, 0, (LPARAM)n.c_str());
     SendMessageW(s->hMonitor, CB_SETCURSEL, 0, 0);
@@ -4704,6 +4757,14 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         if (s->hTip)
         {
             SendMessageW(s->hTip, TTM_SETMAXTIPWIDTH, 0, Sc(320, s->dpi));
+            SendMessageW(s->hTip, WM_SETFONT, (WPARAM)s->hFont, TRUE);
+            // A themed tooltip ignores TTM_SETTIPBKCOLOR/TEXTCOLOR outright, so
+            // it kept the system tooltip colours while the rest of the window
+            // followed the palette. Both strings must be empty or theming is
+            // not actually switched off.
+            ThemeControl(s->hTip, L"", L"");
+            SendMessageW(s->hTip, TTM_SETTIPBKCOLOR, (WPARAM)g_pal.panel, 0);
+            SendMessageW(s->hTip, TTM_SETTIPTEXTCOLOR, (WPARAM)g_pal.text, 0);
             auto tip = [&](HWND ctl, const wchar_t *text)
             {
                 if (!ctl || !text)
@@ -4802,9 +4863,8 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
             if (hit != s->hoverZone)
             {
                 s->hoverZone = hit;
-                RECT inv = dg;
-                inv.bottom += Sc(30, s->dpi);
-                InvalidateRect(hWnd, &inv, TRUE);
+                // Only the preview changes, so only the preview is repainted.
+                InvalidateRect(hWnd, &dg, TRUE);
             }
         }
         else if (hit >= 0)
@@ -4972,7 +5032,11 @@ static DWORD WINAPI DashThread(LPVOID)
             dpi = 96;
     }
 
-    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    // WS_CLIPCHILDREN so the parent can never paint inside a child's rectangle.
+    // Without it, anything drawn in WM_PAINT that lands under a control stays
+    // on screen as residue, because the child is not repainted to cover it.
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
+                  WS_CLIPCHILDREN;
     RECT need = {0, 0, Sc(Lay::ClientW, dpi), Sc(Lay::ClientH, dpi)};
     AdjustWindowRectEx(&need, style, FALSE, 0);
     int w = need.right - need.left;

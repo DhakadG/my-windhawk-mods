@@ -447,14 +447,27 @@ Assert ($idleAt.Count -ge 1) "the no-work paths return the idle rate (found $($i
 Assert (($idleAt | Where-Object { $_ -gt $hitTest }).Count -eq 0) `
        'no idle return survives past the hit test'
 
+# Naming each pre-hit branch, because "at least one idle return exists" would
+# still pass if a branch that CAN fire were switched to the idle rate. The
+# cursor-read failure is the one that matters: zones are armed by then, so it
+# has to retry on the next full tick.
+Assert ([regex]::IsMatch($dt, '!g_trayEnabled\.load\(\)[^\n]*g_suspendUntil[^\n]*\n\s*return kIdleTickMs;')) `
+       'switched off or suspended -> idle rate'
+Assert ([regex]::IsMatch($dt, '(?s)!zones \|\| zones->zones\.empty\(\)\s*\)?\s*\n\s*return kIdleTickMs;')) `
+       'no zones armed -> idle rate'
+Assert ([regex]::IsMatch($dt, '(?s)!GetCursorPos\(&pt\)\)\s*\n\s*return kTickMs;')) `
+       'a failed cursor read stays at the full rate, it does not idle'
+
 # ...and what it returns once a zone could fire is the flat rate, nothing else.
 Assert ([regex]::IsMatch($dt, 'const DWORD next = kTickMs;')) `
        'the interval after the hit test is the flat full rate'
 # ...and that the value actually reaches the caller. Checking only that `next`
 # is declared would pass if the terminal return were changed to something else.
-$afterHit = $dt.Substring($hitTest)
-Assert ([regex]::IsMatch($afterHit, '(?s)const DWORD next = kTickMs;.*return next;')) `
-       'the active path returns that flat rate'
+# Anchored to the tail: unanchored, this would still match an earlier return
+# and keep passing after the terminal one changed.
+$afterHit = $dt.Substring($hitTest).TrimEnd().TrimEnd('}').TrimEnd()
+Assert ([regex]::IsMatch($afterHit, '(?s)const DWORD next = kTickMs;.*return next;$')) `
+       'the active path ends by returning that flat rate'
 Assert (-not [regex]::IsMatch($dt, 'nearest|kNearPx|lastPt')) `
        'no distance or movement heuristic has crept back into the interval'
 # Those three returns are the only place the idle rate may appear at all, so a

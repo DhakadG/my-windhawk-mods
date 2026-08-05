@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         4.1.2
+// @version         4.1.3
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -221,6 +221,20 @@ Hot corners are disabled when any excluded process is the foreground window.
 **Example:** `photoshop.exe;premiere.exe;blender.exe`
 
 # Changelog
+
+## What's New in v4.1.3
+
+- **Fixed a crash on unload.** Every thread is given three seconds to stop
+  before the mod frees the locks they share, and a thread that misses that
+  deadline makes the mod leak them instead — freeing something a live thread is
+  still using is undefined behaviour inside Windhawk's own process. The tray
+  thread was the one exception: its timeout was logged and then ignored, so a
+  tray thread that had not finished could have its locks deleted underneath it.
+  It now counts like the others. Waits also treat a failed wait as "still
+  running" rather than as success.
+- **The tray's on/off toggle is serialised with the rest.** It wrote its key
+  outside the reload lock, so a reload running at that moment could put the old
+  value back and leave the switch disagreeing with what was stored.
 
 ## What's New in v4.1.2
 
@@ -3141,9 +3155,14 @@ static void HandleTrayCommand(UINT id)
         OpenDashboard();
         return;
 
+    // Same pairing as the two guards below: ReloadConfig reads kOvrEnabled and
+    // republishes g_trayEnabled from it, so a reload straddling this toggle
+    // could put the flag back and leave it disagreeing with the store.
     case IDM_ENABLED:
+        EnterCriticalSection(&g_reloadLock);
         g_trayEnabled = !g_trayEnabled;
         Wh_SetIntValue(kOvrEnabled, g_trayEnabled ? 1 : 0);
+        LeaveCriticalSection(&g_reloadLock);
         g_suspendUntil = 0;
         Wh_Log(L"Tray: hot corners %s", g_trayEnabled ? L"enabled" : L"disabled");
         break;
@@ -4894,6 +4913,24 @@ void WhTool_ModSettingsChanged()
 
 void WhTool_ModUninit()
 {
+    // Declared before the first wait, and every wait feeds it. The tray wait
+    // used to sit above this and only log its timeout - so a tray thread still
+    // blocked on g_reloadLock, or still inside its menu, did not stop the
+    // critical sections below from being deleted out from under it.
+    bool allStopped = true;
+
+    // Only a clean exit counts. WAIT_FAILED means the wait itself broke, which
+    // says nothing about whether the thread is finished, so treat it the same
+    // as a timeout rather than as success.
+    auto waitFor = [&allStopped](HANDLE h, const wchar_t *what)
+    {
+        if (WaitForSingleObject(h, 3000) != WAIT_OBJECT_0)
+        {
+            Wh_Log(L"%s did not exit cleanly", what);
+            allStopped = false;
+        }
+    };
+
     if (g_hStopEvent)
         SetEvent(g_hStopEvent);
 
@@ -4902,16 +4939,13 @@ void WhTool_ModUninit()
 
     if (g_hTrayThread)
     {
-        if (WaitForSingleObject(g_hTrayThread, 3000) == WAIT_TIMEOUT)
-            Wh_Log(L"Tray thread exit timed out");
+        waitFor(g_hTrayThread, L"Tray thread");
         CloseHandle(g_hTrayThread);
         g_hTrayThread = nullptr;
     }
 
     if (g_dwDetectThreadId)
         PostThreadMessage(g_dwDetectThreadId, WM_QUIT, 0, 0);
-
-    bool allStopped = true;
 
     // The dashboard is a window with its own message loop on its own thread,
     // and it takes g_settingsLock and g_zonesLock. Nothing below may free
@@ -4922,22 +4956,14 @@ void WhTool_ModUninit()
 
     if (g_hDashThread)
     {
-        if (WaitForSingleObject(g_hDashThread, 3000) == WAIT_TIMEOUT)
-        {
-            Wh_Log(L"Dashboard thread exit timed out");
-            allStopped = false;
-        }
+        waitFor(g_hDashThread, L"Dashboard thread");
         CloseHandle(g_hDashThread);
         g_hDashThread = nullptr;
     }
 
     if (g_hDetectThread)
     {
-        if (WaitForSingleObject(g_hDetectThread, 3000) == WAIT_TIMEOUT)
-        {
-            Wh_Log(L"Detection thread exit timed out");
-            allStopped = false;
-        }
+        waitFor(g_hDetectThread, L"Detection thread");
         CloseHandle(g_hDetectThread);
         g_hDetectThread = nullptr;
     }
@@ -4946,11 +4972,7 @@ void WhTool_ModUninit()
     {
         // Can legitimately still be inside ShellExecuteEx (a UAC prompt keeps
         // it there indefinitely).
-        if (WaitForSingleObject(g_hWorkerThread, 3000) == WAIT_TIMEOUT)
-        {
-            Wh_Log(L"Worker thread exit timed out");
-            allStopped = false;
-        }
+        waitFor(g_hWorkerThread, L"Worker thread");
         CloseHandle(g_hWorkerThread);
         g_hWorkerThread = nullptr;
     }

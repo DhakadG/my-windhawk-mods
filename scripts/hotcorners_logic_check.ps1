@@ -114,7 +114,10 @@ $geoCases = @(
 )
 foreach ($g in $geoCases) {
   $r = [Geo]::Check($g.a[0],$g.a[1],$g.a[2],$g.a[3],$g.a[4],$g.a[5])
-  Assert ($r -like 'OK*') ("{0,-20} {1}" -f $g.n, $r)
+  # "no overlaps" is trivially true when nothing was built, so the count has
+  # to be part of the assertion or a case that builds no zones passes
+  $built = if ($r -match 'built=(\d+)') { [int]$matches[1] } else { -1 }
+  Assert (($r -like 'OK*') -and $built -gt 0) ("{0,-20} {1}" -f $g.n, $r)
 }
 
 # ---- ParseKeyCombo: semicolons separate combos, they are NOT merged ----
@@ -195,13 +198,22 @@ public class PathSplit {
 if (-not ('PathSplit' -as [type])) { Add-Type -TypeDefinition $pathSrc }
 ''
 '--- ActionStartProcess path splitting ---'
-$wh = 'C:\Program Files\Windhawk\windhawk.exe'
-if (Test-Path $wh) {
+# The token-gluing heuristic only matters for a path containing spaces, and it
+# decides by asking the filesystem whether the glued path exists. Pointing that
+# at an installed Windhawk made the whole group SKIP on any machine without one
+# - a silent hole exactly where the logic is hardest. Build the file instead.
+$spaceDir = Join-Path ([IO.Path]::GetTempPath()) 'hot corners check'
+$wh = Join-Path $spaceDir 'windhawk.exe'
+try {
+  New-Item -ItemType Directory -Force -Path $spaceDir | Out-Null
+  if (-not (Test-Path -LiteralPath $wh)) { New-Item -ItemType File -Path $wh | Out-Null }
   Assert ([PathSplit]::Exe($wh) -eq $wh) 'unquoted path with spaces, no args'
   Assert ([PathSplit]::Exe("$wh -tray-only") -eq $wh) 'unquoted path with spaces + arg -> exe'
   Assert ([PathSplit]::Args("$wh -tray-only") -eq '-tray-only') 'unquoted path with spaces + arg -> params'
   Assert ([PathSplit]::Exe("`"$wh`" -tray-only") -eq $wh) 'quoted path still works'
-} else { '  SKIP  Windhawk path not present' }
+} finally {
+  Remove-Item -LiteralPath $spaceDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 Assert ([PathSplit]::Exe('C:\Windows\System32\cmd.exe /c echo hi') -eq 'C:\Windows\System32\cmd.exe') 'path without spaces unaffected'
 Assert ([PathSplit]::Args('C:\Windows\System32\cmd.exe /c echo hi') -eq '/c echo hi') 'args preserved verbatim'
 Assert ([PathSplit]::Exe('notepad.exe') -eq 'notepad.exe') 'bare command left for the shell to resolve via PATH'
@@ -346,7 +358,13 @@ Assert ($f.Count -eq 1) "modifier not required -> unchanged behaviour (got $($f.
 '--- Dashboard layout geometry (no overlaps) ---'
 # Parsed straight out of the source so the test cannot drift from the code.
 $modSrc = [IO.File]::ReadAllText($Path)
-function K($n){ [int]([regex]::Match($modSrc, "constexpr int $n = (\d+);")).Groups[1].Value }
+# A miss returns '', and [int]'' is 0 in PowerShell - so a renamed constant
+# would quietly zero every geometry assertion below instead of failing.
+function K($n){
+  $m = [regex]::Match($modSrc, "constexpr int $n = (\d+);")
+  if (-not $m.Success) { throw "layout constant '$n' not found in the source" }
+  [int]$m.Groups[1].Value
+}
 $Pad=K 'Pad'; $Gap=K 'Gap'; $RowH=K 'RowH'; $CheckH=K 'CheckH'; $TabH=K 'TabH'
 $CtlH=K 'CtlH'; $BtnH=K 'BtnH'; $LblW=K 'LblW'; $CmbW=K 'CmbW'; $ArgW=K 'ArgW'
 $OptLblW=K 'OptLblW'; $OptCtlW=K 'OptCtlW'; $DiagW=K 'DiagW'; $DiagH=K 'DiagH'

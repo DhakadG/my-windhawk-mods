@@ -11,13 +11,22 @@ $src  = [IO.File]::ReadAllText($good)
 $fails = 0
 
 function Case($name, $mutated, $expect) {
+    # An anchor that no longer appears in the source makes Replace() a no-op,
+    # and the case then tests a clean file and reports MISSED - which reads as
+    # "the checker is broken" when the truth is "this case tests nothing".
+    if ($mutated -ceq $src) {
+        $script:fails++
+        "  BADCASE  $name   (anchor not found - the case never mutated anything)"
+        return
+    }
     [IO.File]::WriteAllText($work, $mutated, (New-Object Text.UTF8Encoding($false)))
     $out = (& $chk $work 2>&1) -join "`n"
-    if ($out -match [regex]::Escape($expect)) {
+    # the message alone is not enough: the checker must also exit non-zero
+    if (($out -match [regex]::Escape($expect)) -and $LASTEXITCODE -ne 0) {
         "  CAUGHT   $name"
     } else {
         $script:fails++
-        "  MISSED   $name   (expected text: '$expect')"
+        "  MISSED   $name   (expected text: '$expect', exit code $LASTEXITCODE)"
     }
 }
 
@@ -49,7 +58,9 @@ $arch = $src.Replace('// @github          https://github.com/DhakadG',
 Case '@architecture on a tool mod' $arch '@architecture declared'
 
 # v3.9.0: OpenDashboard called before it was declared
-$fwd = $src.Replace("// Defined further down with the dashboard; the tray menu needs it earlier.`nstatic void OpenDashboard();`n`n", '')
+# line-ending agnostic: a clone with core.autocrlf=true would silently turn
+# this mutation into a no-op
+$fwd = [regex]::Replace($src, '(?m)^//[^\r\n]*tray menu needs it earlier\.\r?\nstatic void OpenDashboard\(\);\r?\n', '')
 Case 'use before declaration' $fwd 'not declared until'
 
 # a settings key read but never declared in the settings block

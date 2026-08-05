@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         4.0.3
+// @version         4.0.4
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
@@ -187,6 +187,25 @@ Hot corners are disabled when any excluded process is the foreground window.
 **Example:** `photoshop.exe;premiere.exe;blender.exe`
 
 # Changelog
+
+## What's New in v4.0.4
+
+- **Fixed: disabling or reloading the mod with the settings window open could
+  crash Windhawk.** Shutdown stopped every thread except the one running that
+  window, then freed the locks it was still using. It now closes the window
+  and waits for it, and if it will not close, leaves the locks alone rather
+  than pulling them out from under it.
+- **Fixed: a failed key injection could leave a modifier stuck down.** If the
+  key presses went through but the releases did not, the key stayed logically
+  held for the rest of the session — a stuck Win or Ctrl that nothing on
+  screen explains. The releases are now replayed after a partial send.
+- **Fixed: opening the settings window leaked an icon every time.**
+- Saving a configuration for a display beyond the eighth now says so in the
+  log instead of appearing to work and losing the edit on the next reload.
+- A Custom Command of just `uac;` with nothing after it no longer tries to
+  relaunch Windhawk itself with elevation.
+- Settings shared between the tray, the settings window and the detection
+  loop are read and written atomically.
 
 ## What's New in v4.0.3
 
@@ -1245,11 +1264,11 @@ static HANDLE g_hStopEvent = nullptr;
 // Per-fire logging is opt-in. Wh_Log goes through OutputDebugString, which
 // takes a machine-wide mutex; spamming it from a hot path serialises every
 // other process that logs — including the other Windhawk mods.
-static bool g_verboseLog = false;
+static std::atomic<bool> g_verboseLog{false};
 
 // Prints the monitor list at load and on display changes, so names can be
 // copied into the Monitor setting instead of guessed. Cheap - once per event.
-static bool g_showMonitorNames = true;
+static std::atomic<bool> g_showMonitorNames{true};
 
 // Master switch and temporary suspend, both driven from the tray icon.
 // Written by the tray thread and read by the detection thread every tick;
@@ -1260,7 +1279,7 @@ static std::atomic<ULONGLONG> g_suspendUntil{0};
 // How long to wait after locking before blanking the display. Hardware
 // dependent - the secure-desktop switch takes longer on some machines, and
 // blanking before it settles just wakes the display again.
-static int g_lockBlankDelayMs = 1200;
+static std::atomic<int> g_lockBlankDelayMs{1200};
 
 // Hard floor between any two actions, whatever the zone or the cooldown
 // setting. Actions are user-visible shell operations (Task View, Show Desktop,
@@ -2019,6 +2038,15 @@ static void SendKeys(const std::vector<WORD> &vks)
     {
         Wh_Log(L"SendInput FAILED: sent %u/%u, err=%lu (sizeof(INPUT)=%d)",
                sent, (UINT)inputs.size(), GetLastError(), (int)sizeof(INPUT));
+
+        // A short send can stop between a key-down and its matching key-up,
+        // which leaves that key logically held for the rest of the session —
+        // a stuck Win or Ctrl the user cannot clear without logging out. The
+        // release events are already built as the second half of the batch,
+        // and releasing a key that is already up does nothing, so replay all
+        // of them. Nothing was pressed if nothing was sent.
+        if (sent > 0)
+            SendInput((UINT)n, inputs.data() + n, sizeof(INPUT));
     }
     else if (g_verboseLog)
     {
@@ -2140,7 +2168,7 @@ static void ActionLockAndMonitorsOff()
     // The lock transition itself counts as activity, so blanking too soon
     // just wakes the display straight back up. How long the switch to the
     // secure desktop takes varies by machine, hence the setting.
-    Sleep((DWORD)g_lockBlankDelayMs);
+    Sleep((DWORD)g_lockBlankDelayMs.load());
     BroadcastSysCommand(SC_MONITORPOWER, (LPARAM)2);
 }
 
@@ -2189,6 +2217,12 @@ static void ActionStartProcess(const std::wstring &command)
         verb = L"runas";
         cmd = TrimStr(cmd.substr(4));
     }
+
+    // "uac;" with nothing after it would reach CommandLineToArgvW with an
+    // empty string, which returns the *host process* path as argv[0] — so a
+    // stray prefix would relaunch windhawk.exe elevated.
+    if (cmd.empty())
+        return;
 
     // CommandLineToArgvW handles unquoted paths with spaces correctly.
     std::wstring exe, params;
@@ -3649,7 +3683,11 @@ static void ApplyTrayOverrides()
         pull(L"ovr_cooldown", g_settings.cooldownMs, 0, 60000);
         pull(L"ovr_centre", g_settings.centerZonePercent, 1, 90);
         pull(L"ovr_modifier", g_settings.requireModifier, 0, 4);
-        pull(L"ovr_lockblank", g_lockBlankDelayMs, 0, 10000);
+        // Via a local: pull takes int&, and the global is atomic because the
+        // worker thread reads it while this runs.
+        int lockBlank = g_lockBlankDelayMs;
+        pull(L"ovr_lockblank", lockBlank, 0, 10000);
+        g_lockBlankDelayMs = lockBlank;
 
         int x = Wh_GetIntValue(L"ovr_taskbar", -1);
         if (x >= 0)
@@ -3953,6 +3991,8 @@ struct DashState
     HWND hTip = nullptr;
     HWND hPageZones = nullptr, hPageOptions = nullptr;
     HWND hSave = nullptr, hCancel = nullptr, hReset = nullptr;
+    // WM_SETICON does not take ownership; whoever created the icon destroys it.
+    HICON hIcon = nullptr;
 };
 
 static int Sc(int px, UINT dpi) { return MulDiv(px, (int)dpi, 96); }
@@ -4577,6 +4617,19 @@ static void DashSave(HWND hWnd, DashState *s)
     DashCaptureZoneTuning(s);
     // Zones for the slot currently on screen.
     int sel = s->cfgIndex;
+
+    // The slot is the monitor combo's index, so a machine with more displays
+    // than the value store has slots would write keys that DashLoad's
+    // kMaxGuiConfigs loop never reads back — the edit would vanish on reload
+    // with nothing said. Refuse loudly instead.
+    if (sel < 0 || sel >= kMaxGuiConfigs)
+    {
+        Wh_Log(L"Dashboard: display %d is beyond the %d configuration slots; "
+               L"not saved",
+               sel, kMaxGuiConfigs);
+        return;
+    }
+
     wchar_t monName[256] = {};
     int cur = (int)SendMessageW(s->hMonitor, CB_GETCURSEL, 0, 0);
     if (cur == 0)
@@ -4826,7 +4879,8 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                 L"Settings page.");
         }
 
-        if (HICON ic = MakeTrayIcon(true))
+        s->hIcon = MakeTrayIcon(true);
+        if (HICON ic = s->hIcon)
         {
             SendMessageW(hWnd, WM_SETICON, ICON_SMALL, (LPARAM)ic);
             SendMessageW(hWnd, WM_SETICON, ICON_BIG, (LPARAM)ic);
@@ -5024,6 +5078,8 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                 DeleteObject(s->hField);
             if (s->hPanel)
                 DeleteObject(s->hPanel);
+            if (s->hIcon)
+                DestroyIcon(s->hIcon);
         }
         g_hDashWnd = nullptr;
         PostQuitMessage(0);
@@ -5113,7 +5169,11 @@ static void OpenDashboard()
     }
     if (g_hDashThread)
     {
-        WaitForSingleObject(g_hDashThread, 0);
+        // Recycle the handle only once the previous thread has actually gone.
+        // Closing it while that thread still runs throws away the only way to
+        // wait for it during uninit, and starts a second dashboard besides.
+        if (WaitForSingleObject(g_hDashThread, 0) != WAIT_OBJECT_0)
+            return;
         CloseHandle(g_hDashThread);
         g_hDashThread = nullptr;
     }
@@ -5281,6 +5341,24 @@ void WhTool_ModUninit()
         PostThreadMessage(g_dwDetectThreadId, WM_QUIT, 0, 0);
 
     bool allStopped = true;
+
+    // The dashboard is a window with its own message loop on its own thread,
+    // and it takes g_settingsLock and g_zonesLock. Nothing below may free
+    // those while it is alive. Its loop only ends when its window does, so
+    // close the window rather than signalling the stop event.
+    if (g_hDashWnd)
+        PostMessage(g_hDashWnd, WM_CLOSE, 0, 0);
+
+    if (g_hDashThread)
+    {
+        if (WaitForSingleObject(g_hDashThread, 3000) == WAIT_TIMEOUT)
+        {
+            Wh_Log(L"Dashboard thread exit timed out");
+            allStopped = false;
+        }
+        CloseHandle(g_hDashThread);
+        g_hDashThread = nullptr;
+    }
 
     if (g_hDetectThread)
     {

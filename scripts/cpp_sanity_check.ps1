@@ -26,8 +26,15 @@ function Pass($m){ "  PASS  $m" }
 
 # Strip comments and string literals so scans don't trip on prose or the
 # embedded readme/settings blocks.
-$code = [regex]::Replace($src, '/\*.*?\*/', { "`n" * ($args[0].Value -split "`n").Count }, 'Singleline')
+# A comment spanning N lines holds N-1 newlines, so emit that many: one too
+# many shifts every line number reported below, and the duplicate check reads
+# $lines[$ln-1] to compare signatures.
+$code = [regex]::Replace($src, '/\*.*?\*/', { "`n" * (($args[0].Value -split "`n").Count - 1) }, 'Singleline')
 $code = [regex]::Replace($code, '//[^\n]*', '')
+# Character literals before string literals: the file contains L'"', and left
+# alone that quote opens a string for the next rule, which then swallows real
+# code up to the following quote and hides it from every scan.
+$code = [regex]::Replace($code, "L?'(\\.|[^'\\])'", "' '")
 $code = [regex]::Replace($code, 'L?"(\\.|[^"\\])*"', '""')
 
 "=== 1. duplicate definitions ==="
@@ -36,11 +43,14 @@ $defs = @{}
 foreach ($m in [regex]::Matches($code, '(?m)^\s*static\s+[^;()\n=]*?(\w+)\s*\([^;]*?\)\s*(?:const\s*)?\{')) {
     $n = $m.Groups[1].Value
     if ($n -in @('if','for','while','switch','catch','return','sizeof','else','void','const','ARRAYSIZE','_countof','decltype','constexpr','inline')) { continue }
-    $ln = ($code.Substring(0, $m.Index) -split "`n").Count
+    # from the name, not the match start: "^\s*" can begin on a blank line
+    # above, and $lines[$ln-1] is read below to compare signatures
+    $ln = ($code.Substring(0, $m.Groups[1].Index) -split "`n").Count
     if (-not $defs.ContainsKey($n)) { $defs[$n] = @() }
     $defs[$n] += $ln
 }
 $dupes = $defs.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 }
+$dup = 0
 if ($dupes) {
     foreach ($d in $dupes) {
         # overloads are legal; flag only when the parameter lists match
@@ -48,10 +58,12 @@ if ($dupes) {
         foreach ($ln in $d.Value) { $sigs += ($lines[$ln-1] -replace '\s+',' ').Trim() }
         if (($sigs | Select-Object -Unique).Count -lt $sigs.Count) {
             Fail "'$($d.Key)' defined more than once with the same signature at lines $($d.Value -join ', ')"
+            $dup++
         }
     }
 }
-if ($script:fails -eq 0) { Pass "no duplicate definitions ($($defs.Count) functions)" }
+# a section-local count, so this Pass cannot be silenced by an earlier failure
+if ($dup -eq 0) { Pass "no duplicate definitions ($($defs.Count) functions)" }
 
 "`n=== 2. use before declaration ==="
 $declLine = @{}
@@ -60,7 +72,7 @@ foreach ($n in $defs.Keys) { $declLine[$n] = ($defs[$n] | Measure-Object -Minimu
 foreach ($m in [regex]::Matches($code, '(?m)^\s*static\s+[^;()\n=]*?(\w+)\s*\([^;{]*\)\s*;')) {
     $n = $m.Groups[1].Value
     if ($n -in @('if','for','while','switch','catch','return','sizeof','else','void','const','ARRAYSIZE','_countof','decltype','constexpr','inline')) { continue }
-    $ln = ($code.Substring(0, $m.Index) -split "`n").Count
+    $ln = ($code.Substring(0, $m.Groups[1].Index) -split "`n").Count
     if (-not $declLine.ContainsKey($n) -or $ln -lt $declLine[$n]) { $declLine[$n] = $ln }
 }
 $bad = 0
@@ -85,13 +97,22 @@ $lam = 0
 foreach ($m in [regex]::Matches($code, "($cbApis)\s*\(", 'Singleline')) {
     # walk the call's own argument list, balanced, so the scan cannot spill
     # into the following statement
-    $i = $code.IndexOf('(', $m.Index); $depth = 0; $end = $i
+    $i = $code.IndexOf('(', $m.Index); $depth = 0; $end = -1
     for ($j = $i; $j -lt [Math]::Min($code.Length, $i + 4000); $j++) {
         if ($code[$j] -eq '(') { $depth++ }
         elseif ($code[$j] -eq ')') { $depth--; if ($depth -eq 0) { $end = $j; break } }
     }
+    if ($end -lt 0) {
+        # without the closing paren the argument list is unknown; saying
+        # nothing here would be a pass this check has not earned
+        Fail "could not find the end of the $($m.Groups[1].Value) call at line $(($code.Substring(0, $m.Index) -split "`n").Count) - lambda scan skipped"
+        $lam++
+        continue
+    }
     $tail = $code.Substring($i, $end - $i + 1)
-    if ($tail -match '\[\s*\]\s*\(') {
+    # any capture list: [&] and [this] do not convert to a function pointer
+    # either, they just fail with a different message
+    if ($tail -match '\[[^\]]*\]\s*\(') {
         $ln = ($code.Substring(0, $m.Index) -split "`n").Count
         Fail "lambda passed to $($m.Groups[1].Value) at line $ln - needs a free function marked CALLBACK"
         $lam++
@@ -103,7 +124,7 @@ if ($lam -eq 0) { Pass "no lambdas passed where a __stdcall callback is required
 $reserved = 'near','far','min','max','small','IN','OUT','interface','CONST','pascal','cdecl','huge','VOID','TRUE','FALSE','NULL'
 $sh = 0
 foreach ($r in $reserved) {
-    foreach ($m in [regex]::Matches($code, "(?<![\w:])(?:int|LONG|DWORD|bool|auto|UINT|WORD|HWND|RECT|HICON|HMENU|float|double|size_t|BOOL|LPARAM|WPARAM)\s+$r\b")) {
+    foreach ($m in [regex]::Matches($code, "(?<![\w:])(?:const\s+)?(?:int|LONG|DWORD|bool|auto|UINT|WORD|HWND|RECT|HICON|HMENU|float|double|size_t|BOOL|LPARAM|WPARAM)(?:\s+|\s*[*&]{1,2}\s*)$r\b")) {
         $ln = ($code.Substring(0, $m.Index) -split "`n").Count
         Fail "'$r' used as an identifier at line $ln - the Windows SDK #defines it"
         $sh++
@@ -150,8 +171,13 @@ if ($op -eq $cp) { Pass "parens balanced ($op)" } else { Fail "paren mismatch: $
 if ($src -match '@version\s+\S+') { Pass "@version present: $(([regex]::Match($src,'@version\s+(\S+)')).Groups[1].Value)" } else { Fail "no @version" }
 $meta = ([regex]::Match($src, '(?s)==WindhawkMod==(.*?)==/WindhawkMod==')).Groups[1].Value
 if ($meta -match '(?m)^//\s*@architecture') { Fail "@architecture declared in the metadata block - a windhawk.exe tool mod must not restrict architecture" } else { Pass "no @architecture restriction in metadata" }
-# every setting read must exist in the settings block, and vice versa
-$declared = [regex]::Matches($src, '(?m)^-\s*(\w+):') | ForEach-Object { $_.Groups[1].Value }
+# every setting read must exist in the settings block. Declared-but-unread is
+# deliberately not checked: the per-zone fields are read through keys built at
+# runtime, so every one of them would look unread.
+$settingsBlock = ([regex]::Match($src, '(?s)==WindhawkModSettings==.*?/\*(.*?)\*/')).Groups[1].Value
+# from the settings block only - the readme above it is prose, and a line of
+# prose starting "- Word:" would otherwise register as a declared setting
+$declared = [regex]::Matches($settingsBlock, '(?m)^-\s*(\w+):') | ForEach-Object { $_.Groups[1].Value }
 $readNames = @(
     [regex]::Matches($src, 'Wh_Get(?:Int|String)Setting\(L"(\w+)"')
     [regex]::Matches($src, 'StringSetting::make\(L"(\w+)"')
@@ -164,15 +190,19 @@ if ($missing) { Fail "settings read but not declared: $($missing -join ', ')" } 
 # $options is not a string, and the mod then never loads at all. Cost a CI
 # round trip in v4.0.2, where RequireModifier was a number with numbered
 # options.
-$sLines = ([regex]::Match($src, '(?s)==WindhawkModSettings==.*?/\*(.*?)\*/')).Groups[1].Value -split "`r?`n"
+$sLines = $settingsBlock -split "`r?`n"
 $badOpts = @()
 for ($i = 0; $i -lt $sLines.Count; $i++) {
     if ($sLines[$i] -notmatch '^\s*\$options:') { continue }
-    # the setting this list belongs to is the nearest key line above it
+    $indent = ($sLines[$i] -replace '^(\s*).*', '$1').Length
+    # the setting this list belongs to is the nearest key line above it that
+    # is further out; entries of a preceding list sit at this list's own
+    # indentation and must not end the search
     for ($j = $i - 1; $j -ge 0; $j--) {
-        if ($sLines[$j] -match '^[\s-]*(\w+):\s*(\S.*?)?\s*$') {
-            if ($matches[2] -match '^(-?\d+(\.\d+)?|true|false)$') {
-                $badOpts += "$($matches[1]) = $($matches[2])"
+        if ($sLines[$j] -match '^(\s*)[-\s]*(\w+):\s*(\S.*?)?\s*$') {
+            if ($matches[1].Length -ge $indent) { continue }
+            if ($matches[3] -match '^(-?\d+(\.\d+)?|true|false)$') {
+                $badOpts += "$($matches[2]) = $($matches[3])"
             }
             break
         }

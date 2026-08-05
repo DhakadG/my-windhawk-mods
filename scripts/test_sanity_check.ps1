@@ -56,6 +56,10 @@ Case 'use before declaration' $fwd 'not declared until'
 $set = $src.Replace('Wh_GetIntSetting(L"CooldownMs")', 'Wh_GetIntSetting(L"TotallyMadeUp")')
 Case 'setting read but not declared' $set 'settings read but not declared'
 
+# v4.0.2: a numbered dropdown made Windhawk reject the whole settings block
+$opt = $src.Replace("- RequireModifier: none", "- RequireModifier: 0")
+Case 'numbered $options dropdown' $opt 'must have a string value'
+
 # unbalanced braces
 $br = $src.Replace('static void ActionLock() { LockWorkStation(); }',
                    'static void ActionLock() { LockWorkStation();')
@@ -70,6 +74,6 @@ else { $script:fails++; '  ** the real file reports problems - false positive **
 
 Remove-Item -LiteralPath $work -Force -ErrorAction SilentlyContinue
 ''
-if ($fails -eq 0) { 'CHECKER VERIFIED: catches all 8 known failure modes, no false positives' }
+if ($fails -eq 0) { 'CHECKER VERIFIED: catches all 9 known failure modes, no false positives' }
 else { "$fails CHECKER GAP(S)" }
 exit $(if ($fails -eq 0) { 0 } else { 1 })

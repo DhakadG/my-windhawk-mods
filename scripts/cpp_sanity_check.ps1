@@ -150,10 +150,34 @@ $meta = ([regex]::Match($src, '(?s)==WindhawkMod==(.*?)==/WindhawkMod==')).Group
 if ($meta -match '(?m)^//\s*@architecture') { Fail "@architecture declared in the metadata block - a windhawk.exe tool mod must not restrict architecture" } else { Pass "no @architecture restriction in metadata" }
 # every setting read must exist in the settings block, and vice versa
 $declared = [regex]::Matches($src, '(?m)^-\s*(\w+):') | ForEach-Object { $_.Groups[1].Value }
-$read = [regex]::Matches($code, 'Wh_Get(?:Int|String)Setting\(L?""?\s*\)?') | ForEach-Object { $_.Value }
-$readNames = [regex]::Matches($src, 'Wh_Get(?:Int|String)Setting\(L"(\w+)"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
+$readNames = @(
+    [regex]::Matches($src, 'Wh_Get(?:Int|String)Setting\(L"(\w+)"')
+    [regex]::Matches($src, 'StringSetting::make\(L"(\w+)"')
+) | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
 $missing = $readNames | Where-Object { $_ -notin $declared }
 if ($missing) { Fail "settings read but not declared: $($missing -join ', ')" } else { Pass "all $($readNames.Count) settings read are declared" }
+
+"`n=== 8. settings dropdowns ==="
+# Windhawk refuses to parse the entire settings block if a value carrying
+# $options is not a string, and the mod then never loads at all. Cost a CI
+# round trip in v4.0.2, where RequireModifier was a number with numbered
+# options.
+$sLines = ([regex]::Match($src, '(?s)==WindhawkModSettings==.*?/\*(.*?)\*/')).Groups[1].Value -split "`r?`n"
+$badOpts = @()
+for ($i = 0; $i -lt $sLines.Count; $i++) {
+    if ($sLines[$i] -notmatch '^\s*\$options:') { continue }
+    # the setting this list belongs to is the nearest key line above it
+    for ($j = $i - 1; $j -ge 0; $j--) {
+        if ($sLines[$j] -match '^[\s-]*(\w+):\s*(\S.*?)?\s*$') {
+            if ($matches[2] -match '^(-?\d+(\.\d+)?|true|false)$') {
+                $badOpts += "$($matches[1]) = $($matches[2])"
+            }
+            break
+        }
+    }
+}
+if ($badOpts) { Fail "settings using `$options must have a string value: $($badOpts -join ', ')" }
+else { Pass "every `$options list belongs to a string setting" }
 
 "`n$(if($fails -eq 0){'SANITY CHECKS PASSED'}else{"$fails PROBLEM(S) FOUND"})"
 exit $(if($fails -eq 0){0}else{1})

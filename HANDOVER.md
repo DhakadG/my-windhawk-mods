@@ -7,7 +7,7 @@ before changing anything.
 - **Source of truth:** `win-x-hotcorners.wh.cpp` — the *only* tracked copy
 - **Working copy:** `Win-x-HotCorners.cpp` — gitignored, edit this, then copy
   over the tracked one before committing
-- **Current version:** 4.0.0 (`e3434b3`)
+- **Current version:** 4.0.2 (`51ef071`)
 
 ---
 
@@ -16,15 +16,16 @@ before changing anything.
 | Area | State |
 |---|---|
 | Detection engine | Shipped and used daily |
-| 41 actions | Shipped; user has verified Task View, Switch to Last Window, Lock+Monitors Off |
+| 36 actions | Shipped; user has verified Task View, Switch to Last Window, Lock+Monitors Off |
 | Tray icon and menu | Shipped, verified working |
-| Settings dashboard | **Compiles, largely untested** — v3.9.x/4.0.0 UI is new |
-| Per-zone settings (v4.0.0) | **Never compiled or run.** Model, geometry and detection done; UI panel new |
-| Windhawk PR #5001 | OPEN, all 5 checks green, carries **v3.5.0** — deliberately not updated |
+| Settings dashboard | Compiles and runs; user confirmed 2026-08-05 |
+| Per-zone settings (v4.0.0) | Compiles and runs; user confirmed 2026-08-05 |
+| Windhawk PR #5001 | OPEN, carries **v4.0.2** since 2026-08-05 |
 
-**The PR is four versions behind on purpose.** Do not push v4.0.0 to it until
-the user confirms it compiles and runs. Submitting unverified code to a public
-repo with 536 mods under their name is not recoverable cheaply.
+**The PR now tracks the current version.** It sat at v3.5.0 for four releases
+because nothing newer had been compiled; the user confirmed on 2026-08-05 that
+v4.0.x builds and runs, which is what released the hold. Keep that bar: do not
+push a version to the PR that the user has not run.
 
 ### Verification status is the thing to be careful about
 
@@ -32,7 +33,8 @@ There is **no C++ toolchain on this machine**. Nothing has ever been compiled
 by the assistant — every build error in this project was found by the user
 pasting it back. "All checks passed" means the *algorithms* are verified by
 simulation, never that the file builds. Say so plainly rather than implying
-otherwise.
+otherwise. The user compiles in Windhawk and reports back; treat their word as
+the only build evidence there is.
 
 ---
 
@@ -169,11 +171,11 @@ after touching the checker.
   backdrop *and* themes everything dark, which is what actually looks native.
   Real Mica needs owner-drawn controls or XAML Islands — a separate project
 
-**Next PR update:** once v4.0.0 is verified, push to the `add-win-x-hotcorners`
-branch of the `DhakadG/windhawk-mods` fork. The PR body must keep the
-`## Mod authorship` section or `pr_validation.py` fails. Editing the body does
-**not** re-trigger validation (`on: pull_request` has no `edited` type) — close
-and reopen the PR instead.
+**PR updates:** push to the `add-win-x-hotcorners` branch of the
+`DhakadG/windhawk-mods` fork; the PR picks it up and re-runs validation. The PR
+body must keep the `## Mod authorship` section or `pr_validation.py` fails.
+Editing the body alone does **not** re-trigger validation (`on: pull_request`
+has no `edited` type) — either push a commit alongside it, or close and reopen.
 
 ---
 

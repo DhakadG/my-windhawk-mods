@@ -82,6 +82,7 @@ These were expensive to discover. Do not rediscover them.
 | `gh` authenticated as DhakadG | Commits must use `73574085+DhakadG@users.noreply.github.com` — GitHub rejects pushes carrying the real email |
 | Source file is **LF**, no BOM | PowerShell `Set-Content`/`WriteAllText` must preserve it |
 | The mods repo CI compiles against Windhawk **1.6.1, 1.7.3 and 2.0.0-alpha.2** | 2.0 validates the settings block far more strictly than 1.x. A local build proves nothing about the 2.0 job — that is the only compiler you get for it |
+| The 2.0 job builds x86, x64 **and ARM64**, and fails on **any compiler warning** ("The mod compiled with warnings"), while 1.6/1.7 do not | A warning is a build failure there. C++20 rules apply: arithmetic between two different enum types is deprecated, so cast one side |
 
 ---
 

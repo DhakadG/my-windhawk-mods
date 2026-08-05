@@ -7,7 +7,7 @@ before changing anything.
 - **Source of truth:** `win-x-hotcorners.wh.cpp` — the *only* tracked copy
 - **Working copy:** `Win-x-HotCorners.cpp` — gitignored, edit this, then copy
   over the tracked one before committing
-- **Current version:** 4.0.2 (`51ef071`)
+- **Current version:** 4.0.3 (`aa60b91`)
 
 ---
 
@@ -20,7 +20,7 @@ before changing anything.
 | Tray icon and menu | Shipped, verified working |
 | Settings dashboard | Compiles and runs; user confirmed 2026-08-05 |
 | Per-zone settings (v4.0.0) | Compiles and runs; user confirmed 2026-08-05 |
-| Windhawk PR #5001 | OPEN, carries **v4.0.2** since 2026-08-05 |
+| Windhawk PR #5001 | OPEN, carries **v4.0.3** since 2026-08-05 |
 
 **The PR now tracks the current version.** It sat at v3.5.0 for four releases
 because nothing newer had been compiled; the user confirmed on 2026-08-05 that
@@ -81,6 +81,7 @@ These were expensive to discover. Do not rediscover them.
 | CodeRabbit CLI installed, **Free** plan | Needs a git repo, an explicit `--base`, and allows ~one review per hour (exit 75) |
 | `gh` authenticated as DhakadG | Commits must use `73574085+DhakadG@users.noreply.github.com` — GitHub rejects pushes carrying the real email |
 | Source file is **LF**, no BOM | PowerShell `Set-Content`/`WriteAllText` must preserve it |
+| The mods repo CI compiles against Windhawk **1.6.1, 1.7.3 and 2.0.0-alpha.2** | 2.0 validates the settings block far more strictly than 1.x. A local build proves nothing about the 2.0 job — that is the only compiler you get for it |
 
 ---
 
@@ -149,6 +150,7 @@ observed.
 | Zones dead while Task View is open | Task View is monitor-sized, so the fullscreen guard caught it. v2 was immune only because it ran *inside* explorer and skipped its own process | Compare against the **shell's** pid |
 | Display stays on after Lock+Monitors Off | `WM_SYSCOMMAND` posted to `GetForegroundWindow()`, which is null after `LockWorkStation` switches desktop; the fallback `GetDesktopWindow()` handles nothing | Broadcast via `SendMessageTimeout(HWND_BROADCAST, ...)` |
 | Preview highlight lights the wrong thing | Edge and centre rects overlapped in the diagram | Split edges around their centre, hit-test centres first |
+| `Failed to parse settings` on Windhawk 2.0, fine on 1.7 | A `$options` dropdown whose value is a number. 2.0 rejects the **whole** settings block, so nothing loads | Values with `$options` must be strings; map them to numbers in one place in the code |
 
 **Meta-trap:** the assistant's own checker was once structurally blind to the
 bug it was written for — its regex required whitespace before a function name,

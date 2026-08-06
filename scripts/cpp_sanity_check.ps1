@@ -140,7 +140,9 @@ $apiLib = @{
   'shell32' = 'Shell_NotifyIconW?|ShellExecuteExW?|SHQueryUserNotificationState|CommandLineToArgvW|Shell_NotifyIconGetRect|ExtractIconW?'
   'powrprof'= 'SetSuspendState|PowerSetActiveScheme'
   'comctl32'= 'SetWindowSubclass|RemoveWindowSubclass|DefSubclassProc|InitCommonControls'
-  'ole32'   = 'CoInitialize|CoCreateInstance|CoTaskMemFree'
+  # CoInitializeEx, not just CoInitialize: the '\s*\(' the matcher appends meant
+  # the Ex form slipped past this check entirely.
+  'ole32'   = 'CoInitialize(?:Ex)?|CoUninitialize|CoCreateInstance|CoTaskMemFree'
   'advapi32'= 'RegOpenKeyExW?|RegQueryValueExW?|RegSetValueExW?|OpenProcessToken'
   'dwmapi'  = 'DwmSetWindowAttribute|DwmExtendFrameIntoClientArea'
   'uxtheme' = 'SetWindowTheme|OpenThemeData'

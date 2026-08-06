@@ -206,10 +206,13 @@ uac;cmd.exe          -> prefix with uac; to request elevation
 
 ## How it works
 
-Detection runs on its own thread inside a dedicated Windhawk process, sampling
-the cursor every 16 ms — flat, with no adaptive backoff, so a fast flick into a
-corner can never land between two samples. It idles at 100 ms only when the mod
-is switched off, suspended, or has no zones armed. There is no global
+Detection runs on its own thread inside a dedicated Windhawk process, asking to
+be woken every 16 ms — flat, with no adaptive backoff, so the sampling rate
+never drops while a zone is armed. The wait expires on a system timer tick, and
+the default tick is 15.625 ms, so in practice a sample lands every 16–31 ms
+depending on what else has raised the timer resolution; the mod does not raise
+it itself, because doing so costs battery machine-wide. It idles at 100 ms only
+when the mod is switched off, suspended, or has no zones armed. There is no global
 mouse hook, so the mod
 adds nothing to the input path of your games and applications, and nothing the
 shell does can delay or starve it. Actions run on a separate worker thread, so

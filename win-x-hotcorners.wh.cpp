@@ -2,12 +2,12 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         4.1.3
+// @version         4.1.4
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @license         MIT
 // @include         windhawk.exe
-// @compilerOptions -ladvapi32 -lcomctl32 -lgdi32 -lpowrprof -lshell32 -luser32
+// @compilerOptions -ladvapi32 -lcomctl32 -lgdi32 -lole32 -lpowrprof -lshell32 -luser32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -37,8 +37,9 @@ If all you want is one specific behaviour, a smaller mod may suit you better:
 
 ## Features
 
-- **Bounded latency** — a dedicated detection thread samples the cursor every
-  ~16 ms, and only idles when nothing could fire anyway. Nothing can starve it:
+- **Bounded latency** — a dedicated detection thread asks to sample the cursor
+  every 16 ms (one system timer tick, so 16-31 ms in practice) and only idles
+  when nothing could fire anyway. Nothing can starve it:
   not a busy explorer, not an elevated foreground app, not a slow action.
 - **Zero impact on the rest of the system** — no global mouse hook, so your
   games and apps keep their input path to themselves.
@@ -221,6 +222,37 @@ Hot corners are disabled when any excluded process is the foreground window.
 **Example:** `photoshop.exe;premiere.exe;blender.exe`
 
 # Changelog
+
+## What's New in v4.1.4
+
+Review fixes, the first of which could lose a display's configuration.
+
+- **The editor bound each configuration to a list position instead of to a
+  display.** Detection has always matched zones by display name, but the
+  dashboard read and wrote whichever stored group sat at the same index as the
+  entry in its dropdown. That list is ordered primary first, then left to right,
+  so making another display primary or unplugging one renumbered it — and the
+  editor would then show one display's zones under another's name, and overwrite
+  them there on save. Each entry is now matched to its stored group by name, a
+  display configured for the first time takes the lowest free group, and a
+  display that is not currently plugged in keeps the group it owns.
+- **Custom Command could silently fail for URLs, shortcuts and folders.** Those
+  go through shell extensions that need COM, and the worker thread running them
+  had no apartment. It initialises one now, and both `ShellExecuteEx` calls ask
+  the shell not to return before it is finished, since that thread has no
+  message loop.
+- **A cooldown consumed the visit.** Walking into a zone shortly after anything
+  else fired and then parking there never fired at all — you had to leave and
+  come back. A cooldown is now a wait rather than a refusal, so staying put
+  outlasts it.
+- **Lock and blank the display no longer blocks unload** for up to ten seconds
+  while it waits out the blanking delay.
+- Argument fields stop input at the length the mod can actually store, rather
+  than truncating past it in silence.
+- The readme no longer claims a 16 ms sample rate without qualification: the
+  wait expires on a system timer tick, so it is 16-31 ms in practice.
+- Dropped an unused header, a brush that was created and destroyed but never
+  used, and a monitor-matching branch that could never be reached.
 
 ## What's New in v4.1.3
 
@@ -556,12 +588,11 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
 #include <windows.h>
 
 #include <commctrl.h>
-#include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM // windhawk_utils.h needs SUBCLASSPROC from here
+#include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
 #include <initializer_list>
 #include <powrprof.h>
 #include <shellapi.h>
 #include <windhawk_api.h>
-#include <windhawk_utils.h>
 
 #include <algorithm>
 #include <atomic>
@@ -570,6 +601,7 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <cwctype>
 #include <deque>
 #include <functional>
@@ -667,8 +699,7 @@ struct ZoneConfig
 
 struct MonitorZoneConfig
 {
-    std::wstring monitorId; // friendly name, "*" for all, or "" to use index
-    int monitorIndex = 0;   // legacy fallback, only used when monitorId empty
+    std::wstring monitorId;   // friendly name, or "*" for all displays
     ZoneConfig zones[ZONE_COUNT];
 };
 
@@ -703,7 +734,7 @@ struct HitZone
 
     // Which display this zone lives on, so the fullscreen guard can suppress
     // the display a game is actually on and leave the others alone.
-    // ponytail: an HMONITOR, not a rect. It is only stale between a display
+    // An HMONITOR, not a rect. It is only stale between a display
     // change and the rebuild that follows it, and a stale one simply fails to
     // match, which errs towards firing rather than towards silence.
     HMONITOR monitor = nullptr;
@@ -1131,7 +1162,7 @@ static void QueryMonitorFriendlyNames(
     // the caller to size and query again. Without the retry every friendly
     // name is lost for that rebuild, and every zone bound to a name silently
     // stops matching until the next display change.
-    // ponytail: 3 attempts. A layout that changes three times inside one
+    // 3 attempts. A layout that changes three times inside one
     // rebuild will fix itself on the next WM_DISPLAYCHANGE anyway.
     LONG qc = ERROR_INSUFFICIENT_BUFFER;
     for (int attempt = 0; attempt < 3 && qc == ERROR_INSUFFICIENT_BUFFER;
@@ -1657,7 +1688,10 @@ static void ActionTaskManager()
     std::wstring path = std::wstring(sysDir) + L"\\Taskmgr.exe";
 
     SHELLEXECUTEINFO sei = {sizeof(sei)};
-    sei.fMask = SEE_MASK_FLAG_NO_UI;
+    // NOASYNC because the worker thread has no message loop: without it the
+    // call can return before the shell is finished, and the thread is torn
+    // down at uninit.
+    sei.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
     sei.lpVerb = L"open";
     sei.lpFile = path.c_str();
     sei.nShow = SW_SHOW;
@@ -1702,7 +1736,13 @@ static void ActionLockAndMonitorsOff()
     // The lock transition itself counts as activity, so blanking too soon
     // just wakes the display straight back up. How long the switch to the
     // secure desktop takes varies by machine, hence the setting.
-    Sleep((DWORD)g_lockBlankDelayMs.load());
+    //
+    // Waiting on the stop event rather than sleeping: this can be up to ten
+    // seconds, and an unload during it would otherwise sit out the whole delay
+    // and then push WhTool_ModUninit into its three-second timeout path.
+    if (WaitForSingleObject(g_hStopEvent, (DWORD)g_lockBlankDelayMs.load()) ==
+        WAIT_OBJECT_0)
+        return;
     BroadcastSysCommand(SC_MONITORPOWER, (LPARAM)2);
 }
 
@@ -1816,7 +1856,10 @@ static void ActionStartProcess(const std::wstring &command)
     }
 
     SHELLEXECUTEINFO sei = {sizeof(sei)};
-    sei.fMask = SEE_MASK_FLAG_NO_UI;
+    // NOASYNC because the worker thread has no message loop: without it the
+    // call can return before the shell is finished, and the thread is torn
+    // down at uninit.
+    sei.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
     sei.lpVerb = verb.c_str();
     sei.lpFile = exe.c_str();
     sei.lpParameters = params.empty() ? nullptr : params.c_str();
@@ -2101,21 +2144,10 @@ static const ZoneConfig *ResolveZone(const MonitorInfo &mon, Zone zone)
             return &zc;
     }
 
-    // 2. Legacy numeric ordinal, for configs carried over from v2.x
+    // 2. Wildcard
     for (const auto &cfg : g_settings.monitorConfigs)
     {
-        if (!cfg.monitorId.empty() || cfg.monitorIndex != mon.index)
-            continue;
-        const auto &zc = cfg.zones[zone];
-        if (zc.action != CornerAction::Nothing && zc.executor)
-            return &zc;
-    }
-
-    // 3. Wildcard
-    for (const auto &cfg : g_settings.monitorConfigs)
-    {
-        if (cfg.monitorId != L"*" &&
-            !(cfg.monitorId.empty() && cfg.monitorIndex == 0))
+        if (cfg.monitorId != L"*")
             continue;
         const auto &zc = cfg.zones[zone];
         if (zc.action != CornerAction::Nothing && zc.executor)
@@ -2358,6 +2390,12 @@ static void EnqueueAction(const HitZone &hz)
 
 static DWORD WINAPI ActionWorkerThread(LPVOID)
 {
+    // ShellExecuteEx reaches shell extensions through COM for URLs, .lnk and
+    // .url files, folders and protocol handlers, so a Custom Command pointing
+    // at any of those failed on this thread while it had no apartment - and
+    // failed silently apart from a log line.
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+
     HANDLE waits[2] = {g_hStopEvent, g_hWorkEvent};
     for (;;)
     {
@@ -2433,6 +2471,7 @@ static DWORD WINAPI ActionWorkerThread(LPVOID)
                 job.exec();
         }
     }
+    CoUninitialize();
     return 0;
 }
 
@@ -2558,24 +2597,23 @@ static DWORD DetectTick()
     if (dwell > 0 && (now - g_enterTick) < (ULONGLONG)dwell)
         return next;
 
+    // Neither cooldown sets g_firedThisEntry: they are a wait, not a refusal.
+    // Marking the visit spent meant that walking into a corner shortly after
+    // anything else fired and then parking there never fired at all - you had
+    // to leave and come back. Falling through lets the dwell outlast the
+    // cooldown, which is what parking in a corner is asking for.
     if (hz.cooldown > 0 && idx < (int)g_lastFireTick.size())
     {
         ULONGLONG last = g_lastFireTick[idx];
         if (last != 0 && (now - last) < (ULONGLONG)hz.cooldown)
-        {
-            g_firedThisEntry = true;
             return next;
-        }
     }
 
     // Global floor across all zones. The per-zone cooldown alone does not stop
     // a sweep through several different zones from queueing a burst.
     if (g_lastAnyFireTick != 0 &&
         (now - g_lastAnyFireTick) < kMinFireIntervalMs)
-    {
-        g_firedThisEntry = true;
         return next;
-    }
 
     g_firedThisEntry = true;
     g_lastAnyFireTick = now;
@@ -2921,8 +2959,7 @@ static std::vector<MonitorZoneConfig> ReadDashboardZones()
             continue;
 
         MonitorZoneConfig cfg;
-        cfg.monitorId = (id == L"(unused)") ? L"" : id;
-        cfg.monitorIndex = 0;
+        cfg.monitorId = id;
 
         bool any = false;
         for (int z = 0; z < ZONE_COUNT; z++)
@@ -3345,7 +3382,6 @@ struct DashState
     HFONT hFont = nullptr;
     HBRUSH hBg = nullptr;
     HBRUSH hField = nullptr;
-    HBRUSH hPanel = nullptr;
     bool showZones = true;
     int hoverZone = -1;   // zone highlighted in the preview
     int selZone = 0;      // zone whose per-zone settings are being edited
@@ -3358,11 +3394,16 @@ struct DashState
     struct Slot
     {
         bool loaded = false;
+        int store = -1;   // the g<n> group this display owns, -1 until it has one
         int action[ZONE_COUNT] = {};
         std::wstring args[ZONE_COUNT];
         ZoneTuning tuning[ZONE_COUNT];
     };
     std::vector<Slot> slots;
+
+    // Which g<n> groups already hold a configuration. A display that is not
+    // plugged in right now still owns its group, so a new one must not take it.
+    bool storeUsed[kMaxGuiConfigs] = {};
 
     HWND hMonitor = nullptr;
     HWND hZoneLabel[ZONE_COUNT] = {};
@@ -3954,7 +3995,7 @@ static void DashPaintDiagram(HWND hWnd, DashState *s, HDC hdc)
     DeleteObject(unset);
     DeleteObject(sel);
 
-    // ponytail: no hover card. It used to be drawn from dg.bottom+10 to
+    // No hover card. It used to be drawn from dg.bottom+10 to
     // dg.bottom+112 — the exact strip the per-zone panel's controls occupy, so
     // it was never readable and its leftovers showed through the gaps between
     // the fields. The panel below already shows the same numbers for the
@@ -4036,9 +4077,17 @@ static void DashFillSlotFromStore(DashState *s, int index)
     // page itself, and with it the bug where the seed was picked by combo
     // position instead of by monitor, so one display's configuration showed up
     // under "All monitors" and then fired on every display.
+    //
+    // Which group to read is decided by name in DashLoad, never by the combo
+    // position: the combo is ordered primary-first then left to right, so
+    // unplugging a display or promoting another to primary renumbers it.
+    const int g = sl.store;
+    if (g < 0)
+        return;   // nothing saved for this display; the Slot defaults stand
+
     for (int z = 0; z < ZONE_COUNT; z++)
     {
-        std::wstring act = GetStrValue(GuiKey(index, z, L"a").c_str());
+        std::wstring act = GetStrValue(GuiKey(g, z, L"a").c_str());
 
         sl.action[z] = 0;
         for (int a = 0; a < kActionCount; a++)
@@ -4049,15 +4098,15 @@ static void DashFillSlotFromStore(DashState *s, int index)
                 break;
             }
         }
-        sl.args[z] = GetStrValue(GuiKey(index, z, L"g").c_str());
+        sl.args[z] = GetStrValue(GuiKey(g, z, L"g").c_str());
 
         ZoneTuning &tn = sl.tuning[z];
-        tn.size = Wh_GetIntValue(GuiKey(index, z, L"sz").c_str(), -1);
-        tn.delay = Wh_GetIntValue(GuiKey(index, z, L"dl").c_str(), -1);
-        tn.settle = Wh_GetIntValue(GuiKey(index, z, L"gd").c_str(), -1);
-        tn.knock = Wh_GetIntValue(GuiKey(index, z, L"kn").c_str(), -1);
-        tn.cooldown = Wh_GetIntValue(GuiKey(index, z, L"cd").c_str(), -1);
-        tn.modifier = Wh_GetIntValue(GuiKey(index, z, L"md").c_str(), -1);
+        tn.size = Wh_GetIntValue(GuiKey(g, z, L"sz").c_str(), -1);
+        tn.delay = Wh_GetIntValue(GuiKey(g, z, L"dl").c_str(), -1);
+        tn.settle = Wh_GetIntValue(GuiKey(g, z, L"gd").c_str(), -1);
+        tn.knock = Wh_GetIntValue(GuiKey(g, z, L"kn").c_str(), -1);
+        tn.cooldown = Wh_GetIntValue(GuiKey(g, z, L"cd").c_str(), -1);
+        tn.modifier = Wh_GetIntValue(GuiKey(g, z, L"md").c_str(), -1);
     }
 }
 
@@ -4142,6 +4191,30 @@ static void DashLoad(HWND hWnd, DashState *s)
     s->slots.assign(names.size() + 1, DashState::Slot{});
     s->cfgIndex = 0;
 
+    // Bind each combo entry to the stored group that names it. Doing this by
+    // position instead - slot i reads and writes g<i> - was a silent data loss:
+    // the combo is ordered primary first then left to right, so making another
+    // display primary or unplugging one renumbers every entry after it, and the
+    // editor would then show one display's zones under another's name and Save
+    // would overwrite them there. Detection has always matched by name; this is
+    // the editor catching up.
+    for (int i = 0; i < kMaxGuiConfigs; i++)
+    {
+        std::wstring id = GetStrValue(GuiKey(i, -1, L"id").c_str());
+        if (id.empty())
+            continue;
+        s->storeUsed[i] = true;
+        for (int slot = 0; slot < (int)s->slots.size(); slot++)
+        {
+            if (s->slots[slot].store < 0 &&
+                _wcsicmp(id.c_str(), DashSlotMonitorId(s, slot).c_str()) == 0)
+            {
+                s->slots[slot].store = i;
+                break;
+            }
+        }
+    }
+
     EnterCriticalSection(&g_settingsLock);
     DashSetInt(s, IDC_CORNER, g_settings.cornerSize);
     DashSetInt(s, IDC_EDGE, g_settings.edgeSize);
@@ -4189,38 +4262,61 @@ static void DashSave(HWND hWnd, DashState *s)
 
     for (int sel = 0; sel < (int)s->slots.size(); sel++)
     {
-        const DashState::Slot &sl = s->slots[sel];
+        DashState::Slot &sl = s->slots[sel];
         if (!sl.loaded)
             continue;
 
-        // A machine with more displays than the value store has slots would
-        // write keys that ReadDashboardZones' kMaxGuiConfigs loop never reads
-        // back — the edit would vanish on reload with nothing said.
-        if (sel >= kMaxGuiConfigs)
+        std::wstring monName = DashSlotMonitorId(s, sel);
+
+        // Each slot goes back to the group it was read from. A display being
+        // configured for the first time takes the lowest group nobody owns -
+        // not its combo position, which some other display may already hold.
+        if (sl.store < 0)
         {
-            Wh_Log(L"Dashboard: display %d is beyond the %d configuration "
-                   L"slots; not saved",
-                   sel, kMaxGuiConfigs);
+            bool any = false;
+            for (int z = 0; z < ZONE_COUNT && !any; z++)
+                any = sl.action[z] != 0;   // 0 is ACTION_NOTHING
+            if (!any)
+                continue;   // visited but never configured; do not spend a group
+
+            for (int i = 0; i < kMaxGuiConfigs; i++)
+            {
+                if (!s->storeUsed[i])
+                {
+                    s->storeUsed[i] = true;
+                    sl.store = i;
+                    break;
+                }
+            }
+        }
+        // More configured displays than the store has groups. ReadDashboardZones
+        // only walks g0..g7, so anything past that would vanish on reload with
+        // nothing said.
+        if (sl.store < 0)
+        {
+            Wh_Log(L"Dashboard: all %d configuration slots are in use; \"%s\" "
+                   L"was not saved",
+                   kMaxGuiConfigs, monName.c_str());
             continue;
         }
 
-        std::wstring monName = DashSlotMonitorId(s, sel);
-        Wh_SetStringValue(GuiKey(sel, -1, L"id").c_str(), monName.c_str());
+        const int g = sl.store;
+        Wh_SetStringValue(GuiKey(g, -1, L"id").c_str(), monName.c_str());
         for (int z = 0; z < ZONE_COUNT; z++)
         {
             int idx = sl.action[z];
             if (idx < 0 || idx >= kActionCount)
                 idx = 0;
-            Wh_SetStringValue(GuiKey(sel, z, L"a").c_str(), kActionIds[idx]);
-            Wh_SetStringValue(GuiKey(sel, z, L"g").c_str(), sl.args[z].c_str());
+            Wh_SetStringValue(GuiKey(g, z, L"a").c_str(), kActionIds[idx]);
+            Wh_SetStringValue(GuiKey(g, z, L"g").c_str(), sl.args[z].c_str());
 
             const ZoneTuning &tn = sl.tuning[z];
-            Wh_SetIntValue(GuiKey(sel, z, L"sz").c_str(), tn.size);
-            Wh_SetIntValue(GuiKey(sel, z, L"dl").c_str(), tn.delay);
-            Wh_SetIntValue(GuiKey(sel, z, L"gd").c_str(), tn.settle);
-            Wh_SetIntValue(GuiKey(sel, z, L"kn").c_str(), tn.knock);
-            Wh_SetIntValue(GuiKey(sel, z, L"cd").c_str(), tn.cooldown);
-            Wh_SetIntValue(GuiKey(sel, z, L"md").c_str(), tn.modifier);
+            Wh_SetIntValue(GuiKey(g, z, L"sz").c_str(), tn.size);
+            Wh_SetIntValue(GuiKey(g, z, L"dl").c_str(), tn.delay);
+            Wh_SetIntValue(GuiKey(g, z, L"gd").c_str(), tn.settle);
+            Wh_SetIntValue(GuiKey(g, z, L"kn").c_str(), tn.knock);
+            Wh_SetIntValue(GuiKey(g, z, L"cd").c_str(), tn.cooldown);
+            Wh_SetIntValue(GuiKey(g, z, L"md").c_str(), tn.modifier);
         }
     }
     Wh_SetIntValue(L"gui_active", 1);
@@ -4285,7 +4381,6 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
         BuildPalette();
         s->hBg = CreateSolidBrush(g_pal.bg);
         s->hField = CreateSolidBrush(g_pal.field);
-        s->hPanel = CreateSolidBrush(g_pal.panel);
 
         // Every control is themed here rather than at its call site: the six
         // scattered calls this replaces covered the combo boxes and edits and
@@ -4329,6 +4424,9 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
             s->hZoneArgs[z] = mk(L"EDIT", nullptr,
                                  WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP,
                                  IDC_ZONE_ARGS + z);
+            // DashCaptureSlot reads these back into a 512-wchar buffer, so stop
+            // the typing at the same point rather than truncating in silence.
+            SendMessageW(s->hZoneArgs[z], EM_SETLIMITTEXT, 511, 0);
         }
 
         for (int i = 0; i < kOptCount; i++)
@@ -4656,8 +4754,6 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                 DeleteObject(s->hBg);
             if (s->hField)
                 DeleteObject(s->hField);
-            if (s->hPanel)
-                DeleteObject(s->hPanel);
             if (s->hIcon)
                 DestroyIcon(s->hIcon);
         }

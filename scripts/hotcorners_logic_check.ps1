@@ -516,5 +516,79 @@ Assert ((EdgeFireSeq $true) -eq 'ABA') "one flag per edge alternates correctly (
 Assert ((EdgeFireSeq $false) -eq 'AAB') "a flag per half does not (got $(EdgeFireSeq $false)) - this is the bug that was fixed"
 
 ''
+'--- Dashboard slot addressing (#7) ---'
+# The editor used to read and write g<combo position>. The combo is ordered
+# primary first then left to right, so promoting or unplugging a display
+# renumbers every entry after it and the edit landed on someone else's group.
+# Models DashLoad's resolve pass and DashSave's allocation.
+
+# $store: group index -> id.  $combo: what the dropdown shows, in order.
+function ResolveSlots($store, $combo, [bool]$byName) {
+  $slots = @()
+  foreach ($c in $combo) { $slots += @{ id = $c; store = -1 } }
+  $used = @{}
+  for ($i = 0; $i -lt 8; $i++) {
+    if (-not $store.ContainsKey($i)) { continue }
+    $used[$i] = $true
+    if (-not $byName) { continue }
+    foreach ($s in $slots) {
+      if ($s.store -lt 0 -and $s.id -ieq $store[$i]) { $s.store = $i; break }
+    }
+  }
+  if (-not $byName) {
+    for ($n = 0; $n -lt $slots.Count; $n++) { $slots[$n].store = $n }
+    return @{ slots = $slots; used = $used }
+  }
+  return @{ slots = $slots; used = $used }
+}
+# What a Save writes: group index -> the id stamped into it.
+function SaveIds($r, $edited) {
+  $out = @{}
+  foreach ($n in $edited) {
+    $s = $r.slots[$n]
+    if ($s.store -lt 0) {
+      for ($i = 0; $i -lt 8; $i++) {
+        if (-not $r.used.ContainsKey($i)) { $r.used[$i] = $true; $s.store = $i; break }
+      }
+    }
+    if ($s.store -ge 0) { $out[$s.store] = $s.id }
+  }
+  return $out
+}
+
+# Dell and BOE configured, then BOE is made primary so it sorts first.
+$store = @{ 1 = 'Dell'; 2 = 'BOE' }
+$combo = @('*', 'BOE', 'Dell')
+
+$byName = ResolveSlots $store $combo $true
+Assert ($byName.slots[1].store -eq 2) 'BOE loads its own group even after it becomes primary'
+Assert ($byName.slots[2].store -eq 1) 'Dell keeps its group when another display is promoted'
+$w = SaveIds $byName @(1)
+Assert ($w.Count -eq 1 -and $w[2] -eq 'BOE') 'saving BOE writes only BOE, leaving Dell intact'
+
+$byPos = ResolveSlots $store $combo $false
+Assert ($byPos.slots[1].store -eq 1) 'positional addressing loads Dell under the name BOE - the bug'
+$wp = SaveIds $byPos @(1)
+Assert ($wp[1] -eq 'BOE') 'positional saving overwrites Dell with BOE - the data loss'
+
+# A new display must not take a group an absent display still owns.
+$fresh = ResolveSlots @{ 0 = 'Dell' } @('*', 'BOE') $true
+Assert ($fresh.slots[1].store -lt 0) 'a display with nothing stored starts unbound'
+$wn = SaveIds $fresh @(1)
+Assert ($wn[1] -eq 'BOE' -and -not $wn.ContainsKey(0)) 'a new display takes a free group, not the absent one'
+
+# ...and the source really is addressing by the resolved index.
+Src '(?s)struct Slot\s*\{[^}]*?int store = -1;' `
+    'a slot carries the group it was read from'
+Src '(?s)const int g = sl\.store;\s*\n\s*if \(g < 0\)' `
+    'the fill path reads the resolved group, not the combo position'
+Src '(?s)_wcsicmp\(id\.c_str\(\), DashSlotMonitorId\(s, slot\)\.c_str\(\)\) == 0\s*\)\s*\n\s*\{\s*\n\s*s->slots\[slot\]\.store = i;' `
+    'DashLoad binds each combo entry to the group whose id names it'
+Src 'Wh_SetStringValue\(GuiKey\(g, -1, L"id"\)\.c_str\(\), monName\.c_str\(\)\);' `
+    'DashSave stamps the id into the resolved group'
+Assert (-not [regex]::IsMatch($modSrc, 'GuiKey\(sel,')) `
+    'no GuiKey call still addresses the store by combo position'
+
+''
 if ($script:fails -eq 0) { 'ALL CHECKS PASSED'; exit 0 }
 else { "$($script:fails) CHECK(S) FAILED"; exit 1 }

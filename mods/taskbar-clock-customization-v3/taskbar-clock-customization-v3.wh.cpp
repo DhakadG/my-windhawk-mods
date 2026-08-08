@@ -2,7 +2,7 @@
 // @id              taskbar-clock-customization-v3
 // @name            Taskbar Clock Customization v3
 // @description     Custom date/time format, news feed, weather, performance metrics (upload/download speed, CPU, RAM, GPU, battery), media player info, custom fonts and colors, and more
-// @version         3.1.69
+// @version         3.1.70
 // @author          DhakadG
 // @github          https://github.com/DhakadG
 // @homepage        https://losthusky.qzz.io/
@@ -702,6 +702,13 @@ Weather format (multi‑line tooltip via `\n`):
   $description: >-
     Enable this option to customize the old taskbar on Windows 11 (if using
     ExplorerPatcher or a similar tool).
+- verboseLogging: false
+  $name: Verbose logging
+  $description: >-
+    Log per-call hook traces, the whole LibreHardwareMonitor sensor tree and every
+    PDH sample error. These fire on a one-second timer and bury everything else in
+    DbgView, so leave this off unless you are debugging the mod itself. Windhawk's
+    own debug-logging switch still controls whether anything is logged at all.
 */
 // ==/WindhawkModSettings==
 
@@ -711,6 +718,18 @@ Weather format (multi‑line tooltip via `\n`):
 #include <windhawk_utils.h>
 
 using WindhawkUtils::StringSetting;
+
+// Hook traces, the LHM sensor dump and PDH sample errors all fire off the one-second
+// refresh timer, so with mod logging on they emit thousands of lines a minute and make
+// DbgView useless for finding anything else. They are the only logs behind this switch;
+// one-shot startup logs and genuine failures stay unconditional.
+// ponytail: a plain global, not a settings-struct member - it is read on hot paths and
+// never needs the struct's locking.
+static bool g_verboseLogging = false;
+#define Wh_LogVerbose(...)                       \
+    do {                                         \
+        if (g_verboseLogging) Wh_Log(__VA_ARGS__); \
+    } while (0)
 
 #include <algorithm>
 #include <atomic>
@@ -2098,24 +2117,28 @@ void FetchAndParseLhmData()
     size_t pos = 0;
     LhmJsonNode root = ParseLhmNode(*content, pos);
 
-    Wh_Log(L"LHM: Parsed tree root text='%s', children=%zu",
-           root.text.c_str(), root.children.size());
-
-    // Log top-level tree structure for debugging
-    for (const auto &c1 : root.children)
+    // The sensor tree is ~80 lines and is re-parsed every second, so it only goes to the
+    // log when verbose logging is asked for.
+    if (g_verboseLogging)
     {
-        Wh_Log(L"  LHM node: '%s' (children=%zu)",
-               c1.text.c_str(), c1.children.size());
-        for (const auto &c2 : c1.children)
+        Wh_Log(L"LHM: Parsed tree root text='%s', children=%zu",
+               root.text.c_str(), root.children.size());
+
+        for (const auto &c1 : root.children)
         {
-            Wh_Log(L"    LHM node: '%s' (children=%zu, value='%s')",
-                   c2.text.c_str(), c2.children.size(),
-                   c2.value.empty() ? L"" : c2.value.c_str());
-            for (const auto &c3 : c2.children)
+            Wh_Log(L"  LHM node: '%s' (children=%zu)",
+                   c1.text.c_str(), c1.children.size());
+            for (const auto &c2 : c1.children)
             {
-                Wh_Log(L"      LHM node: '%s' (children=%zu, value='%s')",
-                       c3.text.c_str(), c3.children.size(),
-                       c3.value.empty() ? L"" : c3.value.c_str());
+                Wh_Log(L"    LHM node: '%s' (children=%zu, value='%s')",
+                       c2.text.c_str(), c2.children.size(),
+                       c2.value.empty() ? L"" : c2.value.c_str());
+                for (const auto &c3 : c2.children)
+                {
+                    Wh_Log(L"      LHM node: '%s' (children=%zu, value='%s')",
+                           c3.text.c_str(), c3.children.size(),
+                           c3.value.empty() ? L"" : c3.value.c_str());
+                }
             }
         }
     }
@@ -2187,7 +2210,7 @@ void FetchAndParseLhmData()
 
     data.valid = true;
 
-    Wh_Log(L"LHM: cpuTemp=%.1f gpuTemp=%.1f cpuLoad=%.1f gpuLoad=%.1f "
+    Wh_LogVerbose(L"LHM: cpuTemp=%.1f gpuTemp=%.1f cpuLoad=%.1f gpuLoad=%.1f "
            L"cpuPower=%.1f gpuPower=%.1f cpuClock=%.0f gpuClock=%.0f",
            data.cpuTemp, data.gpuTemp, data.cpuLoad, data.gpuLoad,
            data.cpuPower, data.gpuPower, data.cpuClock, data.gpuClock);
@@ -3470,7 +3493,7 @@ QueryDataCollectionSession::QueryDataWithCount(MetricType type)
         }
         else
         {
-            Wh_Log(L"PdhGetFormattedCounterValue error %08X", hr);
+            Wh_LogVerbose(L"PdhGetFormattedCounterValue error %08X", hr);
         }
     }
 
@@ -5891,7 +5914,7 @@ void ClockSystemTrayIconDataModel_RefreshIcon_Hook_Impl(
 void WINAPI ClockSystemTrayIconDataModel_RefreshIcon_Hook(LPVOID pThis,
                                                           LPVOID param1)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     ClockSystemTrayIconDataModel_RefreshIcon_Hook_Impl(
         pThis, param1, ClockSystemTrayIconDataModel_RefreshIcon_Original);
@@ -5900,7 +5923,7 @@ void WINAPI ClockSystemTrayIconDataModel_RefreshIcon_Hook(LPVOID pThis,
 void WINAPI ClockSystemTrayIconDataModel2_RefreshIcon_Hook(LPVOID pThis,
                                                            LPVOID param1)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     ClockSystemTrayIconDataModel_RefreshIcon_Hook_Impl(
         pThis, param1, ClockSystemTrayIconDataModel2_RefreshIcon_Original);
@@ -5966,7 +5989,7 @@ ClockSystemTrayIconDataModel_GetTimeToolTipString_Hook(LPVOID pThis,
                                                        LPVOID param3,
                                                        LPVOID param4)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     return ClockSystemTrayIconDataModel_GetTimeToolTipString_Hook_Impl(
         pThis, param1, param2, param3, param4,
@@ -5980,7 +6003,7 @@ ClockSystemTrayIconDataModel2_GetTimeToolTipString_Hook(LPVOID pThis,
                                                         LPVOID param3,
                                                         LPVOID param4)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     return ClockSystemTrayIconDataModel_GetTimeToolTipString_Hook_Impl(
         pThis, param1, param2, param3, param4,
@@ -6014,7 +6037,7 @@ ClockSystemTrayIconDataModel_GetTimeToolTipString2_Hook(LPVOID pThis,
                                                         LPVOID param3,
                                                         LPVOID param4)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     return ClockSystemTrayIconDataModel_GetTimeToolTipString2_Hook_Impl(
         pThis, param1, param2, param3, param4,
@@ -6028,7 +6051,7 @@ ClockSystemTrayIconDataModel2_GetTimeToolTipString2_Hook(LPVOID pThis,
                                                          LPVOID param3,
                                                          LPVOID param4)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     return ClockSystemTrayIconDataModel_GetTimeToolTipString2_Hook_Impl(
         pThis, param1, param2, param3, param4,
@@ -6358,7 +6381,7 @@ void ApplyDateTimeIconContentStyles(
 }
 
 HRESULT WINAPI DateTimeIconContent_OnApplyTemplate_Hook(LPVOID pThis) {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     HRESULT ret = DateTimeIconContent_OnApplyTemplate_Original(pThis);
 
@@ -6420,7 +6443,7 @@ ClockSystemTrayIconDataModel_GetTimeToolTipString_2_Hook(LPVOID pThis,
                                                          LPVOID param3,
                                                          LPVOID param4)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     g_inGetTimeToolTipString = true;
 
@@ -6436,7 +6459,7 @@ ClockSystemTrayIconDataModel_GetTimeToolTipString_2_Hook(LPVOID pThis,
 
 int WINAPI ICalendar_Second_Hook(LPVOID pThis)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     if (g_refreshIconThreadId == GetCurrentThreadId() &&
         !g_inGetTimeToolTipString && g_refreshIconNeedToAdjustTimer)
@@ -6465,7 +6488,7 @@ LPVOID WINAPI ThreadPoolTimer_CreateTimer_Hook(LPVOID param1,
         (ULONGLONG **)(g_winVersion >= WinVersion::Win11_22H2 ? &param3
                                                               : &param4);
 
-    Wh_Log(L"> %zu", **elapse);
+    Wh_LogVerbose(L"> %zu", **elapse);
 
     ULONGLONG elapseNew;
 
@@ -6499,7 +6522,7 @@ LPVOID WINAPI ThreadPoolTimer_CreateTimer_lambda_Hook(DWORD_PTR **param1,
 {
     DWORD_PTR *elapse = param1[1];
 
-    Wh_Log(L"> %zu", *elapse);
+    Wh_LogVerbose(L"> %zu", *elapse);
 
     if (g_refreshIconThreadId == GetCurrentThreadId() &&
         !g_inGetTimeToolTipString && *elapse == 10000000)
@@ -6524,7 +6547,7 @@ LPVOID WINAPI ThreadPoolTimer_CreateTimer_lambda_Hook(DWORD_PTR **param1,
 
 VOID WINAPI GetLocalTime_Hook_Win11(LPSYSTEMTIME lpSystemTime)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     if (g_refreshIconThreadId == GetCurrentThreadId() &&
         !g_inGetTimeToolTipString && g_refreshIconNeedToAdjustTimer)
@@ -6741,7 +6764,7 @@ HRESULT WINAPI ClockButton_v_GetTooltipText_Hook(LPVOID pThis,
                                                  LPVOID param3,
                                                  LPVOID param4)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     g_getTooltipTextThreadId = GetCurrentThreadId();
 
@@ -6779,7 +6802,7 @@ HRESULT WINAPI ClockButton_v_GetTooltipText_Hook(LPVOID pThis,
 unsigned int WINAPI
 ClockButton_UpdateTextStringsIfNecessary_Hook(LPVOID pThis, bool *param1)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     g_updateTextStringThreadId = GetCurrentThreadId();
     g_getDateFormatExCounter = 0;
@@ -6805,7 +6828,7 @@ LPSIZE WINAPI ClockButton_CalculateMinimumSize_Hook(LPVOID pThis,
                                                     LPSIZE param1,
                                                     SIZE param2)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     LPSIZE ret =
         ClockButton_CalculateMinimumSize_Original(pThis, param1, param2);
@@ -6841,7 +6864,7 @@ int WINAPI ClockButton_GetTextSpacingForOrientation_Hook(LPVOID pThis,
                                                          DWORD dwLine2Height,
                                                          DWORD dwLine3Height)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     int textSpacing = g_settings.textSpacing;
     if (textSpacing == 0)
@@ -7437,6 +7460,8 @@ NetworkMetricsFormat ParseNetworkMetricsFormat(PCWSTR value) {
 }
 
 void LoadSettings() {
+    g_verboseLogging = Wh_GetIntSetting(L"verboseLogging") != 0;
+
     g_settings.showSeconds = Wh_GetIntSetting(L"ShowSeconds");
     g_settings.timeFormat = StringSetting::make(L"TimeFormat");
     g_settings.dateFormat = StringSetting::make(L"DateFormat");
@@ -7928,7 +7953,7 @@ void ApplySettings()
 
 BOOL Wh_ModInit()
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     if (HMODULE hUser32 = LoadLibraryEx(L"user32.dll", nullptr,
                                         LOAD_LIBRARY_SEARCH_SYSTEM32))
@@ -8076,7 +8101,7 @@ BOOL Wh_ModInit()
 
 void Wh_ModAfterInit()
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     if (g_winVersion >= WinVersion::Win11 && !g_systemTrayModuleHooked)
     {
@@ -8106,7 +8131,7 @@ void Wh_ModAfterInit()
 
 void Wh_ModBeforeUninit()
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     if (g_winVersion >= WinVersion::Win11 &&
         g_clockElementStyleEnabled.exchange(false))
@@ -8140,7 +8165,7 @@ void Wh_ModBeforeUninit()
 
 void Wh_ModUninit()
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     {
         std::lock_guard<std::mutex> guard(g_formatLineMutex);
@@ -8156,7 +8181,7 @@ void Wh_ModUninit()
 
 BOOL Wh_ModSettingsChanged(BOOL *bReload)
 {
-    Wh_Log(L">");
+    Wh_LogVerbose(L">");
 
     {
         std::lock_guard<std::mutex> guard(g_formatLineMutex);

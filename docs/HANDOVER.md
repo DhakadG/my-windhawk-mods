@@ -49,6 +49,24 @@ pwsh -File scripts/check-mod.ps1 -Warnings && python scripts/check-settings.py
 **Always bump `@version` when you change a file**, even for a one-line fix. A version that
 means two different files has already caused one wasted debugging round here.
 
+### Build a runnable probe, don't reason about the API
+
+The same clang **links**, not just syntax-checks, so a suspect code path can be lifted into a
+standalone exe and run against the real machine. This is what found the bt-battery-monitor
+bug after two rounds of plausible-but-wrong reasoning:
+
+```bash
+"/c/Program Files/Windhawk/Compiler/bin/clang++.exe" --target=i686-w64-mingw32 -std=c++20 -static -Wl,--subsystem,console probe.cpp -o probe.exe -lcfgmgr32
+```
+
+- `--target=i686-w64-mingw32` matches `windhawk.exe`'s bitness; drop it for a 64-bit host.
+- `-static` matters — without it the exe dies with `0xC0000135` (missing libc++ DLLs) unless
+  `Compiler\bin` is on `PATH`.
+- In PowerShell, quote `'-Wl,--subsystem,console'` or the commas are parsed as an argument list.
+- Use `%ls` in `wprintf`, not `%s` — mingw's printf reads `%s` as `char*` and prints one byte.
+- `devpkey.h` constants need `INITGUID` to link; it is easier to declare the `DEVPROPKEY`
+  literal locally, which is what the mods do anyway.
+
 ## 3. The 26300 tray change (root cause behind three separate "broken" mods)
 
 Build 26300 rebuilt the tray for the movable-taskbar work. **`SystemTrayFrameGrid` kept its

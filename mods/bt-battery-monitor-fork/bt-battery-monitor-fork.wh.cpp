@@ -2,7 +2,7 @@
 // @id              bt-battery-monitor-fork
 // @name            BT Battery Monitor - Fork
 // @description     Fork of BlackPaw's BT Battery Monitor, adding earbud and speaker icons and battery readout for Bluetooth audio devices. Shows Bluetooth device battery levels in the system tray.
-// @version         1.0.1
+// @version         1.1.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -47,9 +47,11 @@ When any connected device drops below the configured threshold (default 30%), th
 ### Device Icons
 
 The mod detects device types automatically and lets you pick a different icon for each:
-- **Keyboard**, **Mouse**, **Headphones**, **Controller** — each gets its own icon so you can tell them apart instantly.
+- **Keyboard**, **Mouse**, **Headphones**, **Earbuds**, **Bluetooth Speaker**, **Controller** — each gets its own icon so you can tell them apart instantly.
 - **Multiple Devices** — shown when more than one device is connected.
 - **No Connected Devices** — a clear visual indicator that nothing's paired.
+
+Earbuds and speakers are told apart from headphones using the Bluetooth Class of Device minor field, so it happens automatically — a device advertising itself as a loudspeaker gets the speaker icon, a wearable headset gets the earbuds icon.
 
 ### Polling Interval
 
@@ -59,11 +61,16 @@ Pick how often the mod checks for updates, from **every second** to **once an ho
 
 ## Known Bugs
 
-- **Bluetooth devices that don't report battery**: Some older Bluetooth peripherals simply don't broadcast battery info — the mod can't show what the hardware doesn't tell it. Check your device specs to see if battery reporting is supported.
+- **Bluetooth devices that don't report battery**: Some older Bluetooth peripherals simply don't broadcast battery info — the mod can't show what the hardware doesn't tell it. If Windows Settings shows a percentage for the device but this mod doesn't, that's a bug worth reporting; if Settings shows nothing either, the device isn't sending it.
 
 ---
 
 ## Changelog
+
+# 1.1.0
+- **Fixed:** Battery never appeared for classic Bluetooth devices — headphones, earbuds and speakers all showed `--`. The device-address property was being looked up under a GUID that no device node actually publishes, so the lookup failed before any battery value could be matched to a device. BLE peripherals like keyboards and mice were unaffected, which is what made this look like a hardware limitation.
+- **Fixed:** A device with both a classic and a Bluetooth LE endpoint was listed twice, because the two endpoints have different MAC addresses. They are now matched on container ID, the same grouping Windows uses.
+- **New:** Separate **Earbuds** and **Bluetooth Speaker** icons, detected automatically from the Class of Device minor field.
 
 # 1.0.0
 - **New:** Tray icon shows battery percentage for every connected Bluetooth device — keyboard, mouse, headphones, controller, you name it.
@@ -118,14 +125,16 @@ Pick how often the mod checks for updates, from **every second** to **once an ho
 // ─── Bluetooth Device Property Keys ─────────────────────────────────────────
 
 static const DEVPROPKEY DEVPKEY_Bluetooth_BatteryLevel  = { {0x104ea319, 0x6ee2, 0x4701, {0xbd, 0x47, 0x8d, 0xdb, 0xf4, 0x25, 0xbb, 0xe5}}, 2 };
-static const DEVPROPKEY DEVPKEY_Bluetooth_DeviceAddress = { {0xE57A6B4A, 0x21B8, 0x4B8A, {0xB4, 0xB4, 0x73, 0xB9, 0xF3, 0x58, 0xED, 0x60}}, 1 };
+// {2BD67D8B-...},1 really is DEVPKEY_Bluetooth_DeviceAddress. The value this
+// used to carry, {E57A6B4A-...},1, is not present on any devnode, so every
+// address lookup failed and classic Bluetooth devices never got a battery.
+static const DEVPROPKEY DEVPKEY_Bluetooth_DeviceAddress = { {0x2bd67d8b, 0x8beb, 0x48d5, {0x87, 0xe0, 0x6c, 0xda, 0x34, 0x28, 0x04, 0x0a}}, 1 };
 static const DEVPROPKEY DEVPKEY_Device_FriendlyName   = { {0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14 };
 static const DEVPROPKEY DEVPKEY_Device_BusReportedDeviceDesc = { {0x540b947e, 0x8b40, 0x45bc, {0xa8, 0xa2, 0x6a, 0x0b, 0x89, 0x4c, 0xbd, 0xa2}}, 4 };
-static const DEVPROPKEY DEVPKEY_Bluetooth_IsConnected = { {0x2bd67d8b, 0x8beb, 0x48d5, {0x87, 0xe0, 0x6c, 0xda, 0x34, 0x28, 0x04, 0x0a}}, 1 };
+static const DEVPROPKEY DEVPKEY_Device_ContainerId    = { {0x8c7ed206, 0x3f8a, 0x4827, {0xb3, 0xab, 0xae, 0x9e, 0x1f, 0xae, 0xfc, 0x6c}}, 2 };
 
 // ─── Device Interface GUIDs ──────────────────────────────────────────────────
 
-static const WCHAR MEDIA_CLASS_GUID_STRING[] = L"{4d36e96c-e325-11ce-bfc1-08002be10318}";
 static const GUID GUID_BLUETOOTH_GATT_SERVICE_DEVICE_INTERFACE = {0x6E1BB058, 0x02B4, 0x4B0C, {0x9F, 0xDE, 0x6C, 0x9A, 0x04, 0xCE, 0xB7, 0x12}};
 static const GUID GUID_DEVINTERFACE_HID = {0x4d1e55b2, 0xf16f, 0x11cf, {0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30}};
 
@@ -144,6 +153,10 @@ struct DeviceInfo {
     bool connected = false;
     ULONG classOfDevice = 0;
     bool isKeyboard = false;
+    // Groups the classic and BLE endpoints of one physical device, so the BLE
+    // pass can recognise a device it has already listed under a different MAC.
+    GUID containerId = {};
+    bool hasContainerId = false;
 };
 
 // ─── Globals ─────────────────────────────────────────────────────────────────
@@ -163,6 +176,8 @@ static HICON g_hIconDisconnected = NULL;
 static HICON g_hIconKeyboard = NULL;
 static HICON g_hIconMouse = NULL;
 static HICON g_hIconHeadphones = NULL;
+static HICON g_hIconEarbuds = NULL;
+static HICON g_hIconSpeaker = NULL;
 static HICON g_hIconController = NULL;
 static HICON g_hIconMulti = NULL;
 static HICON g_hIconLowBatRed = NULL;
@@ -203,6 +218,8 @@ static int GetIconIndex(PCWSTR s) {
     if (wcscmp(s, L"keyboard") == 0)   return 30;
     if (wcscmp(s, L"mouse") == 0)      return 110;
     if (wcscmp(s, L"headphones") == 0) return 91;
+    if (wcscmp(s, L"earbuds") == 0)    return 6;
+    if (wcscmp(s, L"speaker") == 0)    return 93;
     if (wcscmp(s, L"controller") == 0) return 108;
     if (wcscmp(s, L"multiple") == 0)   return 94;
     if (wcscmp(s, L"unknown") == 0)    return 130;
@@ -339,6 +356,8 @@ static void DestroyIcons() {
     if (g_hIconKeyboard) { DestroyIcon(g_hIconKeyboard); g_hIconKeyboard = NULL; }
     if (g_hIconMouse) { DestroyIcon(g_hIconMouse); g_hIconMouse = NULL; }
     if (g_hIconHeadphones) { DestroyIcon(g_hIconHeadphones); g_hIconHeadphones = NULL; }
+    if (g_hIconEarbuds) { DestroyIcon(g_hIconEarbuds); g_hIconEarbuds = NULL; }
+    if (g_hIconSpeaker) { DestroyIcon(g_hIconSpeaker); g_hIconSpeaker = NULL; }
     if (g_hIconController) { DestroyIcon(g_hIconController); g_hIconController = NULL; }
     if (g_hIconMulti) { DestroyIcon(g_hIconMulti); g_hIconMulti = NULL; }
     if (g_hIconLowBatRed) { DestroyIcon(g_hIconLowBatRed); g_hIconLowBatRed = NULL; }
@@ -389,48 +408,62 @@ static bool CreateIcons() {
 
 // ─── Bluetooth Battery Reading ────────────────────────────────────────────
 
-// Poll battery from Bluetooth media class device tree (most accurate source)
-static void GetBatteryFromMediaClass(std::vector<DeviceInfo>& devices) {
+// Walk every present devnode, harvesting battery levels and container IDs.
+//
+// A Bluetooth audio device reports its battery on the Hands-Free AG service
+// node (BTHENUM\{0000111e-...}), not on the DEV_ container node and not on
+// anything in the MEDIA class — so the search cannot be narrowed to one class.
+static void GetBatteryFromDeviceTree(std::vector<DeviceInfo>& devices) {
     ULONG listSize = 0;
-    CONFIGRET cr = CM_Get_Device_ID_List_SizeW(&listSize, MEDIA_CLASS_GUID_STRING, CM_GETIDLIST_FILTER_PRESENT);
-    if (cr != CR_SUCCESS || listSize == 0) return;
+    if (CM_Get_Device_ID_List_SizeW(&listSize, nullptr, CM_GETIDLIST_FILTER_PRESENT) != CR_SUCCESS
+        || listSize == 0)
+        return;
 
     std::vector<WCHAR> idList(listSize);
-    cr = CM_Get_Device_ID_ListW(MEDIA_CLASS_GUID_STRING, idList.data(), listSize, CM_GETIDLIST_FILTER_PRESENT);
-    if (cr != CR_SUCCESS) return;
+    if (CM_Get_Device_ID_ListW(nullptr, idList.data(), listSize, CM_GETIDLIST_FILTER_PRESENT) != CR_SUCCESS)
+        return;
 
     for (const WCHAR* deviceId = idList.data(); *deviceId; deviceId += wcslen(deviceId) + 1) {
         DEVINST devInst = 0;
         if (CM_Locate_DevNodeW(&devInst, (DEVINSTID_W)deviceId, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS)
             continue;
 
-        BYTE battery = 0;
-        DEVPROPTYPE propType = DEVPROP_TYPE_EMPTY;
-        ULONG propSize = sizeof(battery);
-        if (CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Bluetooth_BatteryLevel, &propType, (PBYTE)&battery, &propSize, 0) != CR_SUCCESS
-            || propType != DEVPROP_TYPE_BYTE
-            || propSize != sizeof(battery))
-            continue;
-
         WCHAR btAddr[13] = {};
-        propType = DEVPROP_TYPE_EMPTY;
-        propSize = sizeof(btAddr);
+        DEVPROPTYPE propType = DEVPROP_TYPE_EMPTY;
+        ULONG propSize = sizeof(btAddr);
         if (CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Bluetooth_DeviceAddress, &propType, (PBYTE)btAddr, &propSize, 0) != CR_SUCCESS
             || propType != DEVPROP_TYPE_STRING)
             continue;
 
+        DeviceInfo* match = nullptr;
         for (auto& dev : devices) {
             WCHAR addrStr[13];
             StringCchPrintfW(addrStr, ARRAYSIZE(addrStr), L"%02X%02X%02X%02X%02X%02X",
                 dev.address[5], dev.address[4], dev.address[3],
                 dev.address[2], dev.address[1], dev.address[0]);
+            if (_wcsicmp(btAddr, addrStr) == 0) { match = &dev; break; }
+        }
+        if (!match) continue;
 
-            if (_wcsicmp(btAddr, addrStr) == 0) {
-                if (battery <= 100)
-                    dev.batteryPercent = battery;
-                break;
+        if (!match->hasContainerId) {
+            GUID cid = {};
+            propType = DEVPROP_TYPE_EMPTY;
+            propSize = sizeof(cid);
+            if (CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Device_ContainerId, &propType, (PBYTE)&cid, &propSize, 0) == CR_SUCCESS
+                && propType == DEVPROP_TYPE_GUID) {
+                match->containerId = cid;
+                match->hasContainerId = true;
             }
         }
+
+        BYTE battery = 0;
+        propType = DEVPROP_TYPE_EMPTY;
+        propSize = sizeof(battery);
+        if (CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Bluetooth_BatteryLevel, &propType, (PBYTE)&battery, &propSize, 0) == CR_SUCCESS
+            && propType == DEVPROP_TYPE_BYTE
+            && propSize == sizeof(battery)
+            && battery <= 100)
+            match->batteryPercent = battery;
     }
 }
 
@@ -542,7 +575,8 @@ static bool HasActiveInterface(DEVINST devInst) {
     return false;
 }
 
-enum DeviceType { DEVICE_UNKNOWN, DEVICE_KEYBOARD, DEVICE_MOUSE, DEVICE_HEADPHONES, DEVICE_CONTROLLER };
+enum DeviceType { DEVICE_UNKNOWN, DEVICE_KEYBOARD, DEVICE_MOUSE, DEVICE_HEADPHONES,
+                  DEVICE_EARBUDS, DEVICE_SPEAKER, DEVICE_CONTROLLER };
 
 // Classify a device by its Class of Device and keyboard flag
 static DeviceType GetDeviceType(const DeviceInfo& d) {
@@ -557,7 +591,15 @@ static DeviceType GetDeviceType(const DeviceInfo& d) {
         if (gamepad == 1 || gamepad == 2) return DEVICE_CONTROLLER;
     }
 
-    if (major == 4) return DEVICE_HEADPHONES;
+    // Audio/Video. The minor field (Assigned Numbers, Baseband §"Class of Device")
+    // separates the audio form factors; bits 2-7 hold it, so shift the mask off.
+    if (major == 4) {
+        switch (minor >> 2) {
+            case 0x01: return DEVICE_EARBUDS;    // Wearable Headset Device
+            case 0x05: return DEVICE_SPEAKER;    // Loudspeaker
+            default:   return DEVICE_HEADPHONES; // Hands-free, Headphones, Portable Audio, ...
+        }
+    }
 
     return DEVICE_UNKNOWN;
 }
@@ -587,6 +629,19 @@ static void EnumerateBthleDevices(std::vector<DeviceInfo>& devices, size_t maxCo
 
                     DEVINST devInst;
                     if (CM_Locate_DevNodeW(&devInst, fullId, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS) {
+                        // A device's BLE endpoint carries a different MAC from its
+                        // classic one, so matching on address alone lists the same
+                        // headset twice — once with a battery, once without.
+                        // ContainerId is what Windows itself groups them by.
+                        GUID cid = {};
+                        bool haveCid = false;
+                        {
+                            DEVPROPTYPE gt = DEVPROP_TYPE_EMPTY;
+                            ULONG gs = sizeof(cid);
+                            haveCid = (CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Device_ContainerId, &gt, (PBYTE)&cid, &gs, 0) == CR_SUCCESS
+                                       && gt == DEVPROP_TYPE_GUID);
+                        }
+
                         int existingIdx = -1;
                         for (size_t i = 0; i < devices.size() && existingIdx < 0; i++) {
                             WCHAR addrBuf[13];
@@ -595,34 +650,29 @@ static void EnumerateBthleDevices(std::vector<DeviceInfo>& devices, size_t maxCo
                                 devices[i].address[2], devices[i].address[1], devices[i].address[0]);
                             if (_wcsicmp(addrBuf, btAddrStr) == 0)
                                 existingIdx = (int)i;
+                            else if (haveCid && devices[i].hasContainerId
+                                     && IsEqualGUID(devices[i].containerId, cid))
+                                existingIdx = (int)i;
                         }
 
-                        DEVPROP_BOOLEAN bConnected = DEVPROP_FALSE;
-                        DEVPROPTYPE ct = DEVPROP_TYPE_EMPTY;
-                        ULONG cs = sizeof(bConnected);
                         bool devStarted = false;
-                        if (CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Bluetooth_IsConnected, &ct, (PBYTE)&bConnected, &cs, 0) == CR_SUCCESS
-                            && ct == DEVPROP_TYPE_BOOLEAN) {
-                            devStarted = (bConnected == DEVPROP_TRUE);
-                        } else {
-                            DEVINST childInst = 0;
-                            if (CM_Get_Child(&childInst, devInst, 0) == CR_SUCCESS) {
-                                do {
-                                    ULONG status = 0, problem = 0;
-                                    if (CM_Get_DevNode_Status(&status, &problem, childInst, 0) == CR_SUCCESS) {
-                                        if ((status & DN_STARTED) && problem == 0 && HasActiveInterface(childInst)) {
-                                            devStarted = true;
-                                            break;
-                                        }
-                                    }
-                                } while (CM_Get_Sibling(&childInst, childInst, 0) == CR_SUCCESS);
-                            }
-                            if (!devStarted) {
+                        DEVINST childInst = 0;
+                        if (CM_Get_Child(&childInst, devInst, 0) == CR_SUCCESS) {
+                            do {
                                 ULONG status = 0, problem = 0;
-                                if (CM_Get_DevNode_Status(&status, &problem, devInst, 0) == CR_SUCCESS) {
-                                    if ((status & DN_STARTED) && problem == 0 && HasActiveInterface(devInst)) {
+                                if (CM_Get_DevNode_Status(&status, &problem, childInst, 0) == CR_SUCCESS) {
+                                    if ((status & DN_STARTED) && problem == 0 && HasActiveInterface(childInst)) {
                                         devStarted = true;
+                                        break;
                                     }
+                                }
+                            } while (CM_Get_Sibling(&childInst, childInst, 0) == CR_SUCCESS);
+                        }
+                        if (!devStarted) {
+                            ULONG status = 0, problem = 0;
+                            if (CM_Get_DevNode_Status(&status, &problem, devInst, 0) == CR_SUCCESS) {
+                                if ((status & DN_STARTED) && problem == 0 && HasActiveInterface(devInst)) {
+                                    devStarted = true;
                                 }
                             }
                         }
@@ -795,10 +845,13 @@ static unsigned int __stdcall ScannerProc(void*) {
                 BluetoothFindDeviceClose(hFind);
             }
 
+            // Must run before the BLE pass: it is what populates containerId,
+            // which the BLE pass needs to recognise an endpoint of a device
+            // already listed under its classic address.
+            GetBatteryFromDeviceTree(newDevices);
             EnumerateBthleDevices(newDevices, 32);
             RefreshBthleConnectedState(newDevices);
             RefreshConnectedState(newDevices);
-            GetBatteryFromMediaClass(newDevices);
             GetBatteryFromRegistry(newDevices);
 
             {   CsLock lock(g_devicesLock);
@@ -872,6 +925,8 @@ static void UpdateTrayIcon() {
             case DEVICE_KEYBOARD: nid.hIcon = g_hIconKeyboard; break;
             case DEVICE_MOUSE: nid.hIcon = g_hIconMouse; break;
             case DEVICE_HEADPHONES: nid.hIcon = g_hIconHeadphones; break;
+            case DEVICE_EARBUDS: nid.hIcon = g_hIconEarbuds; break;
+            case DEVICE_SPEAKER: nid.hIcon = g_hIconSpeaker; break;
             case DEVICE_CONTROLLER: nid.hIcon = g_hIconController; break;
             default: nid.hIcon = g_hIconController; break;
         }
@@ -1145,7 +1200,13 @@ static void LoadSettings() {
     
     if (g_hIconHeadphones) DestroyIcon(g_hIconHeadphones);
     g_hIconHeadphones = LoadCustomIcon(L"d_iconHeadphones", ddoresPath, 91);
-    
+
+    if (g_hIconEarbuds) DestroyIcon(g_hIconEarbuds);
+    g_hIconEarbuds = LoadCustomIcon(L"d_iconEarbuds", ddoresPath, 6);
+
+    if (g_hIconSpeaker) DestroyIcon(g_hIconSpeaker);
+    g_hIconSpeaker = LoadCustomIcon(L"d_iconSpeaker", ddoresPath, 93);
+
     if (g_hIconController) DestroyIcon(g_hIconController);
     g_hIconController = LoadCustomIcon(L"d_iconController", ddoresPath, 108);
 
@@ -1188,28 +1249,34 @@ namespace BTBatGui {
     static const int kComboW = 280;
 
     static const WCHAR* kIconKeys[] = {
-        L"keyboard", L"mouse", L"headphones",
+        L"keyboard", L"mouse", L"headphones", L"earbuds", L"speaker",
         L"controller", L"multiple", L"unknown", L"custom"
     };
     static const WCHAR* kIconLabels[] = {
         L"Keyboard Preset", L"Mouse Preset", L"Headphones Preset",
+        L"Earbuds Preset", L"Bluetooth Speaker Preset",
         L"Controller Preset", L"Multiple Devices Preset", L"No Connected Devices Preset", L"Custom Icon..."
     };
-    static const int kIconCount = 7;
+    static const int kIconCount = ARRAYSIZE(kIconKeys);
 
     static const WCHAR* kDefaultIconKeys[] = {
-        L"keyboard", L"mouse", L"headphones",
+        L"keyboard", L"mouse", L"headphones", L"earbuds", L"speaker",
         L"controller", L"multiple", L"unknown"
     };
 
     static const WCHAR* kDeviceLabels[] = {
-        L"Keyboard", L"Mouse", L"Headphones",
+        L"Keyboard", L"Mouse", L"Headphones", L"Earbuds", L"Bluetooth Speaker",
         L"Controller", L"Multiple Devices", L"No Connected Devices"
     };
     static const WCHAR* kStorageKeys[] = {
         L"d_iconKeyboard", L"d_iconMouse", L"d_iconHeadphones",
+        L"d_iconEarbuds", L"d_iconSpeaker",
         L"d_iconController", L"d_iconMultiple", L"d_iconDisconnected"
     };
+
+    // One configurable row per device type. Keep kDefaultIconKeys / kDeviceLabels /
+    // kStorageKeys the same length — they are indexed in lockstep.
+    static const int kRowCount = ARRAYSIZE(kStorageKeys);
 
     struct State {
         HWND hTrayHwnd = nullptr;
@@ -1228,7 +1295,7 @@ namespace BTBatGui {
             HICON hPreviewIcon = nullptr;
             std::wstring iconKey;
             WCHAR customPath[MAX_PATH] = {};
-        } rows[6];
+        } rows[kRowCount];
 
         HWND hRefreshCombo = nullptr;
         HWND hThresholdCombo = nullptr;
@@ -1280,7 +1347,7 @@ namespace BTBatGui {
         SetWindowPos(s->hRefreshCombo,  nullptr, Sc(72, d), Sc(18, d), Sc(130, d), Sc(200, d), SWP_NOZORDER|SWP_NOACTIVATE);
         SetWindowPos(s->hThresholdCombo, nullptr, Sc(268, d), Sc(18, d), Sc(90, d),  Sc(200, d), SWP_NOZORDER|SWP_NOACTIVATE);
 
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < kRowCount; i++) {
             int y = RowY(i, d);
             SetWindowPos(s->rows[i].hIconCombo, nullptr, Sc(kIconX + kIconSz + 10, d), y + Sc(22, d), Sc(kComboW, d), Sc(300, d), SWP_NOZORDER|SWP_NOACTIVATE);
             bool showBr = s->rows[i].iconKey == L"custom";
@@ -1288,7 +1355,7 @@ namespace BTBatGui {
             ShowWindow(s->rows[i].hBrowseBtn, showBr ? SW_SHOW : SW_HIDE);
         }
 
-        int btnY = RowY(5, d) + Sc(kRowH, d) + Sc(8, d);
+        int btnY = RowY(kRowCount - 1, d) + Sc(kRowH, d) + Sc(8, d);
         SetWindowPos(s->hSaveBtn,   nullptr, Sc(20, d),   btnY, Sc(130, d), Sc(28, d), SWP_NOZORDER|SWP_NOACTIVATE);
         SetWindowPos(s->hCancelBtn, nullptr, Sc(158, d),  btnY, Sc(88, d),  Sc(28, d), SWP_NOZORDER|SWP_NOACTIVATE);
         SetWindowPos(s->hKoFiBtn,   nullptr, Sc(254, d),  btnY, Sc(140, d), Sc(28, d), SWP_NOZORDER|SWP_NOACTIVATE);
@@ -1318,11 +1385,11 @@ namespace BTBatGui {
         int currentThreshold = ReadIntStorage(L"warningThreshold", 30);
         int threshVals[] = {0, 10, 20, 30, 40, 50};
         s.warningThresholdIdx = 3; // default 30
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < kRowCount; i++) {
             if (currentThreshold == threshVals[i]) { s.warningThresholdIdx = i; break; }
         }
 
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < kRowCount; i++) {
             WCHAR icoKey[32] = {};
             WCHAR customKey[64];
             swprintf_s(customKey, L"%s_custom_path", kStorageKeys[i]);
@@ -1381,13 +1448,13 @@ namespace BTBatGui {
             static const WCHAR* kThreshLabels[] = {
                 L"0%", L"10%", L"20%", L"30%", L"40%", L"50%"
             };
-            for (int i = 0; i < 6; i++)
+            for (int i = 0; i < kRowCount; i++)
                 SendMessageW(s->hThresholdCombo, CB_ADDSTRING, 0, (LPARAM)kThreshLabels[i]);
             SendMessageW(s->hThresholdCombo, CB_SETCURSEL, s->warningThresholdIdx, 0);
             DarkCombo(s->hThresholdCombo);
 
             // Per-device rows
-            for (int i = 0; i < 6; i++) {
+            for (int i = 0; i < kRowCount; i++) {
                 s->rows[i].hIconCombo = CreateWindowExW(WS_EX_CLIENTEDGE, L"COMBOBOX", nullptr,
                     WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST, 0, 0, 10, 300,
                     hWnd, (HMENU)(UINT_PTR)(200+i), hInst, nullptr);
@@ -1463,7 +1530,7 @@ namespace BTBatGui {
             }
 
             // Per-device rows
-            for (int i = 0; i < 6; i++) {
+            for (int i = 0; i < kRowCount; i++) {
                 int y = RowY(i, d);
 
                 RECT hdr = {0, y, Sc(kWinW, d), y + Sc(20, d)};
@@ -1597,13 +1664,13 @@ namespace BTBatGui {
 
                 int threshVals[] = {0, 10, 20, 30, 40, 50};
                 int ti = (int)SendMessageW(s->hThresholdCombo, CB_GETCURSEL, 0, 0);
-                if (ti != CB_ERR && ti < 6) {
+                if (ti != CB_ERR && ti < kRowCount) {
                     WCHAR num[16];
                     swprintf_s(num, L"%d", threshVals[ti]);
                     Wh_SetStringValue(L"warningThreshold", num);
                 }
 
-                for (int i = 0; i < 6; i++) {
+                for (int i = 0; i < kRowCount; i++) {
                     int is = (int)SendMessageW(s->rows[i].hIconCombo, CB_GETCURSEL, 0, 0);
                     if (is >= 0 && is < kIconCount) s->rows[i].iconKey = kIconKeys[is];
                     Wh_SetStringValue(kStorageKeys[i], s->rows[i].iconKey.c_str());
@@ -1652,7 +1719,7 @@ namespace BTBatGui {
                 DeleteObject(s->hBgBrush);  s->hBgBrush  = nullptr;
                 DeleteObject(s->hInpBrush); s->hInpBrush = nullptr;
                 DeleteObject(s->hSurfBrush);s->hSurfBrush= nullptr;
-                for (int i = 0; i < 6; i++) {
+                for (int i = 0; i < kRowCount; i++) {
                     if (s->rows[i].hPreviewIcon) {
                         DestroyIcon(s->rows[i].hPreviewIcon);
                         s->rows[i].hPreviewIcon = nullptr;
@@ -1718,7 +1785,7 @@ namespace BTBatGui {
             }
         }
 
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < kRowCount; i++) {
             if (state.rows[i].hPreviewIcon) {
                 DestroyIcon(state.rows[i].hPreviewIcon);
                 state.rows[i].hPreviewIcon = nullptr;

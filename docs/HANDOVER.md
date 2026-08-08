@@ -141,50 +141,68 @@ draft first, agree it, then implement.
 
 ---
 
-## 6. NEXT TASK — bt-battery-monitor-fork
+## 6. DONE — bt-battery-monitor-fork 1.1.0
 
-Two asks: **add earbud and Bluetooth-speaker icons**, and **fix battery not showing** for
-"OnePlus Nord Buds 4 Pro" and "LotsOfHusky" (a BT speaker). Windows Settings shows 40% and
-90% for these, and the mod's own context menu lists both devices with `--`.
+Both asks are implemented and verified. **An earlier version of this section stated the
+opposite diagnosis and was wrong** — it is kept below only as a warning about how it went
+wrong, because the same trap is easy to fall into again.
 
-### Diagnosis — already done, and it rules out the current approach
+### Root cause: one wrong GUID
 
-The mod reads battery with
-`CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Bluetooth_BatteryLevel, ...)` and additionally
-requires the devnode to expose an active **HID** or **BLE GATT** interface
-(`GUID_DEVINTERFACE_HID` / `GUID_BLUETOOTH_GATT_SERVICE_DEVICE_INTERFACE`, ~line 499-508).
-Classic Bluetooth audio devices are neither.
+The mod declared
 
-Enumerated on this machine:
+```cpp
+DEVPKEY_Bluetooth_DeviceAddress = {E57A6B4A-21B8-4B8A-B4B4-73B9F358ED60}, 1
+```
 
-- **No property matching `Battery` holds a value on *any* `BTH*` devnode.** Checked every
-  present `BTH*` node, and specifically the container nodes
-  `BTHENUM\DEV_ACBF711D1BE0` (speaker, 70 props), `BTHENUM\DEV_F8BA98175437` (earbuds, 65),
-  `BTHLE\DEV_642428360B1D` (earbuds BLE, 66). None carry it.
-- So the failure is **not** a filtering bug that can be fixed by relaxing the HID/GATT gate.
-  The data is not in the PnP property store at all for these devices.
+That key **is not published by any devnode on this machine.** The real one is
+`{2BD67D8B-8BEB-48D5-87E0-6CDA3428040A}, 1`. In `GetBatteryFromMediaClass` the address read
+came *before* the battery could be assigned, so it hit `continue` on every node and no
+classic Bluetooth device ever received a battery value. BLE peripherals (keyboard, mouse)
+get theirs from `EnumerateBthleDevices` / the registry fallback and were unaffected — which
+is exactly why it looked like a hardware limitation of audio devices.
 
-The earbuds *do* expose `BTHLEDEVICE\{0000180F-...}` — **0x180F is the GATT Battery Service**,
-so a BLE GATT read is a plausible path for them specifically. The speaker appears only as a
-classic `BTHENUM` device, so its level almost certainly arrives over HFP battery indicators.
+The battery itself lives on the **Hands-Free AG service node**,
+`BTHENUM\{0000111e-...}_..._C00000000`, not on the `DEV_` container node — verified reading
+`{104EA319-...},2` = 20 (earbuds) and 100 (speaker).
 
-### Where to look next
+Also fixed: `DEVPKEY_Bluetooth_IsConnected` was pointed at that same address key, so its
+`DEVPROP_TYPE_BOOLEAN` check could never pass and the branch was dead. Removed; the
+child-interface fallback that was already doing the work now runs directly.
 
-Windows Settings and Control Center both show these values, so the OS has them. The most
-likely source is the **WinRT Association Endpoint layer** rather than SetupAPI —
-`Windows.Devices.Enumeration.DeviceInformation.FindAllAsync` requesting the AEP battery
-property (`{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2` as an AEP property, not a devnode one),
-and/or `Windows.Devices.Bluetooth` + a GATT read of service 0x180F characteristic 0x2A19 for
-the BLE case. **Confirm which one actually returns a value before writing any mod code** —
-that is what the last session's tray fix got right and what the guessing got wrong.
+### Why the first diagnosis was wrong
+
+It enumerated only the `BTHENUM\DEV_*` container nodes and searched by *property name*. The
+battery key has no friendly name, so it renders as a raw `{GUID} PID` string and a name match
+silently misses it. It also read `BTHLEDEVICE\{0000180F-...}` as belonging to the earbuds —
+that node is the **EvoFox keyboard's**. Neither audio device exposes GATT `0x180F`.
+
+Lesson: query the exact key, and confirm against a device that already works.
+
+### Also in 1.1.0
+
+- **Duplicate merge.** A device's BLE endpoint has a different MAC from its classic one, so
+  address matching listed the earbuds twice — once with a battery, once with `--`.
+  `DEVPKEY_Device_ContainerId` is what Windows groups them by, and now the mod does too.
+  Verified: the Nord Buds' BLE endpoint merges; `LE-LotsOfHusky` has a genuinely different
+  container ID and correctly stays separate.
+- **Earbuds + Speaker icons**, from the Class of Device minor field (`minor >> 2`): `0x01`
+  Wearable Headset → earbuds, `0x05` Loudspeaker → speaker, everything else → headphones.
+  Nord Buds report `0x240404`, LotsOfHusky `0x240414`. `ddores.dll` index **6** is earbuds,
+  **93** is a loudspeaker (picked by rendering a contact sheet of all 151 icons, not guessed).
+- Dashboard rows are now driven by `kRowCount = ARRAYSIZE(kStorageKeys)` instead of a
+  hardcoded `6` in a dozen places. **Careful:** there is an unrelated `for (i = 0; i < 6; i++)`
+  that parses the 6 MAC bytes — do not fold that into `kRowCount`.
 
 Note the mod is `@include windhawk.exe`, i.e. a **tool mod**. Per an earlier finding here,
 declaring `@architecture x86-64` silently stops a `windhawk.exe` tool mod from ever loading —
 leave the architecture line alone.
 
-Icons are the easy half: the mod already has per-device-type icon presets (Keyboard, Mouse,
-Headphones, Controller) with a Browse button for custom `.ico`. Adding Earbuds and Speaker
-means extending that enum, its settings dropdown, and the device-type detection.
+### Still to do
+
+Install and confirm in the real tray. The pipeline was verified out-of-process by compiling
+the patched logic standalone (32-bit, matching `windhawk.exe`) — it printed
+`OnePlus Nord Buds 4 Pro 20% [Earbuds]` and `LotsOfHusky 100% [Speaker]`.
 
 ---
 

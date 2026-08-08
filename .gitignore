@@ -1,9 +1,8 @@
-# Other Windhawk mods live in this folder too, and so does the working copy
-# (Win-x-HotCorners.cpp) that is copied onto the tracked file before a commit.
-# Only the tracked file belongs in the repo.
-*.cpp
-!win-x-hotcorners.wh.cpp
+# Editor / workspace
 *.code-workspace
+.vscode/
 
-# Working notes for continuing this project. Not part of the published mod.
-HANDOVER.md
+# Windhawk build leftovers, if any get copied in
+*.dll
+*.obj
+*.pdb

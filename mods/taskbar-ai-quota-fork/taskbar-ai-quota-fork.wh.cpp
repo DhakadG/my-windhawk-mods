@@ -2,7 +2,7 @@
 // @id              taskbar-ai-quota-fork
 // @name            Taskbar AI Quota Bars - Fork
 // @description     Shows compact 5-hour and weekly AI agent/LLM subscription quota bars for Anthropic and OpenAI on the Windows 11 taskbar
-// @version         0.11.0
+// @version         0.12.0
 // @author          Cleroth
 // @github          https://github.com/Cleroth
 // @include         explorer.exe
@@ -544,7 +544,10 @@ struct AccountUiRefs {
 struct QuotaUiInstance {
     HWND hWnd = nullptr;
     Grid quotaGrid{nullptr};
-    Grid injectionParent{nullptr};
+    // Panel, not Grid: on Windows 11 26H2 (build 26300) SystemTrayFrameGrid is a
+    // StackPanel. The taskbar's own RootGrid is still a Grid, so both shapes occur and
+    // the base type is the only thing that covers them.
+    Panel injectionParent{nullptr};
     int quotaColumn = -1;
     bool insertedColumn = false;
     bool overlayPositioned = false;   // Floats above the taskbar; reserves no grid column.
@@ -3144,9 +3147,33 @@ static FrameworkElement FindTrayElement(FrameworkElement const& trayGrid, Framew
     return element;
 }
 
+// Index of the tray panel's own direct child called `name`, or -1. The named tray anchors
+// (NotifyIconStack, ControlCenterButton, ShowDesktopStack, ...) are direct children of
+// SystemTrayFrameGrid, so a flat scan is enough and, unlike a recursive search, it cannot
+// return something nested that has no index in Children().
+static int TrayChildIndex(Panel const& panel, const wchar_t* name) {
+    if (!panel) return -1;
+    auto children = panel.Children();
+    for (uint32_t i = 0; i < children.Size(); ++i) {
+        auto fe = children.GetAt(i).try_as<FrameworkElement>();
+        if (fe && fe.Name() == name) return (int)i;
+    }
+    return -1;
+}
+
+// The tray container changed shape in Windows 11 26H2 (build 26300). It used to be a Grid
+// whose children each sat in a reserved column; it is now a StackPanel whose children are
+// ordered purely by index. (The children still carry stale Grid.Column values, so reading
+// those and hoping is not an option.) Both are Panels, so hold the base type and pick the
+// insertion strategy from what it actually turns out to be:
+//   column    >= 0  ->  Grid: reserve a ColumnDefinition and set Grid.Column
+//   childIndex >= 0  ->  StackPanel: insert at that index in Children()
+// Exactly one is set for a tray position; both stay -1 for overlay/anchored positions,
+// which append to the taskbar RootGrid and are placed by margin instead.
 struct InjectionTarget {
-    Grid grid{nullptr};
-    int column = -1;  // -1 means "not a reserved grid column" (overlay or anchored).
+    Panel panel{nullptr};
+    int column = -1;
+    int childIndex = -1;
 };
 
 static bool IsOverlayPosition(std::wstring const& position) {
@@ -3168,59 +3195,91 @@ static InjectionTarget ResolveInjectionTarget(FrameworkElement const& root,
                                               std::wstring const& position) {
     if (!IsOverlayPosition(position) && !IsAnchoredPosition(position)) {
         auto trayFrame = FindChildByName(root, L"SystemTrayFrameGrid");
-        auto trayGrid = trayFrame ? trayFrame.try_as<Grid>() : nullptr;
-        if (!trayGrid) return {};
+        auto trayPanel = trayFrame ? trayFrame.try_as<Panel>() : nullptr;
+        if (!trayPanel) return {};
 
-        int columnCount = (int)trayGrid.ColumnDefinitions().Size();
-        int col = -1;
-        auto columnOf = [&](FrameworkElement const& element, int offset) {
-            return element ? Grid::GetColumn(element) + offset : -1;
-        };
+        // Which tray element the position hangs off, and whether we go before or after it.
+        // Shared by both shapes so the two paths can never disagree about what a position
+        // means. nullptr anchor = one of the two "far end" positions.
+        const wchar_t* anchor = nullptr;
+        bool after = false;
+        bool farEnd = false;
+        bool farEndIsRight = false;
 
-        if (position == L"tray_right") {
-            col = columnCount;
-        } else if (position == L"tray_left") {
-            col = 0;
-        } else if (position == L"tray_before_clock") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"NotificationCenterButton"), 0);
-        } else if (position == L"tray_after_clock") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"ShowDesktopStack"), 0);
-        } else if (position == L"tray_before_omni_left") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"ControlCenterButton"), 0);
-        } else if (position == L"tray_before_omni_right") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"ControlCenterButton"), 1);
-        } else if (position == L"tray_language_left") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"NonActivatableStack"), 0);
-        } else if (position == L"tray_language_right") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"NonActivatableStack"), 1);
-        } else if (position == L"tray_icons_left") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"NotificationAreaIcons"), 0);
-        } else if (position == L"tray_icons_right") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"NotificationAreaIcons"), 1);
-        } else if (position == L"tray_hidden_icons_left") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"NotifyIconStack"), 0);
-        } else if (position == L"tray_hidden_icons_right") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"NotifyIconStack"), 1);
-        } else if (position == L"tray_after_showdesktop_left") {
-            col = columnOf(FindTrayElement(trayGrid, root, L"ShowDesktopStack"), 0);
-        } else if (position == L"tray_after_showdesktop_right") {
-            auto showDesktop = FindTrayElement(trayGrid, root, L"ShowDesktopStack");
-            col = showDesktop ? Grid::GetColumn(showDesktop) + 1 : columnCount;
-        } else {
-            col = 0;  // Unknown value: behave like the documented default.
+        if (position == L"tray_right") {                        farEnd = true; farEndIsRight = true; }
+        else if (position == L"tray_left") {                    farEnd = true; farEndIsRight = false; }
+        else if (position == L"tray_before_clock") {            anchor = L"NotificationCenterButton"; }
+        else if (position == L"tray_after_clock") {             anchor = L"ShowDesktopStack"; }
+        else if (position == L"tray_before_omni_left") {        anchor = L"ControlCenterButton"; }
+        else if (position == L"tray_before_omni_right") {       anchor = L"ControlCenterButton"; after = true; }
+        else if (position == L"tray_language_left") {           anchor = L"NonActivatableStack"; }
+        else if (position == L"tray_language_right") {          anchor = L"NonActivatableStack"; after = true; }
+        else if (position == L"tray_icons_left") {              anchor = L"NotificationAreaIcons"; }
+        else if (position == L"tray_icons_right") {             anchor = L"NotificationAreaIcons"; after = true; }
+        else if (position == L"tray_hidden_icons_left") {       anchor = L"NotifyIconStack"; }
+        else if (position == L"tray_hidden_icons_right") {      anchor = L"NotifyIconStack"; after = true; }
+        else if (position == L"tray_after_showdesktop_left") {  anchor = L"ShowDesktopStack"; }
+        else if (position == L"tray_after_showdesktop_right") { anchor = L"ShowDesktopStack"; after = true; }
+        else { farEnd = true; farEndIsRight = false; }  // Unknown value: documented default.
+
+        // Windows 11 26H2 (build 26300) and newer: a StackPanel, ordered by child index.
+        if (!trayPanel.try_as<Grid>()) {
+            int childCount = (int)trayPanel.Children().Size();
+            int index;
+            if (farEnd) {
+                index = farEndIsRight ? childCount : 0;
+            } else {
+                index = TrayChildIndex(trayPanel, anchor);
+                if (index < 0) return {};
+                if (after) index++;
+            }
+            InjectionTarget target;
+            target.panel = trayPanel;
+            target.childIndex = std::clamp(index, 0, childCount);
+            return target;
         }
 
-        if (col >= 0) return {trayGrid, std::clamp(col, 0, columnCount)};
-        return {};
+        // Pre-26300: a Grid, where each tray element owns a reserved column.
+        auto trayGrid = trayPanel.as<Grid>();
+        int columnCount = (int)trayGrid.ColumnDefinitions().Size();
+        int col;
+        if (farEnd) {
+            col = farEndIsRight ? columnCount : 0;
+        } else {
+            auto element = FindTrayElement(trayGrid, root, anchor);
+            if (!element) {
+                // tray_after_showdesktop_right historically fell back to the far right
+                // rather than failing, and that is the friendlier answer for an "after the
+                // last thing" position. Everything else bails and lets the watchdog retry.
+                if (position != L"tray_after_showdesktop_right") return {};
+                col = columnCount;
+            } else {
+                col = Grid::GetColumn(element) + (after ? 1 : 0);
+            }
+        }
+        InjectionTarget target;
+        target.panel = trayGrid;
+        target.column = std::clamp(col, 0, columnCount);
+        return target;
     }
 
-    auto rootGrid = FindTaskbarRootGrid(root);
-    if (rootGrid) return {rootGrid, -1};
+    if (auto rootGrid = FindTaskbarRootGrid(root)) {
+        InjectionTarget target;
+        target.panel = rootGrid;
+        return target;  // column/childIndex stay -1: placed by margin, not by slot.
+    }
 
     // Taskbar frame not realised yet - fall back to the tray so the bars still appear.
     auto trayFrame = FindChildByName(root, L"SystemTrayFrameGrid");
-    if (auto trayGrid = trayFrame ? trayFrame.try_as<Grid>() : nullptr) {
-        return {trayGrid, (int)trayGrid.ColumnDefinitions().Size()};
+    if (auto trayPanel = trayFrame ? trayFrame.try_as<Panel>() : nullptr) {
+        InjectionTarget target;
+        target.panel = trayPanel;
+        if (auto trayGrid = trayPanel.try_as<Grid>()) {
+            target.column = (int)trayGrid.ColumnDefinitions().Size();
+        } else {
+            target.childIndex = (int)trayPanel.Children().Size();
+        }
+        return target;
     }
     return {};
 }
@@ -4094,16 +4153,19 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
     }
 }
 
-static int RemoveQuotaChildren(Grid const& targetGrid, QuotaUiInstance& state) {
-    if (!targetGrid) return -1;
+// Returns the Grid column our child occupied, or -1 when it was not found or the parent is
+// not a Grid at all. Callers must treat -1 as "do not touch column definitions".
+static int RemoveQuotaChildren(Panel const& targetPanel, QuotaUiInstance& state) {
+    if (!targetPanel) return -1;
     ClearQuotaEventState(state);
 
+    bool isGrid = targetPanel.try_as<Grid>() != nullptr;
     int firstCol = -1;
-    for (int i = (int)targetGrid.Children().Size() - 1; i >= 0; --i) {
-        auto fe = targetGrid.Children().GetAt(i).try_as<FrameworkElement>();
+    for (int i = (int)targetPanel.Children().Size() - 1; i >= 0; --i) {
+        auto fe = targetPanel.Children().GetAt(i).try_as<FrameworkElement>();
         if (fe && fe.Name() == kRootName) {
-            if (firstCol < 0) firstCol = Grid::GetColumn(fe);
-            try { targetGrid.Children().RemoveAt(i); } catch (...) {}
+            if (isGrid && firstCol < 0) firstCol = Grid::GetColumn(fe);
+            try { targetPanel.Children().RemoveAt(i); } catch (...) {}
         }
     }
     return firstCol;
@@ -4134,12 +4196,14 @@ static void RemoveQuotaGridFromState(QuotaUiInstance& state) {
     }
 
     try {
-        auto targetGrid = state.injectionParent;
-        int quotaCol = RemoveQuotaChildren(targetGrid, state);
+        auto targetPanel = state.injectionParent;
+        int quotaCol = RemoveQuotaChildren(targetPanel, state);
+        auto targetGrid = targetPanel.try_as<Grid>();
         // Only touch column definitions when our own child was actually found. If Explorer
         // already tore the subtree down, a stale index would point at a column it owns, and
-        // removing that is exactly how a tray ends up with overlapping icons.
-        if (state.insertedColumn && quotaCol >= 0 &&
+        // removing that is exactly how a tray ends up with overlapping icons. On a
+        // StackPanel parent there are no columns and removing the child was the whole job.
+        if (targetGrid && state.insertedColumn && quotaCol >= 0 &&
             quotaCol < (int)targetGrid.ColumnDefinitions().Size()) {
             for (uint32_t i = 0; i < targetGrid.Children().Size(); ++i) {
                 auto child = targetGrid.Children().GetAt(i).try_as<FrameworkElement>();
@@ -4176,8 +4240,8 @@ static bool IsQuotaUiLive(QuotaUiInstance& state, FrameworkElement const& root,
         // Then confirm we are still parented to the grid the position setting resolves to
         // now, rather than to an orphaned tray frame Explorer has already replaced.
         InjectionTarget current = ResolveInjectionTarget(root, position);
-        if (!current.grid) return false;
-        return current.grid == state.injectionParent;
+        if (!current.panel) return false;
+        return current.panel == state.injectionParent;
     } catch (...) {
         return false;
     }
@@ -4186,7 +4250,9 @@ static bool IsQuotaUiLive(QuotaUiInstance& state, FrameworkElement const& root,
 // Anchored taskbar positions have no column to live in, so the bars are positioned by
 // margin and the anchor button is pushed aside to make room. Both have to be recomputed
 // on every layout pass, because the taskbar recentres itself as buttons come and go.
-static void AttachAnchorTracking(QuotaUiInstance& state, Grid const& rootGrid,
+// `parent` is only subscribed to for LayoutUpdated, which is a FrameworkElement member, so
+// it does not care whether the taskbar handed us a Grid or a StackPanel.
+static void AttachAnchorTracking(QuotaUiInstance& state, Panel const& parent,
                                  FrameworkElement const& anchor, bool anchorOnLeft,
                                  int leftMargin, int rightMargin) {
     state.trackedElement = anchor;
@@ -4195,7 +4261,7 @@ static void AttachAnchorTracking(QuotaUiInstance& state, Grid const& rootGrid,
     state.trackAnchorOnLeft = anchorOnLeft;
 
     HWND hWnd = state.hWnd;
-    state.layoutUpdatedToken = rootGrid.LayoutUpdated(
+    state.layoutUpdatedToken = parent.LayoutUpdated(
         [hWnd, leftMargin, rightMargin](winrt::Windows::Foundation::IInspectable const&,
                                         winrt::Windows::Foundation::IInspectable const&) {
             if (g_unloading) return;
@@ -4281,7 +4347,8 @@ static bool InjectQuotaGrid(HWND hWnd) {
         // Bail and let the watchdog poll; never inject somewhere else, which would draw
         // the bars on top of the clock or the task buttons.
         InjectionTarget target = ResolveInjectionTarget(root, position);
-        if (!target.grid) return fail(L"position target not in the visual tree yet");
+        if (!target.panel) return fail(L"position target not in the visual tree yet");
+        auto targetGrid = target.panel.try_as<Grid>();
 
         state = FindUiState(hWnd);
         if (!state) {
@@ -4290,34 +4357,36 @@ static bool InjectQuotaGrid(HWND hWnd) {
             state = newState.get();
             g_uiInstances.push_back(std::move(newState));
         }
-        state->injectionParent = target.grid;
+        state->injectionParent = target.panel;
 
-        int oldCol = RemoveQuotaChildren(target.grid, *state);
-        if (oldCol < 0 && state->insertedColumn && state->quotaColumn >= 0 &&
-            state->quotaColumn < (int)target.grid.ColumnDefinitions().Size()) {
-            // Explorer dropped our child but left behind the column we inserted. Reclaim it,
-            // but only if nothing else has moved into it, so repeated re-injection after a
-            // tray rebuild cannot pile up stray columns.
-            bool occupied = false;
-            for (uint32_t i = 0; i < target.grid.Children().Size(); ++i) {
-                auto child = target.grid.Children().GetAt(i).try_as<FrameworkElement>();
-                if (child && Grid::GetColumn(child) == state->quotaColumn) {
-                    occupied = true;
-                    break;
+        int oldCol = RemoveQuotaChildren(target.panel, *state);
+        if (targetGrid) {
+            if (oldCol < 0 && state->insertedColumn && state->quotaColumn >= 0 &&
+                state->quotaColumn < (int)targetGrid.ColumnDefinitions().Size()) {
+                // Explorer dropped our child but left behind the column we inserted. Reclaim
+                // it, but only if nothing else has moved into it, so repeated re-injection
+                // after a tray rebuild cannot pile up stray columns.
+                bool occupied = false;
+                for (uint32_t i = 0; i < targetGrid.Children().Size(); ++i) {
+                    auto child = targetGrid.Children().GetAt(i).try_as<FrameworkElement>();
+                    if (child && Grid::GetColumn(child) == state->quotaColumn) {
+                        occupied = true;
+                        break;
+                    }
                 }
+                if (!occupied) oldCol = state->quotaColumn;
             }
-            if (!occupied) oldCol = state->quotaColumn;
-        }
-        if (state->insertedColumn && oldCol >= 0 &&
-            oldCol < (int)target.grid.ColumnDefinitions().Size()) {
-            for (uint32_t i = 0; i < target.grid.Children().Size(); ++i) {
-                auto child = target.grid.Children().GetAt(i).try_as<FrameworkElement>();
-                if (child) {
-                    int childCol = Grid::GetColumn(child);
-                    if (childCol > oldCol) Grid::SetColumn(child, childCol - 1);
+            if (state->insertedColumn && oldCol >= 0 &&
+                oldCol < (int)targetGrid.ColumnDefinitions().Size()) {
+                for (uint32_t i = 0; i < targetGrid.Children().Size(); ++i) {
+                    auto child = targetGrid.Children().GetAt(i).try_as<FrameworkElement>();
+                    if (child) {
+                        int childCol = Grid::GetColumn(child);
+                        if (childCol > oldCol) Grid::SetColumn(child, childCol - 1);
+                    }
                 }
+                targetGrid.ColumnDefinitions().RemoveAt(oldCol);
             }
-            target.grid.ColumnDefinitions().RemoveAt(oldCol);
         }
         state->insertedColumn = false;
         state->quotaColumn = -1;
@@ -4335,17 +4404,36 @@ static bool InjectQuotaGrid(HWND hWnd) {
         bool anchored = IsAnchoredPosition(position);
         state->overlayPositioned = overlay || anchored;
 
-        if (!state->overlayPositioned) {
+        if (!state->overlayPositioned && !targetGrid) {
+            // StackPanel tray (Windows 11 26H2 build 26300+). Order is the child index, so
+            // there is no column to reserve and nothing to renumber - insert and we are done.
+            //
+            // Re-resolve first: target.childIndex was computed before RemoveQuotaChildren
+            // ran, so on a re-injection where our previous element sat left of the anchor,
+            // every index after it has since shifted down by one and the stale value would
+            // land us one slot too far right. Cheap enough - this is injection, not layout.
+            InjectionTarget fresh = ResolveInjectionTarget(root, position);
+            int insertAt = (fresh.panel == target.panel && fresh.childIndex >= 0)
+                               ? fresh.childIndex
+                               : target.childIndex;
+
+            quota.Margin({(double)leftMargin, 0, (double)rightMargin, 0});
+            quota.VerticalAlignment(VerticalAlignment::Center);
+            insertAt = std::clamp(insertAt, 0, (int)target.panel.Children().Size());
+            target.panel.Children().InsertAt((uint32_t)insertAt, quota);
+            state->quotaColumn = -1;
+            state->insertedColumn = false;
+        } else if (!state->overlayPositioned) {
             ColumnDefinition newCol;
             newCol.Width({1.0, GridUnitType::Auto});
-            int columnCount = (int)target.grid.ColumnDefinitions().Size();
+            int columnCount = (int)targetGrid.ColumnDefinitions().Size();
             int insertCol = std::clamp(target.column, 0, columnCount);
             if (insertCol >= columnCount) {
-                target.grid.ColumnDefinitions().Append(newCol);
+                targetGrid.ColumnDefinitions().Append(newCol);
             } else {
-                target.grid.ColumnDefinitions().InsertAt(insertCol, newCol);
-                for (uint32_t i = 0; i < target.grid.Children().Size(); ++i) {
-                    auto child = target.grid.Children().GetAt(i).try_as<FrameworkElement>();
+                targetGrid.ColumnDefinitions().InsertAt(insertCol, newCol);
+                for (uint32_t i = 0; i < targetGrid.Children().Size(); ++i) {
+                    auto child = targetGrid.Children().GetAt(i).try_as<FrameworkElement>();
                     if (child) {
                         int childCol = Grid::GetColumn(child);
                         if (childCol >= insertCol) Grid::SetColumn(child, childCol + 1);
@@ -4354,7 +4442,7 @@ static bool InjectQuotaGrid(HWND hWnd) {
             }
             quota.Margin({(double)leftMargin, 0, (double)rightMargin, 0});
             Grid::SetColumn(quota, insertCol);
-            target.grid.Children().Append(quota);
+            targetGrid.Children().Append(quota);
             state->quotaColumn = insertCol;
             state->insertedColumn = true;
         } else {
@@ -4374,12 +4462,12 @@ static bool InjectQuotaGrid(HWND hWnd) {
             }
             Grid::SetColumn(quota, 0);
             Canvas::SetZIndex(quota, 1000);
-            target.grid.Children().Append(quota);
+            target.panel.Children().Append(quota);
 
             if (anchored) {
                 bool anchorOnLeft = false;
                 if (auto anchor = ResolveAnchorElement(root, position, &anchorOnLeft)) {
-                    AttachAnchorTracking(*state, target.grid, anchor, anchorOnLeft, leftMargin,
+                    AttachAnchorTracking(*state, target.panel, anchor, anchorOnLeft, leftMargin,
                                          rightMargin);
                 }
             }

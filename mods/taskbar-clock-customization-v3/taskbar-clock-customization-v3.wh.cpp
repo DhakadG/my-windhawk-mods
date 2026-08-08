@@ -488,7 +488,10 @@ Weather format (multi‑line tooltip via `\n`):
     Location for weather data from wttr.in. Examples: "Jaipur", "London",
     "New+York", "26.839,75.824" (lat,lon). Keep empty for auto-detect
     (IP-based geolocation).
-- WebContentWeatherFormat: "%c \uD83C\uDF21\uFE0F%t \uD83C\uDF2C\uFE0F%w"
+# \u only takes a 4-hex BMP scalar; U+1F321 and U+1F32C are outside the BMP, so the
+# surrogate-pair form (\uD83C\uDF21) is not a legal YAML escape and the settings block
+# fails to parse. The 8-hex \U form is how YAML 1.2 spells a non-BMP scalar.
+- WebContentWeatherFormat: "%c \U0001F321\uFE0F%t \U0001F32C\uFE0F%w"
   $name: Weather format
   $description: >-
     wttr.in format string for the %weather% pattern. Use \n inside the

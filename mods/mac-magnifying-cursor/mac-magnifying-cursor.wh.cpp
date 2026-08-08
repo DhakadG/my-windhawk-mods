@@ -3,14 +3,19 @@
 // @name         macOS magnifying cursor
 // @description  Recreates the macOS "Shake to Find" feature by enlarging the cursor when rapidly moved.
 // @version      1.5.0
-// @github       https://github.com/alivca
-// @author       Jaali
+// @github       https://github.com/DhakadG
+// @author       lost_husky
 // @include      windhawk.exe
 // @compilerOptions -luser32 -lgdi32 -lshell32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
 /*
+> **Fork.** Built on [macOS magnifying cursor](https://windhawk.net/mods/mac-magnifying-cursor)
+> by **[Jaali](https://github.com/alivca)**. Maintained by
+> [lost_husky](https://github.com/DhakadG), who added the continuous intensity-based
+> scaling and the smoothing settings.
+
 Recreates the macOS "Shake to Find" feature: shaking your mouse enlarges the cursor so you can
 instantly locate it on screen.
 
@@ -329,7 +334,9 @@ void UpdateFrame() {
                     if (hdcScreen) {
                         HDC hdcMem = CreateCompatibleDC(hdcScreen);
                         if (hdcMem) {
-                            BITMAPINFO bmi = { 0 };
+                            // {} not { 0 }: BITMAPINFO's first member is itself a struct,
+                            // so { 0 } initialises a subobject without braces (-Wmissing-braces).
+                            BITMAPINFO bmi = {};
                             bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
                             bmi.bmiHeader.biWidth = scaledW;
                             bmi.bmiHeader.biHeight = -scaledH;

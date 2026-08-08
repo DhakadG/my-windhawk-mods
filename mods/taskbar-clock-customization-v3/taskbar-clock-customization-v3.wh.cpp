@@ -3,12 +3,12 @@
 // @name            Taskbar Clock Customization v3
 // @description     Custom date/time format, news feed, weather, performance metrics (upload/download speed, CPU, RAM, GPU, battery), media player info, custom fonts and colors, and more
 // @version         3.1.71
-// @author          DhakadG
+// @author          lost_husky
 // @github          https://github.com/DhakadG
 // @homepage        https://losthusky.qzz.io/
 // @include         explorer.exe
 // @architecture    x86-64
-// @compilerOptions -ldxgi -lole32 -loleaut32 -lpdh -lpowrprof -lruntimeobject -lshlwapi -lversion -lwininet -liphlpapi -lws2_32
+// @compilerOptions -DWIN32_LEAN_AND_MEAN -ldxgi -lole32 -loleaut32 -lpdh -lpowrprof -lruntimeobject -lshlwapi -lversion -lwininet -liphlpapi -lws2_32
 // ==/WindhawkMod==
 
 // Source code is published under The GNU General Public License v3.0.
@@ -21,7 +21,12 @@
 
 // ==WindhawkModReadme==
 /*
-# Taskbar Clock Customization v2
+# Taskbar Clock Customization v3
+
+> **Fork.** Built on [Taskbar Clock Customization](https://windhawk.net/mods/taskbar-clock-customization)
+> by **[m417z](https://github.com/m417z)**, whose mod provides the clock hooking this is
+> built on. Maintained by [lost_husky](https://github.com/DhakadG), who added the
+> performance metrics, weather, network throughput and sensor readouts.
 
 Fully‑customizable taskbar clock for **Windows 10 64‑bit** and **Windows 11**.
 Replace the stock date/time display with live system metrics, weather, media

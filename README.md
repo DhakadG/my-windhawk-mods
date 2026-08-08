@@ -19,12 +19,24 @@ archive/                        superseded working copies, kept for reference on
 
 ## Mods
 
-| Mod | Version | Notes |
-| --- | --- | --- |
-| [win-x-hotcorners](mods/win-x-hotcorners/) | 4.1.4 | macOS-style hot corners. Also published standalone; PR [#5001](https://github.com/ramensoftware/windhawk-mods/pull/5001) is open against the gallery. |
-| [taskbar-ai-quota-fork](mods/taskbar-ai-quota-fork/) | 0.11.0 | Fork of Cleroth's AI quota bars. **Not rendering on Windows 11 26H2 build 26300** — see [the handover](docs/HANDOVER-taskbar-ai-quota-fork.md). |
-| [taskbar-clock-customization-v3](mods/taskbar-clock-customization-v3/) | 3.1.69 | Fork of the clock mod with sensors, weather and network throughput. |
-| [mac-magnifying-cursor](mods/mac-magnifying-cursor/) | 1.5.0 | Shake-to-magnify cursor. |
+All are authored or maintained by **lost_husky**; the forks credit their original author at
+the top of each mod's readme.
+
+| Mod | Version | Original author | Notes |
+| --- | --- | --- | --- |
+| [win-x-hotcorners](mods/win-x-hotcorners/) | 4.1.4 | — | macOS-style hot corners. PR [#5001](https://github.com/ramensoftware/windhawk-mods/pull/5001) is open against the gallery. |
+| [taskbar-ai-quota-fork](mods/taskbar-ai-quota-fork/) | 0.12.0 | [Cleroth](https://github.com/Cleroth) | AI quota bars. Fixed for the 26300 StackPanel tray. |
+| [taskbar-clock-customization-v3](mods/taskbar-clock-customization-v3/) | 3.1.71 | [m417z](https://github.com/m417z) | Clock with sensors, weather and network throughput. |
+| [taskbar-fluent-media-player-fork](mods/taskbar-fluent-media-player-fork/) | 1.6.1 | [Salyts](https://github.com/Salyts) | Fluent media player. Fixed for the 26300 StackPanel tray. |
+| [mac-magnifying-cursor](mods/mac-magnifying-cursor/) | 1.5.0 | [Jaali](https://github.com/alivca) | Shake-to-magnify cursor. |
+
+### Windows 11 26H2 (build 26300)
+
+Build 26300 changed `SystemTrayFrameGrid` from a `Grid` to a `StackPanel` while keeping the
+name. Any mod that resolves its tray target with `try_as<Grid>()` gets null and silently
+never injects. Both taskbar forks here now branch on the real type and insert by child index
+on the new shape. Same root cause as
+[ramensoftware/windhawk-mods#5018](https://github.com/ramensoftware/windhawk-mods/issues/5018).
 
 ## Working on a mod
 

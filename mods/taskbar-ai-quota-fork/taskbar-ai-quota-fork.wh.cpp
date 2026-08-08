@@ -3,8 +3,8 @@
 // @name            Taskbar AI Quota Bars - Fork
 // @description     Shows compact 5-hour and weekly AI agent/LLM subscription quota bars for Anthropic and OpenAI on the Windows 11 taskbar
 // @version         0.12.0
-// @author          Cleroth
-// @github          https://github.com/Cleroth
+// @author          lost_husky
+// @github          https://github.com/DhakadG
 // @include         explorer.exe
 // @architecture    x86-64
 // @license         MIT
@@ -13,7 +13,13 @@
 
 // ==WindhawkModReadme==
 /*
-# Taskbar AI Quota Bars
+# Taskbar AI Quota Bars - Fork
+
+> **Fork.** Built on [Taskbar AI Quota Bars](https://windhawk.net/mods/taskbar-ai-quota)
+> by **[Cleroth](https://github.com/Cleroth)**. Maintained by
+> [lost_husky](https://github.com/DhakadG), who added the reset countdown, per-bar
+> sizing, the 25 placement anchors, theme-aware contrast, and the Windows 11 26H2
+> (build 26300) StackPanel tray fix.
 
 Shows Anthropic Claude and OpenAI/Codex AI agent and LLM subscription quota usage as
 compact bars on the Windows 11 taskbar, next to the system tray.

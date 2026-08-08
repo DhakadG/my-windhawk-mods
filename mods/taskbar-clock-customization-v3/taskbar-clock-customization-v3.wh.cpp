@@ -2,7 +2,7 @@
 // @id              taskbar-clock-customization-v3
 // @name            Taskbar Clock Customization v3
 // @description     Custom date/time format, news feed, weather, performance metrics (upload/download speed, CPU, RAM, GPU, battery), media player info, custom fonts and colors, and more
-// @version         3.1.70
+// @version         3.1.71
 // @author          DhakadG
 // @github          https://github.com/DhakadG
 // @homepage        https://losthusky.qzz.io/
@@ -7427,6 +7427,13 @@ void HandleLoadedModuleIfSystemTray(HMODULE module, LPCWSTR lpLibFileName)
         {
             Wh_ApplyHookOperations();
         }
+        else
+        {
+            // Release the claim. The exchange above is only there to stop two
+            // concurrent loads both hooking; a failed attempt must not latch, or
+            // the module that really does host the symbols never gets its turn.
+            g_systemTrayModuleHooked = false;
+        }
     }
 }
 
@@ -8008,10 +8015,20 @@ BOOL Wh_ModInit()
     {
         if (HMODULE systemTrayModule = GetSystemTrayModuleHandle())
         {
-            g_systemTrayModuleHooked = true;
-            if (!HookSystemTraySymbols(systemTrayModule))
+            if (HookSystemTraySymbols(systemTrayModule))
             {
-                return FALSE;
+                g_systemTrayModuleHooked = true;
+            }
+            else
+            {
+                // Do not latch, and do not fail the whole mod. On Windows 11 26H2
+                // (build 26300) taskbar.dll is always loaded but no longer hosts the
+                // winrt::SystemTray types - those moved to SystemTray.dll, which is
+                // loaded later than this runs in a freshly started Explorer. So the
+                // emergency taskbar.dll fallback resolves to the wrong module and the
+                // hook fails here legitimately. Leaving the flag clear is what lets
+                // the LoadLibraryExW hook take over when the real module arrives.
+                Wh_Log(L"HookSystemTraySymbols failed; waiting for the real module");
             }
         }
         else
@@ -8117,6 +8134,12 @@ void Wh_ModAfterInit()
                 if (HookSystemTraySymbols(systemTrayModule))
                 {
                     Wh_ApplyHookOperations();
+                }
+                else
+                {
+                    // Same as above: release the claim rather than latching a
+                    // failure, so SystemTray.dll still gets hooked when it loads.
+                    g_systemTrayModuleHooked = false;
                 }
             }
         }

@@ -3754,9 +3754,15 @@ static Grid BuildQuotaGrid(QuotaUiInstance& state) {
                         bool haveCursor = GetCursorPos(&cursor) != FALSE;
                         bool trackingHover = wasOpen || refs.reopenToolTipOnMove ||
                                              refs.manualToolTipOpen;
+                        // POINT.x/y are LONG, so std::abs gives a long; the thresholds
+                        // have to be UINT because that is what SystemParametersInfoW
+                        // writes into. Cast at the comparison - they are clamped to
+                        // [2, 32], so this never truncates.
                         if (trackingHover && refs.hasToolTipOpenCursor && haveCursor &&
-                            std::abs(cursor.x - refs.toolTipOpenCursor.x) < toolTipMoveThresholdX &&
-                            std::abs(cursor.y - refs.toolTipOpenCursor.y) < toolTipMoveThresholdY) {
+                            std::abs(cursor.x - refs.toolTipOpenCursor.x) <
+                                (LONG)toolTipMoveThresholdX &&
+                            std::abs(cursor.y - refs.toolTipOpenCursor.y) <
+                                (LONG)toolTipMoveThresholdY) {
                             return;
                         }
                         if (refs.manualToolTipTimer) refs.manualToolTipTimer.Stop();

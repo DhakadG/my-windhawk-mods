@@ -31,14 +31,26 @@ archive/                        superseded working copies, kept for reference on
 Windhawk compiles from `C:\ProgramData\Windhawk\ModsSource\`, which needs admin rights to write.
 So that directory stays the source of truth and this repo mirrors it:
 
-1. Edit and compile in the Windhawk editor as usual.
-2. Pull the result back into the repo:
+1. Edit in the repo, then verify **before** pasting anything into the editor:
+
+```bash
+pwsh -File scripts/check-mod.ps1 -Warnings && python scripts/check-settings.py
+```
+
+`check-mod.ps1` drives Windhawk's own bundled clang 20 (`C:\Program Files\Windhawk\Compiler`)
+with Windhawk's own `compile_flags.txt`, so it reproduces exactly the diagnostics the
+Windhawk editor shows. `check-settings.py` parses the `==WindhawkModSettings==` block,
+which clang cannot check — a malformed settings block still compiles and loads, and only
+fails later as `Failed to extract previous initial settings for engine`.
+
+2. Paste into the Windhawk editor and compile.
+3. Pull the result back into the repo:
 
 ```bash
 pwsh -File scripts/sync-from-modssource.ps1
 ```
 
-3. `git diff` to review, then commit.
+4. `git diff` to review, then commit.
 
 Installed versions can lag behind this repo — `win-x-hotcorners` here is 4.1.4 while 4.1.2 is
 what is currently installed. The sync script prints the version of everything it copies.

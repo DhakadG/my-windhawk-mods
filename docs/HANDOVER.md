@@ -114,30 +114,45 @@ The decision reached: **do both, with a clear split.**
   existing setting keys unchanged so nobody's configuration resets.
 - **Dashboard** becomes the place you *see*. Not a second config surface — a visual map.
 
-### Dashboard UI draft (to be built)
+### Dashboard UI draft — DONE, awaiting sign-off
 
-Needs a draft **before** implementation, and it must be something Windhawk XAML can
-actually express. Follow the fluent media player's popup for theme and construction
-(`taskbar-fluent-media-player.wh.cpp` — its mini-player flyout is the closest working
-reference for a modern surface built from a Windhawk mod).
+**[docs/hotcorners-dashboard-draft.html](hotcorners-dashboard-draft.html)** (also published at
+<https://claude.ai/code/artifact/5f3b97ba-c5ed-4db6-9b4f-18256f336b78>). Interactive: tabs
+switch, zones respond to hover, and it follows the viewer's theme so both of the mod's
+palettes are visible.
 
-Intended shape:
+Two corrections to what this section used to say:
 
-- A **tab strip** across the top, one tab per monitor, labelled with the monitor's friendly
-  name — the mod already identifies monitors by friendly name rather than list position
-  (that was the 4.1.4 fix), so the label and the setting agree. Fall back to the Windows
-  monitor number when the friendly name is unavailable or duplicated.
-- A **single rectangle centred in the panel** representing that monitor's screen, correctly
-  proportioned to its aspect ratio.
-- The **8 zones** (4 corners + 4 edges) drawn on the rectangle, each showing its configured
-  action. Unconfigured zones visibly inert rather than blank.
-- Hover/selection on a zone reveals the full action string; clicking it opens the
-  corresponding setting — or, if that is awkward, just tells the user which setting to open.
-- Read-only by default. Any editing capability is a later decision, not part of the first draft.
+- There are **12 zones, not 8** — 4 corners, 4 edges, 4 edge-centres (`ZONE_COUNT = 12`).
+- The dashboard **already draws the diagram**. `ZoneRectInDiagram()` lays out all twelve
+  today, and the mod already has a light/dark `Palette` and requests Mica. This is a
+  redesign of a working surface, not a new build — and it is plain **GDI, not XAML**.
 
-Open questions for the draft: how to represent alternate-action zones (`A | B`), and whether
-the rectangle should reflect real monitor arrangement or just be one screen at a time. Do the
-draft first, agree it, then implement.
+Proposed changes, all of them buildable with what the mod already owns:
+
+| Element | Today | Proposed |
+| --- | --- | --- |
+| Display picker | combo box (`IDC_MONITOR`) | tab strip, one tab per display, with a configured-zone count badge |
+| Disconnected display | listed identically | dimmed dot, still selectable |
+| Screen box | fixed proportions | derived from `MonitorInfo::rcMonitor` |
+| Zone labels | an action combo per zone | the action name drawn in the zone |
+| Editing | in the dashboard | in Windhawk settings |
+
+The two open questions are **answered in the draft** — overrule them if you disagree:
+
+1. **Alternate actions** → show the primary action plus a `⇄` badge, both spelled out in the
+   detail row. `Alt+S | Alt+H` cannot fit in a corner block, and truncating it misleads.
+2. **Arrangement view vs one screen at a time** → one screen at a time. An arrangement view
+   shrinks every screen to fit the widest span; at three displays the corner blocks are too
+   small to label, which defeats the diagram's only job.
+
+**Trap:** the centre zones sit *inside* the edge strips. The current code splits each edge
+into two segments around its centre block (the `secondHalf` parameter) precisely because they
+used to overlap — hovering a centre highlighted the whole edge. Preserve that split.
+
+Verdict on the dashboard: **keep it, read-only.** Drop the zone action combos, numeric fields,
+Save and Reset. Two surfaces writing the same store is the exact shape that produced the 4.1.3
+and 4.1.4 bugs. Deep-linking a zone into the settings page can come later.
 
 ---
 

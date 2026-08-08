@@ -5,6 +5,7 @@
 // @version         4.1.4
 // @author          lost_husky
 // @github          https://github.com/DhakadG
+// @donateUrl       https://ko-fi.com/losthusky_
 // @license         MIT
 // @include         windhawk.exe
 // @compilerOptions -ladvapi32 -lcomctl32 -lgdi32 -lole32 -lpowrprof -lshell32 -luser32
@@ -582,6 +583,23 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
   detection.
 - Display-layout changes are picked up even when Windows doesn't send
   `WM_DISPLAYCHANGE` (docking, monitor wake, RDP reconnect).
+
+## Support
+
+Windhawk renders the `@donateUrl` in the metadata block as a Donate button in the mod
+listing, but it only takes one link, so the rest live here.
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-losthusky__-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/losthusky_)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-losthusky__-FFDD00?logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/losthusky_)
+[![Playto](https://img.shields.io/badge/Playto-losthusky__-7C3AED)](https://www.playto.so/losthusky_)
+
+<!-- To add a platform: copy one badge line and fill in the four fields —
+       [![ALT](https://img.shields.io/badge/LABEL-HANDLE-HEXCOLOUR?logo=SLUG&logoColor=white)](URL)
+     Underscores in the handle must be doubled (losthusky__), and a literal dash in the
+     label must be doubled too (Ko--fi) — shields.io uses both as separators.
+     `logo=` only works for slugs simpleicons.org actually has; omit it otherwise.
+     Keep the lines consecutive so they render as one row.
+     Pending accounts: OnlyChai, BuyMeChai — drop the URLs in when they exist. -->
 */
 // ==/WindhawkModReadme==
 

@@ -118,7 +118,33 @@ This is a hard rule, not a preference.
 
 ---
 
-## 5. NEXT TASK — win-x-hotcorners settings + dashboard
+## 5. IN PROGRESS — win-x-hotcorners settings + dashboard
+
+**Landed in 4.2.0:** the Windhawk settings page (`displays[]` → `zones[]`, plus all
+globals), `ReadSettingsZones()` / `ApplySettingsGlobals()`, and the precedence rule in
+`ReloadConfig` — settings win; else a 4.1.x layout still runs; else globals only. The
+dashboard's Save now refuses with an explanation instead of writing a store nothing reads.
+
+**Still to do — the dashboard's GDI redesign**, agreed and drafted but not yet built:
+
+1. Replace the `IDC_MONITOR` combo with a tab strip (`SysTabControl32`, `TCS_OWNERDRAWFIXED`,
+   or owner-drawn buttons), one tab per display, configured-count badge, dimmed dot when the
+   display is absent.
+2. Reproportion `ZoneRectInDiagram` for legibility — corner `min(w,h)/5`, edge band `0.62c`,
+   centre block 22% — and derive the box's aspect from `MonitorInfo::rcMonitor`. **Keep the
+   `secondHalf` edge split.**
+3. Draw the action name in each zone: `DT_END_ELLIPSIS` horizontally, a font with
+   `lfEscapement`/`lfOrientation` of 900 for the left/right strips, clamped in corners.
+4. Detail panel under the diagram: action, arguments, and all six timings with each marked
+   *global* or *this zone* (`ZoneTuning`'s `-1` is the test).
+5. Delete the editing controls — zone action combos, numeric fields, Save, Reset — and the
+   now-dead `DashSave` / `ClearStoredConfig` write paths.
+
+Reference: [docs/hotcorners-dashboard-draft.html](hotcorners-dashboard-draft.html).
+
+---
+
+## 5b. Original brief (kept for the reasoning)
 
 The mod retired its settings page in 4.1.0 for a dashboard, because a flat list of ~40
 settings was unusable in the old Windhawk UI. **Windhawk v2 removes that constraint**:

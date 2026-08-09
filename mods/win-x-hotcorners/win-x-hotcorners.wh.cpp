@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         4.2.0
+// @version         4.2.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -229,7 +229,7 @@ Hot corners are disabled when any excluded process is the foreground window.
 
 # Changelog
 
-## What's New in v4.2.0
+## What's New in v4.2.1
 
 **The settings page is back.** It went away in 4.1.0 because forty settings in
 one flat list was unusable. Windhawk v2 renders them as collapsible groups, so
@@ -712,15 +712,15 @@ listing, but it only takes one link, so the rest live here.
         - cooldown: -1
           $name: Cooldown override (ms)
           $description: -1 keeps the global value.
-        - modifier: -1
+        - modifier: INHERIT
           $name: Modifier override
           $options:
-          - -1: Keep the global value
-          - 0: None
-          - 1: Ctrl
-          - 2: Alt
-          - 3: Shift
-          - 4: Win
+          - INHERIT: Keep the global value
+          - NONE: None
+          - CTRL: Ctrl
+          - ALT: Alt
+          - SHIFT: Shift
+          - WIN: Win
       $name: Zones
       $description: >-
         One entry per zone you want active on this display. A zone you do not
@@ -755,15 +755,15 @@ listing, but it only takes one link, so the rest live here.
 - cooldown: 300
   $name: Cooldown (ms)
   $description: Minimum gap between two firings of the same zone.
-- requireModifier: 0
+- requireModifier: NONE
   $name: Required modifier
   $description: A key that must be held for any zone to fire.
   $options:
-  - 0: None
-  - 1: Ctrl
-  - 2: Alt
-  - 3: Shift
-  - 4: Win
+  - NONE: None
+  - CTRL: Ctrl
+  - ALT: Alt
+  - SHIFT: Shift
+  - WIN: Win
 
 - disableOnFullscreen: true
   $name: Skip while a window is fullscreen
@@ -3193,6 +3193,24 @@ static int ParseZoneName(const std::wstring &s)
     return -1;
 }
 
+// Windhawk only accepts $options on a string setting, so the modifier arrives
+// by name. -1 is the "inherit" marker the zone tuning already uses; the global
+// has no INHERIT option, so its caller maps a negative result onto None.
+static int ParseModifierName(const std::wstring &s)
+{
+    if (s == L"NONE")
+        return 0;
+    if (s == L"CTRL")
+        return 1;
+    if (s == L"ALT")
+        return 2;
+    if (s == L"SHIFT")
+        return 3;
+    if (s == L"WIN")
+        return 4;
+    return -1;   // INHERIT, empty, or anything unrecognised
+}
+
 // Windhawk has no array-length call, so both loops run until the first
 // entry whose required string comes back empty - the standard idiom, and
 // what makes an empty Display name terminate the list.
@@ -3254,8 +3272,8 @@ static std::vector<MonitorZoneConfig> ReadSettingsZones()
                 Wh_GetIntSetting(L"displays[%d].zones[%d].knock", i, z);
             cfg.zones[zi].tuning.cooldown =
                 Wh_GetIntSetting(L"displays[%d].zones[%d].cooldown", i, z);
-            cfg.zones[zi].tuning.modifier =
-                Wh_GetIntSetting(L"displays[%d].zones[%d].modifier", i, z);
+            cfg.zones[zi].tuning.modifier = ParseModifierName(
+                GetSettingStr(L"displays[%d].zones[%d].modifier", i, z));
 
             if (act != CornerAction::Nothing)
                 any = true;
@@ -3281,7 +3299,8 @@ static void ApplySettingsGlobals(ModSettings &s)
     s.settleMs = clamp(Wh_GetIntSetting(L"settle"), 0, 10000);
     s.knockWindowMs = clamp(Wh_GetIntSetting(L"knock"), 0, 10000);
     s.cooldownMs = clamp(Wh_GetIntSetting(L"cooldown"), 0, 60000);
-    s.requireModifier = clamp(Wh_GetIntSetting(L"requireModifier"), 0, 4);
+    int mod = ParseModifierName(GetSettingStr(L"requireModifier", 0));
+    s.requireModifier = (mod < 0) ? 0 : mod;
     s.disableOnFullscreen = Wh_GetIntSetting(L"disableOnFullscreen") != 0;
     s.disableDuringDrag = Wh_GetIntSetting(L"disableDuringDrag") != 0;
     s.avoidTaskbar = Wh_GetIntSetting(L"avoidTaskbar") != 0;

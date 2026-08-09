@@ -34,6 +34,63 @@ def extract(text):
     return body
 
 
+def walk(node, path, problems):
+    """Check Windhawk's schema rules, which valid YAML can still break.
+
+    Parsing is necessary but not sufficient: Windhawk rejects a block that parses
+    cleanly if it breaks one of these, and reports it as
+    "Failed to parse settings: instance[0]...", with a path that is not a line number.
+    """
+    if isinstance(node, list):
+        for i, item in enumerate(node):
+            walk(item, f"{path}[{i}]", problems)
+        return
+    if not isinstance(node, dict):
+        return
+
+    # A setting record is {name: default, $name: ..., $options: [...]}. The
+    # default is the one key not starting with '$'.
+    plain = [k for k in node if not str(k).startswith("$")]
+
+    if "$options" in node:
+        opts = node["$options"]
+        if len(plain) != 1:
+            problems.append(f"{path}: $options needs exactly one value key, found {plain}")
+        else:
+            key = plain[0]
+            default = node[key]
+            # The rule that bit: Windhawk allows $options only on a string, or
+            # on a list of strings for a multi-select. An int default fails with
+            # "must be a string or array of strings to use $options".
+            ok = isinstance(default, str) or (
+                isinstance(default, list) and all(isinstance(x, str) for x in default)
+            )
+            if not ok:
+                problems.append(
+                    f"{path}.{key}: $options requires a string or list-of-strings "
+                    f"default, got {type(default).__name__} ({default!r})"
+                )
+        if not isinstance(opts, list):
+            problems.append(f"{path}: $options must be a list")
+        else:
+            for j, opt in enumerate(opts):
+                if not isinstance(opt, dict) or len(opt) != 1:
+                    problems.append(f"{path}.$options[{j}]: each option is one key: label pair")
+                elif not isinstance(next(iter(opt)), str):
+                    problems.append(
+                        f"{path}.$options[{j}]: option key must be a string, "
+                        f"got {next(iter(opt))!r}"
+                    )
+
+    for meta in ("$name", "$description"):
+        if meta in node and not isinstance(node[meta], str):
+            problems.append(f"{path}.{meta} must be a string")
+
+    for k, v in node.items():
+        if not str(k).startswith("$"):
+            walk(v, f"{path}.{k}" if path else str(k), problems)
+
+
 def check(path):
     text = path.read_text(encoding="utf-8", errors="replace")
     block = extract(text)
@@ -55,6 +112,14 @@ def check(path):
             print(f"   -> {path.name}:{mark.line + offset}")
             if 0 <= mark.line < len(lines):
                 print(f"   -> {lines[mark.line].strip()}")
+        return False
+
+    problems = []
+    walk(parsed, "", problems)
+    if problems:
+        print(f"== {path.name}")
+        for p in problems:
+            print(f"   FAILED: {p}")
         return False
 
     count = len(parsed) if isinstance(parsed, list) else 1

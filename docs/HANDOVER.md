@@ -36,10 +36,19 @@ pwsh -File scripts/check-mod.ps1 -Warnings && python scripts/check-settings.py
 
 - `check-mod.ps1` — real type check (`-fsyntax-only -Wall`). Not a link; it will not produce
   a loadable DLL. Every error worth catching before a paste is a front-end error.
-- `check-settings.py` — parses the `==WindhawkModSettings==` block with PyYAML. **clang
-  cannot catch this class of bug**: a malformed settings block compiles and loads fine, then
-  fails later as `Failed to extract previous initial settings for engine`. Its byte/line/column
-  is relative to the YAML block, not the `.cpp`, which is why the numbers never match the editor.
+- `check-settings.py` — parses the `==WindhawkModSettings==` block with PyYAML **and checks
+  Windhawk's schema rules on top**. **clang cannot catch this class of bug**: a malformed
+  settings block compiles and loads fine, then fails later as `Failed to extract previous
+  initial settings for engine`. Its byte/line/column is relative to the YAML block, not the
+  `.cpp`, which is why the numbers never match the editor.
+  - Valid YAML is **necessary but not sufficient**. `$options` works only on a string, or on
+    a list of strings for a multi-select — an integer default is rejected at load with
+    `must be a string or array of strings to use $options`, and the path it reports
+    (`instance[0].displays[0][1].zones[0][8].modifier`) is not a line number. The checker now
+    reproduces that path. Use `INHERIT`/`NONE`/`CTRL`-style string enums and map them in code.
+  - When adding a rule here, run it against the **other** mods first. The first version of the
+    `$options` rule flagged `taskbar-fluent-media-player-fork`, which works — the rule was
+    wrong, not the mod.
 - All five mods currently pass with **zero warnings**.
 - `scripts/cpp_sanity_check.ps1` is the older heuristic checker. Its brace/paren counts are
   wrong on files containing `LR"(...)"` raw strings (the mangled symbol literals) — compare

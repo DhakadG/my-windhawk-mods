@@ -127,29 +127,37 @@ This is a hard rule, not a preference.
 
 ---
 
-## 5. IN PROGRESS — win-x-hotcorners settings + dashboard
+## 5. DONE — win-x-hotcorners settings + dashboard
 
-**Landed in 4.2.0:** the Windhawk settings page (`displays[]` → `zones[]`, plus all
-globals), `ReadSettingsZones()` / `ApplySettingsGlobals()`, and the precedence rule in
-`ReloadConfig` — settings win; else a 4.1.x layout still runs; else globals only. The
-dashboard's Save now refuses with an explanation instead of writing a store nothing reads.
+**4.2.1** — the Windhawk settings page (`displays[]` → `zones[]`, plus all globals),
+`ReadSettingsZones()` / `ApplySettingsGlobals()`, and the precedence rule in `ReloadConfig`:
+settings win; else a 4.1.x layout still runs untouched; else globals only. Confirmed working
+on the real machine — the legacy layout kept firing with its own globals (corner 8 / edge 2).
 
-**Still to do — the dashboard's GDI redesign**, agreed and drafted but not yet built:
+**4.3.0** — the dashboard is a read-only picture. Tab per display with a configured-zone
+count and a dot when absent; screen box at the display's real aspect ratio; action name drawn
+in each zone (vertical text on the side strips via `lfEscapement`/`lfOrientation` 900); a
+detail panel showing all six timings with each marked *global* or *this zone*; wildcard-
+inherited zones say so. Editing is gone, and so are `DashSave`, `ClearStoredConfig` and the
+whole slot/store-writing layer — the file got **275 lines shorter** despite gaining a
+settings page.
 
-1. Replace the `IDC_MONITOR` combo with a tab strip (`SysTabControl32`, `TCS_OWNERDRAWFIXED`,
-   or owner-drawn buttons), one tab per display, configured-count badge, dimmed dot when the
-   display is absent.
-2. Reproportion `ZoneRectInDiagram` for legibility — corner `min(w,h)/5`, edge band `0.62c`,
-   centre block 22% — and derive the box's aspect from `MonitorInfo::rcMonitor`. **Keep the
-   `secondHalf` edge split.**
-3. Draw the action name in each zone: `DT_END_ELLIPSIS` horizontally, a font with
-   `lfEscapement`/`lfOrientation` of 900 for the left/right strips, clamped in corners.
-4. Detail panel under the diagram: action, arguments, and all six timings with each marked
-   *global* or *this zone* (`ZoneTuning`'s `-1` is the test).
-5. Delete the editing controls — zone action combos, numeric fields, Save, Reset — and the
-   now-dead `DashSave` / `ClearStoredConfig` write paths.
+Key design point: **the dashboard reads `g_settings`, not the value store.** That is what
+makes it correct for both configuration sources without knowing which is live, and it is why
+it can no longer drift from what actually fires. `DashFillZones` mirrors `ResolveZone`
+exactly — own configuration first, then wildcard, decided *per zone*.
+
+Geometry is verified rather than eyeballed: `scratchpad/zonegeom.cpp` copies
+`ZoneRectInDiagram` verbatim and asserts the 16 pieces tile the border ring with no overlap,
+no gap and nothing outside the box, at six aspect ratios including portrait. Re-run it if you
+touch the proportions.
 
 Reference: [docs/hotcorners-dashboard-draft.html](hotcorners-dashboard-draft.html).
+
+**Not done, deliberately:** the tray's "skip while fullscreen" / "skip while dragging"
+toggles still write `ovr_*`. They change the live configuration immediately, but in
+settings mode the next reload restores the settings value. They are quick toggles, so
+reverting is arguably right — but if it ever annoys, that is the reason.
 
 ---
 

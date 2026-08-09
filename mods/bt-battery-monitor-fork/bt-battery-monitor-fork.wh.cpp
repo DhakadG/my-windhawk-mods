@@ -2,7 +2,7 @@
 // @id              bt-battery-monitor-fork
 // @name            BT Battery Monitor - Fork
 // @description     Fork of BlackPaw's BT Battery Monitor, adding earbud and speaker icons and battery readout for Bluetooth audio devices. Shows Bluetooth device battery levels in the system tray.
-// @version         1.1.0
+// @version         1.1.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -42,7 +42,7 @@ Right-click the tray icon to see every connected Bluetooth device with its batte
 
 ### Low Battery Warning
 
-When any connected device drops below the configured threshold (default 30%), the tray icon starts alternating between solid red and black every second. Hover over the icon to see which device is running low and exactly how much juice it has left.
+When any connected device drops below the configured threshold (default 30%), the tray icon starts alternating between solid red and the device's own icon every second. Hover over the icon to see which device is running low and exactly how much juice it has left.
 
 ### Device Icons
 
@@ -66,6 +66,10 @@ Pick how often the mod checks for updates, from **every second** to **once an ho
 ---
 
 ## Changelog
+
+# 1.1.1
+- **Fixed:** The tray icon appeared to vanish whenever a device was low. The low-battery warning alternated between red and a solid *black* square, and black is invisible on a dark taskbar. It now alternates between red and the device's own icon, so you can still tell what is connected while it warns you.
+- **Fixed:** If an icon preset failed to load, the mod published a null icon and the shell drew nothing. It now falls back instead.
 
 # 1.1.0
 - **Fixed:** Battery never appeared for classic Bluetooth devices — headphones, earbuds and speakers all showed `--`. The device-address property was being looked up under a GUID that no device node actually publishes, so the lookup failed before any battery value could be matched to a device. BLE peripherals like keyboards and mice were unaffected, which is what made this look like a hardware limitation.
@@ -181,7 +185,6 @@ static HICON g_hIconSpeaker = NULL;
 static HICON g_hIconController = NULL;
 static HICON g_hIconMulti = NULL;
 static HICON g_hIconLowBatRed = NULL;
-static HICON g_hIconLowBatBlack = NULL;
 static HBITMAP g_hWindHawkBmp = nullptr;
 
 static WCHAR g_windhawkPath[MAX_PATH] = {};
@@ -361,7 +364,6 @@ static void DestroyIcons() {
     if (g_hIconController) { DestroyIcon(g_hIconController); g_hIconController = NULL; }
     if (g_hIconMulti) { DestroyIcon(g_hIconMulti); g_hIconMulti = NULL; }
     if (g_hIconLowBatRed) { DestroyIcon(g_hIconLowBatRed); g_hIconLowBatRed = NULL; }
-    if (g_hIconLowBatBlack) { DestroyIcon(g_hIconLowBatBlack); g_hIconLowBatBlack = NULL; }
     if (g_hWindHawkBmp) { DeleteObject(g_hWindHawkBmp); g_hWindHawkBmp = nullptr; }
 }
 
@@ -383,7 +385,6 @@ static bool CreateIcons() {
         g_hIconDisconnected = CreateXIcon(16);
 
     g_hIconLowBatRed = CreateColorIcon(255, 0, 0, 16);
-    g_hIconLowBatBlack = CreateColorIcon(0, 0, 0, 16);
 
     HICON hWhIcon = nullptr;
     int whIconIndices[] = {98, 94, 95, 6};
@@ -914,24 +915,37 @@ static void UpdateTrayIcon() {
     nid.guidItem = GUID_BTBAT_TRAY;
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_GUID | NIF_SHOWTIP;
     
-    int threshold = g_warningThreshold.load();
-    if (lowest >= 0 && lowest < threshold) {
-        bool flashState = (GetTickCount64() / 1000) % 2 == 0;
-        nid.hIcon = flashState ? g_hIconLowBatRed : g_hIconLowBatBlack;
-    } else if (devCount == 0) {
-        nid.hIcon = g_hIconDisconnected;
+    // Resolve the device icon first. The low-battery warning alternates against
+    // it rather than against a solid black square: on a dark taskbar the black
+    // phase was simply invisible, so a low device read as the icon vanishing.
+    HICON deviceIcon;
+    if (devCount == 0) {
+        deviceIcon = g_hIconDisconnected;
     } else if (devCount == 1) {
         switch (singleType) {
-            case DEVICE_KEYBOARD: nid.hIcon = g_hIconKeyboard; break;
-            case DEVICE_MOUSE: nid.hIcon = g_hIconMouse; break;
-            case DEVICE_HEADPHONES: nid.hIcon = g_hIconHeadphones; break;
-            case DEVICE_EARBUDS: nid.hIcon = g_hIconEarbuds; break;
-            case DEVICE_SPEAKER: nid.hIcon = g_hIconSpeaker; break;
-            case DEVICE_CONTROLLER: nid.hIcon = g_hIconController; break;
-            default: nid.hIcon = g_hIconController; break;
+            case DEVICE_KEYBOARD: deviceIcon = g_hIconKeyboard; break;
+            case DEVICE_MOUSE: deviceIcon = g_hIconMouse; break;
+            case DEVICE_HEADPHONES: deviceIcon = g_hIconHeadphones; break;
+            case DEVICE_EARBUDS: deviceIcon = g_hIconEarbuds; break;
+            case DEVICE_SPEAKER: deviceIcon = g_hIconSpeaker; break;
+            case DEVICE_CONTROLLER: deviceIcon = g_hIconController; break;
+            default: deviceIcon = g_hIconController; break;
         }
     } else {
-        nid.hIcon = g_hIconMulti;
+        deviceIcon = g_hIconMulti;
+    }
+
+    // A preset that failed to extract would otherwise publish a null icon,
+    // which the shell draws as blank.
+    if (!deviceIcon)
+        deviceIcon = g_hIconMulti ? g_hIconMulti : g_hIconController;
+
+    int threshold = g_warningThreshold.load();
+    if (devCount > 0 && lowest >= 0 && lowest < threshold
+        && (GetTickCount64() / 1000) % 2 == 0) {
+        nid.hIcon = g_hIconLowBatRed;
+    } else {
+        nid.hIcon = deviceIcon;
     }
 
     if (devCount == 0) {

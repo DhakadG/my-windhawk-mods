@@ -182,7 +182,7 @@
     align-items: center;
     gap: 4px;
   }
-  .screenwrap { width: 100%; max-width: 620px; }
+  .screenwrap { width: 100%; max-width: 700px; }
   .screen {
     position: relative;
     width: 100%;
@@ -195,6 +195,7 @@
   }
   .zone {
     position: absolute;
+    box-sizing: border-box;
     border: 1px solid transparent;
     background: color-mix(in srgb, var(--w-accent) 17%, transparent);
     border-color: color-mix(in srgb, var(--w-accent) 55%, transparent);
@@ -202,12 +203,39 @@
     align-items: center;
     justify-content: center;
     text-align: center;
-    font-size: 10.5px;
+    font-size: 11px;
     line-height: 1.15;
-    padding: 2px;
     cursor: pointer;
     overflow: hidden;
     color: var(--w-text);
+  }
+  /* The label is a separate box so it can be clipped without the zone's
+     border moving, and rotated for the tall, narrow side strips. */
+  .zone .lab {
+    min-width: 0;
+    min-height: 0;
+    max-width: 100%;
+    max-height: 100%;
+    padding: 2px 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Corners are square and small; a long action name gets clamped rather than
+     spilling out. The detail row below always carries the full string. */
+  .zone.corner .lab {
+    white-space: normal;
+    line-height: 1.12;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    text-overflow: clip;
+    word-break: break-word;
+  }
+  .zone.vert .lab {
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    padding: 3px 2px;
   }
   .zone.empty {
     background: color-mix(in srgb, var(--w-text) 5%, transparent);
@@ -236,29 +264,44 @@
 
   .detail {
     width: 100%;
-    max-width: 620px;
-    margin-top: 16px;
+    max-width: 700px;
+    margin-top: 18px;
     border-top: 1px solid var(--w-border);
     padding-top: 12px;
-    display: grid;
-    grid-template-columns: minmax(0,1fr) auto;
-    gap: 4px 16px;
-    align-items: start;
-    min-height: 62px;
+    min-height: 150px;
   }
-  .detail .dname { font-size: 13px; font-weight: 600; }
-  .detail .dact { font-size: 12.5px; color: var(--w-dim); grid-column: 1; }
-  .detail .dkey { font-family: var(--mono); font-size: 11px; color: var(--w-dim); grid-column: 1; }
+  .detail .dhead {
+    display: flex; align-items: flex-start; gap: 16px; margin-bottom: 10px;
+  }
+  .detail .dhead .txt { flex: 1; min-width: 0; }
+  .detail .dname { font-size: 13.5px; font-weight: 600; }
+  .detail .dact { font-size: 12.5px; color: var(--w-dim); }
+  .detail .dkey { font-family: var(--mono); font-size: 11px; color: var(--w-dim); }
   .detail .dbtn {
-    grid-column: 2; grid-row: 1 / span 3;
-    align-self: center;
     font-family: inherit; font-size: 12.5px;
     background: var(--w-field); color: var(--w-text);
     border: 1px solid var(--w-border);
     padding: 6px 13px; cursor: pointer; white-space: nowrap;
   }
   .detail .dbtn:hover { border-color: var(--w-accent); }
-  .detail .placeholder { color: var(--w-dim); font-size: 12.5px; grid-column: 1 / -1; }
+  .detail .placeholder { color: var(--w-dim); font-size: 12.5px; }
+
+  .tuning { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .tuning th {
+    font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--w-dim); font-weight: 600; text-align: left;
+    padding: 0 10px 5px 0; border-bottom: 1px solid var(--w-border);
+  }
+  .tuning td {
+    padding: 4px 10px 4px 0;
+    border-bottom: none;
+    color: var(--w-text);
+    font-variant-numeric: tabular-nums;
+  }
+  .tuning td.src { color: var(--w-dim); font-size: 11.5px; width: 1%; white-space: nowrap; }
+  .tuning tr.over td { color: var(--w-text); }
+  .tuning tr.over td.src { color: var(--w-accent); font-weight: 600; }
+  .tuning td.lbl { color: var(--w-dim); width: 1%; white-space: nowrap; }
 
   .statusbar {
     border-top: 1px solid var(--w-border);
@@ -377,7 +420,7 @@
       <span>Read-only — edit in Windhawk settings</span>
     </div>
   </div>
-  <figcaption>Interactive: switch tabs, hover or click a zone. Geometry is computed with the same ratios as the C++ (<code>c = min(w,h)/6</code>, <code>t = c/2</code>, centre block <code>w/5</code> &times; <code>h/5</code>), so what you see here is what GDI would paint. Follows your theme — toggle it to see the mod's light palette.</figcaption>
+  <figcaption>Interactive: switch tabs, hover or click a zone. The first tab is your real configuration as the mod logs it; the second is filled in to show every state at once. Blocks tile the border exactly — corner <code>c = min(w,h)/5</code>, edge band <code>0.62c</code>, centre block 22% of its axis. Follows your theme, so toggling it shows the mod's light palette too.</figcaption>
 </figure>
 
 <h2>What changed, and why</h2>
@@ -415,6 +458,18 @@
       <td>Action combo per zone</td>
       <td>Action name in the zone</td>
       <td>The map becomes readable at a glance instead of being a form laid out in a square.</td>
+    </tr>
+    <tr>
+      <td>Zone detail</td>
+      <td>Action only</td>
+      <td>Action, arguments, and every timing value <em>in effect</em> — each marked global or overridden</td>
+      <td>A zone inherits five numbers it never shows you. "Why did this one fire late?" was unanswerable without reading the settings store by hand.</td>
+    </tr>
+    <tr>
+      <td>Long action names</td>
+      <td>Overflowed the zone</td>
+      <td>Clamped in the block, spelled out in the detail row</td>
+      <td>A corner block is square and small; "Switch to Last Window" never fits. Side strips get vertical text, which is the only way "Notification Centre" sits inside one.</td>
     </tr>
     <tr>
       <td>Editing</td>
@@ -514,29 +569,38 @@
 
   var MONITORS = [
     {
-      name: "Built-in display", sub: "3072 × 1728 · primary",
-      w: 3072, h: 1728, live: true,
+      // Exactly what the mod logs today.
+      name: "DELL S2725QC", sub: "3840 × 2160 · primary",
+      w: 3840, h: 2160, live: true,
+      zones: {
+        TL: "Task View", TR: null, BL: null, BR: "Switch to Last Window",
+        ET: null, EB: null, EL: null, ER: null,
+        CT: null, CB: null, CL: null, CR: null
+      },
+      overrides: { BR: {cooldown: 500} }
+    },
+    {
+      // Illustrative: a fully configured display, to show every state at once.
+      name: "Built-in display", sub: "3072 × 1728 · not connected",
+      w: 3072, h: 1728, live: false,
       zones: {
         TL: "Task View", TR: "Show Desktop", BL: "Start Menu", BR: null,
         ET: "Quick Settings", EB: "Mute", EL: null, ER: "Notification Centre",
         CT: "Screenshot", CB: {label: "Minimise", alt: "Maximise"},
         CL: "Desktop ←", CR: "Desktop →"
-      }
-    },
-    {
-      name: "DELL S2725QC", sub: "3840 × 2160 · not connected",
-      w: 3840, h: 2160, live: false,
-      zones: {
-        TL: "Task View", TR: null, BL: null, BR: "Lock",
-        ET: null, EB: null, EL: null, ER: "Quick Settings",
-        CT: null, CB: null, CL: null, CR: null
+      },
+      overrides: {
+        TL: {delay: 150},
+        CB: {modifier: 2, knock: 400},
+        ER: {size: 16, cooldown: 600}
       }
     },
     {
       name: "All displays", sub: "fallback for anything unconfigured",
       w: 16, h: 9, live: true, wildcard: true,
       zones: {
-        TL: null, TR: "Show Desktop", BL: null, BR: null,
+        TL: null, TR: {label: "Custom Command", args: "ms-settings:display"},
+        BL: null, BR: null,
         ET: null, EB: null, EL: null, ER: null,
         CT: null, CB: null, CL: null, CR: null
       }
@@ -573,17 +637,22 @@
     return n;
   }
 
-  // Same ratios as ZoneRectInDiagram(), expressed as percentages of each axis.
+  // Schematic proportions, not to scale — the real zones are 8px corners and a
+  // 2px edge, which is invisible at any diagram size. What has to be true is
+  // that the blocks tile the border exactly, with no overlap and no gap.
+  //
+  // The corner block stays square by deriving from the shorter side. The edge
+  // band is thick enough to hold a label; at the old c/2 a side strip was ~57px
+  // and "Notification Centre" spilled outside the screen box.
   function geometry(w, h) {
-    var box = 100 / 1;                 // percentage space
     var minSide = Math.min(w, h);
-    var cX = (minSide / 6) / w * 100;  // corner block, % of width
-    var cY = (minSide / 6) / h * 100;  // corner block, % of height
-    var tX = cX / 2, tY = cY / 2;      // edge thickness
-    var cwX = 20, chY = 20;            // centre block: w/5, h/5
-    var x0 = 50 - cwX / 2, x1 = 50 + cwX / 2;
-    var y0 = 50 - chY / 2, y1 = 50 + chY / 2;
-    void box;
+    var c  = minSide / 5;              // corner block, in monitor units
+    var t  = c * 0.62;                 // edge band thickness
+    var cX = c / w * 100, cY = c / h * 100;
+    var tX = t / w * 100, tY = t / h * 100;
+    var cw = 22, ch = 22;              // centre block extent, % of each axis
+    var x0 = 50 - cw / 2, x1 = 50 + cw / 2;
+    var y0 = 50 - ch / 2, y1 = 50 + ch / 2;
     return {cX:cX, cY:cY, tX:tX, tY:tY, x0:x0, x1:x1, y0:y0, y1:y1};
   }
 
@@ -644,25 +713,32 @@
 
     Object.keys(META).forEach(function (key) {
       var act = actionOf(m.zones[key]);
+      var vertical = (key === "EL" || key === "ER" || key === "CL" || key === "CR");
+      var corner = (key === "TL" || key === "TR" || key === "BL" || key === "BR");
+      // A split edge has two segments; the wider one carries the label.
+      var lead = 0;
+      if (R[key].length > 1 && R[key][1][2] * R[key][1][3] > R[key][0][2] * R[key][0][3])
+        lead = 1;
+
       R[key].forEach(function (r, idx) {
         var d = document.createElement("div");
-        d.className = "zone" + (act ? "" : " empty") + (selected === key ? " sel" : "");
+        d.className = "zone"
+          + (act ? "" : " empty")
+          + (selected === key ? " sel" : "")
+          + (vertical ? " vert" : "")
+          + (corner ? " corner" : "");
         d.style.left = r[0] + "%";
         d.style.top = r[1] + "%";
         d.style.width = r[2] + "%";
         d.style.height = r[3] + "%";
-        d.tabIndex = 0;
+        d.tabIndex = idx === lead ? 0 : -1;
         d.setAttribute("role", "button");
         d.setAttribute("aria-label", META[key][0] + ": " + (act ? act.label : "not set"));
-        // Only the first segment of a split edge carries the label.
-        if (idx === 0) {
-          d.textContent = act ? act.label : "";
-          if (act && act.alt) {
-            var s = document.createElement("span");
-            s.className = "alt";
-            s.textContent = A;
-            d.appendChild(s);
-          }
+        if (idx === lead && act) {
+          var lab = document.createElement("span");
+          lab.className = "lab";
+          lab.textContent = act.label + (act.alt ? " " + A : "");
+          d.appendChild(lab);
         }
         d.addEventListener("mouseenter", function () { showDetail(key); });
         d.addEventListener("focus", function () { showDetail(key); });
@@ -679,41 +755,99 @@
     statEl.textContent = configured(m) + " of 12 zones configured";
   }
 
+  // The globals from the user's own log line:
+  //   Sizes: corner 8px, edge 2px.  Timing: delay 0ms, pass-through guard 1ms,
+  //   cooldown 300ms.
+  var GLOBAL = {size: 8, delay: 0, settle: 1, knock: 0, cooldown: 300, modifier: 0};
+
+  var TUNING = [
+    ["size",     "Size",     function (v) { return v + " px"; }],
+    ["delay",    "Delay",    function (v) { return v + " ms"; }],
+    ["settle",   "Pass-through guard", function (v) { return v + " ms"; }],
+    ["knock",    "Knock window", function (v) { return v === 0 ? "off" : v + " ms"; }],
+    ["cooldown", "Cooldown", function (v) { return v + " ms"; }],
+    ["modifier", "Modifier", function (v) {
+      return ["none", "Ctrl", "Alt", "Shift", "Win"][v] || "none";
+    }]
+  ];
+
   function showDetail(key) {
     var m = MONITORS[active];
     var act = actionOf(m.zones[key]);
+    var over = (m.overrides && m.overrides[key]) || {};
     detailEl.innerHTML = "";
+
+    var head = document.createElement("div");
+    head.className = "dhead";
+    var txt = document.createElement("div");
+    txt.className = "txt";
 
     var n = document.createElement("div");
     n.className = "dname";
     n.textContent = META[key][0];
-    detailEl.appendChild(n);
+    txt.appendChild(n);
 
     var a = document.createElement("div");
     a.className = "dact";
     if (!act) {
       a.textContent = "Not set — this zone does nothing.";
     } else if (act.alt) {
-      a.textContent = "Alternates: " + act.label + "  " + A + "  " + act.alt;
+      a.textContent = "Alternates on each trigger: " + act.label + "  " + A + "  " + act.alt;
     } else {
-      a.textContent = act.label;
+      a.textContent = act.label + (act.args ? "  —  " + act.args : "");
     }
-    detailEl.appendChild(a);
+    txt.appendChild(a);
 
     var k = document.createElement("div");
     k.className = "dkey";
-    k.textContent = META[key][1] + (m.wildcard ? "  (applies to any unconfigured display)" : "");
-    detailEl.appendChild(k);
+    k.textContent = META[key][1] + (m.wildcard ? "   applies to any unconfigured display" : "");
+    txt.appendChild(k);
+
+    head.appendChild(txt);
 
     var btn = document.createElement("button");
     btn.className = "dbtn";
     btn.type = "button";
     btn.textContent = "Change in settings";
-    detailEl.appendChild(btn);
+    head.appendChild(btn);
+    detailEl.appendChild(head);
+
+    if (!act) return;
+
+    var t = document.createElement("table");
+    t.className = "tuning";
+    t.innerHTML = "<thead><tr><th>Setting</th><th>In effect</th><th>From</th></tr></thead>";
+    var tb = document.createElement("tbody");
+
+    TUNING.forEach(function (row) {
+      var field = row[0], label = row[1], fmt = row[2];
+      var overridden = Object.prototype.hasOwnProperty.call(over, field);
+      var value = overridden ? over[field] : GLOBAL[field];
+
+      var tr = document.createElement("tr");
+      if (overridden) tr.className = "over";
+
+      var c1 = document.createElement("td");
+      c1.className = "lbl";
+      c1.textContent = label;
+
+      var c2 = document.createElement("td");
+      c2.textContent = fmt(value);
+
+      var c3 = document.createElement("td");
+      c3.className = "src";
+      c3.textContent = overridden ? "this zone" : "global";
+
+      tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3);
+      tb.appendChild(tr);
+    });
+
+    t.appendChild(tb);
+    detailEl.appendChild(t);
   }
 
   function clearDetail() {
-    detailEl.innerHTML = '<span class="placeholder">Hover a zone to see what it does.</span>';
+    detailEl.innerHTML = '<span class="placeholder">Hover or click a zone to see its action and the settings actually in effect for it.</span>';
   }
 
   function render() {

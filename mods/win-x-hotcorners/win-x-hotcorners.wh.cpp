@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         4.3.0
+// @version         4.4.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -50,8 +50,13 @@ If all you want is one specific behaviour, a smaller mod may suit you better:
   model are the one exception — see *Identifying your monitors*.)
 - **Per-monitor DPI correct** — detection runs per-monitor-DPI-aware, so
   zones land in the right place on mixed-scaling setups.
-- **Screen edges** — trigger actions on the top, bottom, left, or right edge
-  of any monitor.
+- **Screen edges, in three parts** — each edge is split into a start, a middle
+  and an end, configured separately. Give neighbouring parts the same action and
+  they merge back into one, so you get whichever of `ABC`, `AAB`, `ABB` or `AAA`
+  you want without a mode switch. See *Dividing an edge*.
+- **Knock to trigger** — set a knock window on any zone, corners included, and a
+  single arrival does nothing: you have to leave and come back within the window.
+  Handy on a corner you brush past often.
 - **Configurable zone size**, optional dwell delay, and a cooldown timer.
 - **Fullscreen protection** — auto-detects games, presentations, and D3D
   fullscreen apps.
@@ -148,6 +153,42 @@ taskbar to keep it there.
 | Custom Command | Launch any executable, path, or URL |
 | Nothing | Disabled (default) |
 
+## Dividing an edge
+
+Every edge runs between the two corners it touches and is divided into three
+segments — for the top and bottom edge those are **left, centre, right**; for
+the left and right edge, **top, middle, bottom**. The centre segment's width is
+the *Edge centre width* setting, as a percentage of the edge.
+
+You do not choose a "mode". Configure the three segments and the mod works out
+the shape:
+
+| You set | You get |
+| --- | --- |
+| All three the same | One zone spanning the whole edge |
+| Left + centre same, right different | Two zones |
+| All three different | Three zones |
+| Only the centre | One zone in the middle of the edge |
+| Left and right same, centre unset | Two zones with a dead gap between them |
+
+Neighbouring segments merge only when they are *identical* — same action, same
+arguments, same overrides. Two segments running the same action with different
+cooldowns stay separate, because a merged zone could only carry one cooldown.
+
+Merging is not cosmetic. Three separate zones all running Task View would each
+re-arm as the pointer crossed a seam, so sliding along the edge would fire it
+repeatedly; one merged zone fires once.
+
+## Knock to trigger
+
+Set **Knock window** on a zone — globally, or per zone — and a single arrival
+never fires it. The zone arms only when you leave and come back within that many
+milliseconds. `0` turns it off.
+
+This works on every zone, corners included, so a corner you keep brushing past
+on the way to something else can be made deliberate. 400 ms is a comfortable
+double-knock; below about 200 ms it starts to need intent.
+
 ## Identifying your monitors
 
 The dashboard has one tab per display, labelled with its name, so normally there
@@ -230,6 +271,27 @@ Hot corners are disabled when any excluded process is the foreground window.
 **Example:** `photoshop.exe;premiere.exe;blender.exe`
 
 # Changelog
+
+## What's New in v4.4.0
+
+- **Every edge is now three separate zones** — start, middle and end. The two
+  outer stretches used to share one configuration, so `ABC` was impossible.
+- **Neighbouring segments with the same action merge back into one.** That is
+  what makes `AAA`, `AAB`, `ABB` and `ABC` all expressible without a mode
+  switch, and it is not just tidiness: three adjacent zones sharing an action
+  would each re-arm as the pointer crossed a seam, firing repeatedly as you
+  slid along the edge. Segments merge only when they are identical — same
+  action, arguments and overrides.
+- **Your existing layout still works.** A stored edge fills both outer
+  segments, and the middle too when no centre was configured, which reproduces
+  the old geometry exactly — the three identical segments coalesce straight
+  back into the single edge-wide zone you had.
+- **Knock works on corners.** It always did — it is a per-zone setting — but
+  nothing said so. There is a section about it in the readme now.
+- **The tray menu opens at the tray icon** instead of wherever the pointer
+  happened to be, and follows the taskbar to whichever edge it is docked on.
+- **New icon**, and the dashboard window has one again — it lost its icon in
+  4.3.0 when the window was rewritten.
 
 ## What's New in v4.3.0
 
@@ -666,14 +728,18 @@ listing, but it only takes one link, so the rest live here.
           - TOP_RIGHT: Top-right corner
           - BOTTOM_LEFT: Bottom-left corner
           - BOTTOM_RIGHT: Bottom-right corner
-          - EDGE_TOP: Top edge
-          - EDGE_BOTTOM: Bottom edge
-          - EDGE_LEFT: Left edge
-          - EDGE_RIGHT: Right edge
-          - CENTER_TOP: Top edge centre
-          - CENTER_BOTTOM: Bottom edge centre
-          - CENTER_LEFT: Left edge centre
-          - CENTER_RIGHT: Right edge centre
+          - TOP_START: "Top edge: left"
+          - TOP_MIDDLE: "Top edge: centre"
+          - TOP_END: "Top edge: right"
+          - BOTTOM_START: "Bottom edge: left"
+          - BOTTOM_MIDDLE: "Bottom edge: centre"
+          - BOTTOM_END: "Bottom edge: right"
+          - LEFT_START: "Left edge: top"
+          - LEFT_MIDDLE: "Left edge: middle"
+          - LEFT_END: "Left edge: bottom"
+          - RIGHT_START: "Right edge: top"
+          - RIGHT_MIDDLE: "Right edge: middle"
+          - RIGHT_END: "Right edge: bottom"
         - action: ACTION_NOTHING
           $name: Action
           $options:
@@ -750,6 +816,15 @@ listing, but it only takes one link, so the rest live here.
       $description: >-
         One entry per zone you want active on this display. A zone you do not
         list does nothing. Listing the same zone twice uses the first entry.
+
+        Each edge is three segments. Give them three different actions for
+        three separate zones, or give neighbouring segments the same action
+        and they merge into one - so all three alike is a single edge-wide
+        zone, and left+centre alike with a different right is two.
+
+        "Merge" means identical: same action, same arguments and the same
+        overrides. Two segments running the same action with different
+        cooldowns stay separate.
   $name: Displays
   $description: >-
     Leave this empty to keep using a layout saved by an older version of the
@@ -888,22 +963,39 @@ enum class CornerAction
     StartProcess,
 };
 
-// Zone IDs: 0-3 = corners, 4-7 = edges
+// Zone IDs: 0-3 corners, then each edge as three independently configurable
+// segments running between the two corners it touches.
+//
+// Before 4.4 an edge was one zone plus an optional centre, so the two outer
+// stretches always did the same thing. Splitting them into start/middle/end
+// makes every pattern expressible - ABC, AAB, ABB - and setting all three the
+// same gives one edge-wide zone, because BuildZoneSet coalesces neighbouring
+// segments that resolve identically. That coalescing matters: three separate
+// zones carrying one action would each re-arm as the pointer crossed a seam.
 enum Zone
 {
     ZONE_TOP_LEFT = 0,
     ZONE_TOP_RIGHT = 1,
     ZONE_BOTTOM_LEFT = 2,
     ZONE_BOTTOM_RIGHT = 3,
-    ZONE_EDGE_TOP = 4,
-    ZONE_EDGE_BOTTOM = 5,
-    ZONE_EDGE_LEFT = 6,
-    ZONE_EDGE_RIGHT = 7,
-    ZONE_CENTER_TOP = 8,
-    ZONE_CENTER_BOTTOM = 9,
-    ZONE_CENTER_LEFT = 10,
-    ZONE_CENTER_RIGHT = 11,
-    ZONE_COUNT = 12,
+
+    ZONE_TOP_START = 4,      // left-hand stretch of the top edge
+    ZONE_TOP_MIDDLE = 5,
+    ZONE_TOP_END = 6,        // right-hand stretch
+
+    ZONE_BOTTOM_START = 7,
+    ZONE_BOTTOM_MIDDLE = 8,
+    ZONE_BOTTOM_END = 9,
+
+    ZONE_LEFT_START = 10,    // upper stretch of the left edge
+    ZONE_LEFT_MIDDLE = 11,
+    ZONE_LEFT_END = 12,      // lower stretch
+
+    ZONE_RIGHT_START = 13,
+    ZONE_RIGHT_MIDDLE = 14,
+    ZONE_RIGHT_END = 15,
+
+    ZONE_COUNT = 16,
 };
 
 // Per-zone overrides. Every numeric field uses -1 for "inherit the global
@@ -2213,14 +2305,18 @@ static const wchar_t *ZoneToString(Zone z)
     case ZONE_TOP_RIGHT: return L"Top-right corner";
     case ZONE_BOTTOM_LEFT: return L"Bottom-left corner";
     case ZONE_BOTTOM_RIGHT: return L"Bottom-right corner";
-    case ZONE_EDGE_TOP: return L"Top edge";
-    case ZONE_EDGE_BOTTOM: return L"Bottom edge";
-    case ZONE_EDGE_LEFT: return L"Left edge";
-    case ZONE_EDGE_RIGHT: return L"Right edge";
-    case ZONE_CENTER_TOP: return L"Top edge centre";
-    case ZONE_CENTER_BOTTOM: return L"Bottom edge centre";
-    case ZONE_CENTER_LEFT: return L"Left edge centre";
-    case ZONE_CENTER_RIGHT: return L"Right edge centre";
+    case ZONE_TOP_START: return L"Top edge, left";
+    case ZONE_TOP_MIDDLE: return L"Top edge, centre";
+    case ZONE_TOP_END: return L"Top edge, right";
+    case ZONE_BOTTOM_START: return L"Bottom edge, left";
+    case ZONE_BOTTOM_MIDDLE: return L"Bottom edge, centre";
+    case ZONE_BOTTOM_END: return L"Bottom edge, right";
+    case ZONE_LEFT_START: return L"Left edge, top";
+    case ZONE_LEFT_MIDDLE: return L"Left edge, middle";
+    case ZONE_LEFT_END: return L"Left edge, bottom";
+    case ZONE_RIGHT_START: return L"Right edge, top";
+    case ZONE_RIGHT_MIDDLE: return L"Right edge, middle";
+    case ZONE_RIGHT_END: return L"Right edge, bottom";
     default: return L"None";
     }
 }
@@ -2367,6 +2463,23 @@ static std::function<void()> MakeExecutor(CornerAction action,
 // Resolves one zone for one monitor. A name-matched config wins; otherwise a
 // wildcard config supplies the action. Resolution is per zone, so a wildcard
 // entry can cover most zones while one display overrides a single corner.
+// Two segments of an edge are interchangeable only if everything about them
+// matches - the same action with a different cooldown still has to stay two
+// zones, because the cooldown is what the merged zone would have to carry.
+static bool SameZoneConfig(const ZoneConfig *a, const ZoneConfig *b)
+{
+    if (a == b)
+        return true;
+    if (!a || !b)
+        return false;
+    if (a->action != b->action || a->args != b->args)
+        return false;
+    const ZoneTuning &x = a->tuning, &y = b->tuning;
+    return x.size == y.size && x.delay == y.delay && x.settle == y.settle &&
+           x.knock == y.knock && x.cooldown == y.cooldown &&
+           x.modifier == y.modifier;
+}
+
 // Caller must hold g_settingsLock.
 static const ZoneConfig *ResolveZone(const MonitorInfo &mon, Zone zone)
 {
@@ -2461,10 +2574,27 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
             int cap = a < b ? a : b;
             return v > cap ? cap : v;
         };
-        int esTop = edgeThickness(ZONE_EDGE_TOP, csTL, csTR);
-        int esBot = edgeThickness(ZONE_EDGE_BOTTOM, csBL, csBR);
-        int esLeft = edgeThickness(ZONE_EDGE_LEFT, csTL, csBL);
-        int esRight = edgeThickness(ZONE_EDGE_RIGHT, csTR, csBR);
+        // An edge is one strip however many segments it carries, so its
+        // thickness comes from the first segment that asks for one.
+        auto edgeThickness3 = [&](Zone a, Zone b, Zone c, int lim1,
+                                  int lim2) -> int
+        {
+            for (Zone z : {a, b, c})
+            {
+                const ZoneConfig *zc = zoneCfg(z);
+                if (zc && zc->tuning.size > 0)
+                    return edgeThickness(z, lim1, lim2);
+            }
+            return edgeThickness(a, lim1, lim2);
+        };
+        int esTop = edgeThickness3(ZONE_TOP_START, ZONE_TOP_MIDDLE,
+                                   ZONE_TOP_END, csTL, csTR);
+        int esBot = edgeThickness3(ZONE_BOTTOM_START, ZONE_BOTTOM_MIDDLE,
+                                   ZONE_BOTTOM_END, csBL, csBR);
+        int esLeft = edgeThickness3(ZONE_LEFT_START, ZONE_LEFT_MIDDLE,
+                                    ZONE_LEFT_END, csTL, csBL);
+        int esRight = edgeThickness3(ZONE_RIGHT_START, ZONE_RIGHT_MIDDLE,
+                                     ZONE_RIGHT_END, csTR, csBR);
 
         // An edge with a centre zone becomes two rectangles, but it is still one
         // edge: walking into the left half and then the right must give A then
@@ -2518,47 +2648,63 @@ static std::shared_ptr<const ZoneSet> BuildZoneSet()
         add(ZONE_BOTTOM_RIGHT,
             {r.right - csBR, r.bottom - csBR, r.right, r.bottom});
 
-        // Edges run between the two corners they touch, split around a centre
-        // zone when one is configured.
-        auto addEdge = [&](Zone edge, Zone centre, bool horizontal, LONG lo,
-                           LONG hi, LONG nearSide, LONG farSide)
+        // Edges run between the two corners they touch, divided into three
+        // independently configurable segments.
+        auto addEdge = [&](Zone zStart, Zone zMiddle, Zone zEnd,
+                           bool horizontal, LONG lo, LONG hi, LONG nearSide,
+                           LONG farSide)
         {
+            LONG sp = hi - lo;
+            if (sp <= 0)
+                return;
+
             auto rectFor = [&](LONG a, LONG b) -> RECT
             {
                 return horizontal ? RECT{a, nearSide, b, farSide}
                                   : RECT{nearSide, a, farSide, b};
             };
 
-            const ZoneConfig *centreCfg = ResolveZone(mon, centre);
-            LONG sp = hi - lo;
             LONG width = sp * centrePct / 100;
-
-            if (!centreCfg || width < 1 || width >= sp || sp <= 0)
-            {
-                if (sp > 0)
-                    add(edge, rectFor(lo, hi));
-                return;
-            }
-
-            LONG mid = lo + sp / 2;
-            LONG cLo = mid - width / 2;
+            if (width < 1)
+                width = 1;
+            if (width > sp)
+                width = sp;
+            LONG cLo = lo + sp / 2 - width / 2;
             LONG cHi = cLo + width;
+            if (cLo < lo)
+                cLo = lo;
+            if (cHi > hi)
+                cHi = hi;
 
-            if (cLo > lo)
-                add(edge, rectFor(lo, cLo));
-            add(centre, rectFor(cLo, cHi));
-            if (cHi < hi)
-                add(edge, rectFor(cHi, hi));
+            const Zone seg[3] = {zStart, zMiddle, zEnd};
+            const LONG bound[4] = {lo, cLo, cHi, hi};
+
+            // Coalesce neighbouring segments that resolve to the same thing.
+            // Setting all three alike therefore produces one edge-wide zone
+            // rather than three, which matters for more than tidiness: three
+            // adjacent zones sharing an action would each re-arm - and re-fire
+            // - as the pointer crossed a seam.
+            int i = 0;
+            while (i < 3)
+            {
+                const ZoneConfig *zc = ResolveZone(mon, seg[i]);
+                int j = i + 1;
+                while (j < 3 && SameZoneConfig(zc, ResolveZone(mon, seg[j])))
+                    j++;
+                if (zc && bound[j] > bound[i])
+                    add(seg[i], rectFor(bound[i], bound[j]));
+                i = j;
+            }
         };
 
-        addEdge(ZONE_EDGE_TOP, ZONE_CENTER_TOP, true, r.left + csTL,
-                r.right - csTR, r.top, r.top + esTop);
-        addEdge(ZONE_EDGE_BOTTOM, ZONE_CENTER_BOTTOM, true, r.left + csBL,
-                r.right - csBR, r.bottom - esBot, r.bottom);
-        addEdge(ZONE_EDGE_LEFT, ZONE_CENTER_LEFT, false, r.top + csTL,
-                r.bottom - csBL, r.left, r.left + esLeft);
-        addEdge(ZONE_EDGE_RIGHT, ZONE_CENTER_RIGHT, false, r.top + csTR,
-                r.bottom - csBR, r.right - esRight, r.right);
+        addEdge(ZONE_TOP_START, ZONE_TOP_MIDDLE, ZONE_TOP_END, true,
+                r.left + csTL, r.right - csTR, r.top, r.top + esTop);
+        addEdge(ZONE_BOTTOM_START, ZONE_BOTTOM_MIDDLE, ZONE_BOTTOM_END, true,
+                r.left + csBL, r.right - csBR, r.bottom - esBot, r.bottom);
+        addEdge(ZONE_LEFT_START, ZONE_LEFT_MIDDLE, ZONE_LEFT_END, false,
+                r.top + csTL, r.bottom - csBL, r.left, r.left + esLeft);
+        addEdge(ZONE_RIGHT_START, ZONE_RIGHT_MIDDLE, ZONE_RIGHT_END, false,
+                r.top + csTR, r.bottom - csBR, r.right - esRight, r.right);
     }
     LeaveCriticalSection(&g_settingsLock);
 
@@ -3030,9 +3176,11 @@ static const wchar_t *kOvrEnabled = L"ovr_enabled";
 static const wchar_t *kOvrFullscreen = L"ovr_fullscreen";
 static const wchar_t *kOvrDrag = L"ovr_drag";
 
-static HICON MakeTrayIcon(bool enabled)
+// A screen outline with the top-left corner lit and the other three marked,
+// which is the mod in one glyph. Drawn rather than shipped as a resource:
+// Windhawk mods are a single source file, so there is nowhere to put an .ico.
+static HICON MakeHotCornerIcon(int sz, bool enabled)
 {
-    int sz = GetSystemMetrics(SM_CXSMICON);
     if (sz < 8)
         sz = 16;
 
@@ -3056,24 +3204,47 @@ static HICON MakeTrayIcon(bool enabled)
         return nullptr;
     }
 
-    // A screen outline with one corner lit. Mid-tone colours so it stays
-    // legible on both a light and a dark taskbar.
+    // Mid-tone colours so it stays legible on both a light and a dark taskbar.
     DWORD *px = static_cast<DWORD *>(bits);
-    const DWORD frame = enabled ? 0xFFB0B0B0 : 0xFF707070;
-    const DWORD accent = enabled ? 0xFF4CC2FF : 0xFF707070;
-    int block = sz / 3;
-    if (block < 3)
-        block = 3;
+    const DWORD frame = enabled ? 0xFFB4B4B4 : 0xFF6E6E6E;
+    const DWORD accent = enabled ? 0xFF4CC2FF : 0xFF6E6E6E;
+    const DWORD dim = enabled ? 0xFF7A8A94 : 0xFF5A5A5A;
+
+    int bord = sz >= 32 ? 2 : 1;              // outline thickness
+    int arm = sz / 3;                         // length of a corner mark
+    if (arm < 3)
+        arm = 3;
+    int thick = sz >= 32 ? 3 : 2;             // thickness of a corner mark
 
     for (int y = 0; y < sz; y++)
     {
         for (int x = 0; x < sz; x++)
         {
-            DWORD c = 0;  // transparent
-            if (x == 0 || y == 0 || x == sz - 1 || y == sz - 1)
+            DWORD c = 0;   // transparent
+
+            bool onFrame = x < bord || y < bord || x >= sz - bord ||
+                           y >= sz - bord;
+            if (onFrame)
                 c = frame;
-            if (x < block && y < block)
+
+            // Three corners get an L-shaped bracket, so the glyph reads as
+            // "corners" rather than as a window with a coloured tab.
+            auto bracket = [&](bool right, bool bottom) -> bool
+            {
+                int dx = right ? sz - 1 - x : x;
+                int dy = bottom ? sz - 1 - y : y;
+                return (dx < arm && dy < thick) || (dy < arm && dx < thick);
+            };
+
+            if (bracket(true, false) || bracket(false, true) ||
+                bracket(true, true))
+                c = dim;
+
+            // The top-left one is filled solid: that is the corner the mod is
+            // named for, and a lit corner beats a fourth identical bracket.
+            if (x < arm && y < arm)
                 c = accent;
+
             px[y * sz + x] = c;
         }
     }
@@ -3093,6 +3264,11 @@ static HICON MakeTrayIcon(bool enabled)
     if (hMask)
         DeleteObject(hMask);
     return hIcon;
+}
+
+static HICON MakeTrayIcon(bool enabled)
+{
+    return MakeHotCornerIcon(GetSystemMetrics(SM_CXSMICON), enabled);
 }
 
 static void FillTrayIconData(NOTIFYICONDATAW &nid)
@@ -3218,14 +3394,18 @@ static int ParseZoneName(const std::wstring &s)
         {L"TOP_RIGHT", ZONE_TOP_RIGHT},
         {L"BOTTOM_LEFT", ZONE_BOTTOM_LEFT},
         {L"BOTTOM_RIGHT", ZONE_BOTTOM_RIGHT},
-        {L"EDGE_TOP", ZONE_EDGE_TOP},
-        {L"EDGE_BOTTOM", ZONE_EDGE_BOTTOM},
-        {L"EDGE_LEFT", ZONE_EDGE_LEFT},
-        {L"EDGE_RIGHT", ZONE_EDGE_RIGHT},
-        {L"CENTER_TOP", ZONE_CENTER_TOP},
-        {L"CENTER_BOTTOM", ZONE_CENTER_BOTTOM},
-        {L"CENTER_LEFT", ZONE_CENTER_LEFT},
-        {L"CENTER_RIGHT", ZONE_CENTER_RIGHT},
+        {L"TOP_START", ZONE_TOP_START},
+        {L"TOP_MIDDLE", ZONE_TOP_MIDDLE},
+        {L"TOP_END", ZONE_TOP_END},
+        {L"BOTTOM_START", ZONE_BOTTOM_START},
+        {L"BOTTOM_MIDDLE", ZONE_BOTTOM_MIDDLE},
+        {L"BOTTOM_END", ZONE_BOTTOM_END},
+        {L"LEFT_START", ZONE_LEFT_START},
+        {L"LEFT_MIDDLE", ZONE_LEFT_MIDDLE},
+        {L"LEFT_END", ZONE_LEFT_END},
+        {L"RIGHT_START", ZONE_RIGHT_START},
+        {L"RIGHT_MIDDLE", ZONE_RIGHT_MIDDLE},
+        {L"RIGHT_END", ZONE_RIGHT_END},
     };
     for (const auto &m : kMap)
         if (s == m.name)
@@ -3383,24 +3563,66 @@ static std::vector<MonitorZoneConfig> ReadDashboardZones()
         MonitorZoneConfig cfg;
         cfg.monitorId = id;
 
-        bool any = false;
-        for (int z = 0; z < ZONE_COUNT; z++)
+        // The store predates the edge split, so its twelve slots have to be
+        // spread across sixteen. A stored edge fills both outer segments; it
+        // also fills the middle when nothing was stored for the centre, which
+        // is what reproduces the old geometry exactly - back then an edge with
+        // no centre configured was one rectangle spanning the whole edge, and
+        // three identical segments coalesce back into exactly that.
+        static const struct
+        {
+            int edge;                 // legacy slot 4-7
+            int centre;               // legacy slot 8-11
+            Zone start, middle, end;
+        } kSpread[] = {
+            {4, 8, ZONE_TOP_START, ZONE_TOP_MIDDLE, ZONE_TOP_END},
+            {5, 9, ZONE_BOTTOM_START, ZONE_BOTTOM_MIDDLE, ZONE_BOTTOM_END},
+            {6, 10, ZONE_LEFT_START, ZONE_LEFT_MIDDLE, ZONE_LEFT_END},
+            {7, 11, ZONE_RIGHT_START, ZONE_RIGHT_MIDDLE, ZONE_RIGHT_END},
+        };
+
+        auto readSlot = [&](int z, ZoneConfig &dst)
         {
             std::wstring a = GetStrValue(GuiKey(i, z, L"a").c_str());
             std::wstring g = GetStrValue(GuiKey(i, z, L"g").c_str());
             CornerAction act = ParseActionType(a);
-            cfg.zones[z].action = act;
-            cfg.zones[z].args = g;
-            cfg.zones[z].executor = MakeExecutor(act, g);
-            cfg.zones[z].tuning.size = Wh_GetIntValue(GuiKey(i, z, L"sz").c_str(), -1);
-            cfg.zones[z].tuning.delay = Wh_GetIntValue(GuiKey(i, z, L"dl").c_str(), -1);
-            cfg.zones[z].tuning.settle = Wh_GetIntValue(GuiKey(i, z, L"gd").c_str(), -1);
-            cfg.zones[z].tuning.knock = Wh_GetIntValue(GuiKey(i, z, L"kn").c_str(), -1);
-            cfg.zones[z].tuning.cooldown = Wh_GetIntValue(GuiKey(i, z, L"cd").c_str(), -1);
-            cfg.zones[z].tuning.modifier = Wh_GetIntValue(GuiKey(i, z, L"md").c_str(), -1);
-            if (act != CornerAction::Nothing)
+            dst.action = act;
+            dst.args = g;
+            dst.executor = MakeExecutor(act, g);
+            dst.tuning.size = Wh_GetIntValue(GuiKey(i, z, L"sz").c_str(), -1);
+            dst.tuning.delay = Wh_GetIntValue(GuiKey(i, z, L"dl").c_str(), -1);
+            dst.tuning.settle = Wh_GetIntValue(GuiKey(i, z, L"gd").c_str(), -1);
+            dst.tuning.knock = Wh_GetIntValue(GuiKey(i, z, L"kn").c_str(), -1);
+            dst.tuning.cooldown = Wh_GetIntValue(GuiKey(i, z, L"cd").c_str(), -1);
+            dst.tuning.modifier = Wh_GetIntValue(GuiKey(i, z, L"md").c_str(), -1);
+            return act != CornerAction::Nothing;
+        };
+
+        bool any = false;
+        for (int z = ZONE_TOP_LEFT; z <= ZONE_BOTTOM_RIGHT; z++)
+            any |= readSlot(z, cfg.zones[z]);
+
+        for (const auto &sp : kSpread)
+        {
+            ZoneConfig edge, centre;
+            bool hasEdge = readSlot(sp.edge, edge);
+            bool hasCentre = readSlot(sp.centre, centre);
+
+            if (hasEdge)
+            {
+                cfg.zones[sp.start] = edge;
+                cfg.zones[sp.end] = edge;
+                if (!hasCentre)
+                    cfg.zones[sp.middle] = edge;
                 any = true;
+            }
+            if (hasCentre)
+            {
+                cfg.zones[sp.middle] = centre;
+                any = true;
+            }
         }
+
         if (any)
             configs.push_back(std::move(cfg));
     }
@@ -3595,9 +3817,53 @@ static void ShowTrayMenu(POINT pt)
     AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_ABOUT,
                 L"Win-X Hot Corners " WH_MOD_VERSION);
 
+    // Anchor to the tray icon rather than to the pointer. A menu that opens
+    // wherever the cursor happened to be lands at a different place every
+    // time; anchoring puts it in the one spot muscle memory expects, which is
+    // what every other tray menu does.
+    UINT align = TPM_RIGHTBUTTON;
+    NOTIFYICONIDENTIFIER nii = {sizeof(nii)};
+    nii.hWnd = g_hTrayWnd;
+    nii.uID = (UINT)kTrayIconId;
+    nii.guidItem = kTrayIconGuid;
+    RECT icon = {};
+    if (SUCCEEDED(Shell_NotifyIconGetRect(&nii, &icon)))
+    {
+        // Open from the icon's outer edge, away from whichever screen edge the
+        // taskbar is docked against, so the menu never covers the icon.
+        APPBARDATA abd = {sizeof(abd)};
+        UINT edge = ABE_BOTTOM;
+        if (SHAppBarMessage(ABM_GETTASKBARPOS, &abd))
+            edge = abd.uEdge;
+
+        switch (edge)
+        {
+        case ABE_TOP:
+            pt.x = (icon.left + icon.right) / 2;
+            pt.y = icon.bottom;
+            align |= TPM_CENTERALIGN | TPM_TOPALIGN;
+            break;
+        case ABE_LEFT:
+            pt.x = icon.right;
+            pt.y = (icon.top + icon.bottom) / 2;
+            align |= TPM_LEFTALIGN | TPM_VCENTERALIGN;
+            break;
+        case ABE_RIGHT:
+            pt.x = icon.left;
+            pt.y = (icon.top + icon.bottom) / 2;
+            align |= TPM_RIGHTALIGN | TPM_VCENTERALIGN;
+            break;
+        default:
+            pt.x = (icon.left + icon.right) / 2;
+            pt.y = icon.top;
+            align |= TPM_CENTERALIGN | TPM_BOTTOMALIGN;
+            break;
+        }
+    }
+
     // Required so the menu dismisses when the user clicks elsewhere.
     SetForegroundWindow(g_hTrayWnd);
-    TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hTrayWnd, nullptr);
+    TrackPopupMenu(hMenu, align, pt.x, pt.y, 0, g_hTrayWnd, nullptr);
     PostMessage(g_hTrayWnd, WM_NULL, 0, 0);
 
     DestroyMenu(hMenu);
@@ -3794,7 +4060,8 @@ struct DashState
     HFONT hFontSmall = nullptr;
     HFONT hFontVert = nullptr;   // rotated 90 degrees, for the side strips
     HBRUSH hBg = nullptr;
-    HICON hIcon = nullptr;
+    HICON hIcon = nullptr;     // title bar / Alt-Tab, big
+    HICON hIconSm = nullptr;   // title bar, small
 
     std::vector<DisplayView> displays;
     ModSettings globals;         // what an inherited value resolves to
@@ -3888,15 +4155,15 @@ static RECT DashDiagramRect(const DashState *s)
 // band is thick enough to hold a label - at the old c/2 a side strip was too
 // narrow and the text spilled outside the screen box.
 //
-// The edges are split around the centre blocks rather than drawn through them:
-// they used to overlap, so hovering a centre highlighted the whole edge and the
-// centre punched a hole in it.
-static RECT ZoneRectInDiagram(Zone z, const RECT &d, bool secondHalf)
+// Every zone is exactly one rectangle now that an edge is three segments
+// rather than one zone wrapped around a centre, which is what removed the
+// old two-part special case and the overlap bug that came with it.
+static RECT ZoneRectInDiagram(Zone z, const RECT &d)
 {
     int w = d.right - d.left, h = d.bottom - d.top;
     int c = (w < h ? w : h) / 5;         // corner block, square
     int t = c * 62 / 100;                // edge band thickness
-    int cw = w * 22 / 100, ch = h * 22 / 100;   // centre block extent
+    int cw = w * 22 / 100, ch = h * 22 / 100;   // middle segment extent
     int cx0 = d.left + w / 2 - cw / 2, cx1 = cx0 + cw;
     int cy0 = d.top + h / 2 - ch / 2, cy1 = cy0 + ch;
 
@@ -3907,41 +4174,33 @@ static RECT ZoneRectInDiagram(Zone z, const RECT &d, bool secondHalf)
     case ZONE_BOTTOM_LEFT:   return {d.left, d.bottom - c, d.left + c, d.bottom};
     case ZONE_BOTTOM_RIGHT:  return {d.right - c, d.bottom - c, d.right, d.bottom};
 
-    case ZONE_EDGE_TOP:
-        return secondHalf ? RECT{cx1, d.top, d.right - c, d.top + t}
-                          : RECT{d.left + c, d.top, cx0, d.top + t};
-    case ZONE_EDGE_BOTTOM:
-        return secondHalf ? RECT{cx1, d.bottom - t, d.right - c, d.bottom}
-                          : RECT{d.left + c, d.bottom - t, cx0, d.bottom};
-    case ZONE_EDGE_LEFT:
-        return secondHalf ? RECT{d.left, cy1, d.left + t, d.bottom - c}
-                          : RECT{d.left, d.top + c, d.left + t, cy0};
-    case ZONE_EDGE_RIGHT:
-        return secondHalf ? RECT{d.right - t, cy1, d.right, d.bottom - c}
-                          : RECT{d.right - t, d.top + c, d.right, cy0};
+    case ZONE_TOP_START:     return {d.left + c, d.top, cx0, d.top + t};
+    case ZONE_TOP_MIDDLE:    return {cx0, d.top, cx1, d.top + t};
+    case ZONE_TOP_END:       return {cx1, d.top, d.right - c, d.top + t};
 
-    case ZONE_CENTER_TOP:    return {cx0, d.top, cx1, d.top + t};
-    case ZONE_CENTER_BOTTOM: return {cx0, d.bottom - t, cx1, d.bottom};
-    case ZONE_CENTER_LEFT:   return {d.left, cy0, d.left + t, cy1};
-    case ZONE_CENTER_RIGHT:  return {d.right - t, cy0, d.right, cy1};
+    case ZONE_BOTTOM_START:  return {d.left + c, d.bottom - t, cx0, d.bottom};
+    case ZONE_BOTTOM_MIDDLE: return {cx0, d.bottom - t, cx1, d.bottom};
+    case ZONE_BOTTOM_END:    return {cx1, d.bottom - t, d.right - c, d.bottom};
+
+    case ZONE_LEFT_START:    return {d.left, d.top + c, d.left + t, cy0};
+    case ZONE_LEFT_MIDDLE:   return {d.left, cy0, d.left + t, cy1};
+    case ZONE_LEFT_END:      return {d.left, cy1, d.left + t, d.bottom - c};
+
+    case ZONE_RIGHT_START:   return {d.right - t, d.top + c, d.right, cy0};
+    case ZONE_RIGHT_MIDDLE:  return {d.right - t, cy0, d.right, cy1};
+    case ZONE_RIGHT_END:     return {d.right - t, cy1, d.right, d.bottom - c};
+
     default:                 return {0, 0, 0, 0};
     }
 }
 
-// An edge occupies two rectangles once a centre is carved out of it, so both
-// have to be drawn and both have to be hit-tested.
-static bool ZoneHasTwoParts(Zone z)
-{
-    return z == ZONE_EDGE_TOP || z == ZONE_EDGE_BOTTOM || z == ZONE_EDGE_LEFT ||
-           z == ZONE_EDGE_RIGHT;
-}
+static bool ZoneIsCorner(Zone z) { return z <= ZONE_BOTTOM_RIGHT; }
 
 // The left and right strips are tall and narrow. Rotating the text is the only
 // way a label such as "Notification Centre" fits inside one.
 static bool ZoneIsVertical(Zone z)
 {
-    return z == ZONE_EDGE_LEFT || z == ZONE_EDGE_RIGHT ||
-           z == ZONE_CENTER_LEFT || z == ZONE_CENTER_RIGHT;
+    return z >= ZONE_LEFT_START && z <= ZONE_RIGHT_END;
 }
 
 // subIdList is nullptr for "keep the default part list", which is what naming
@@ -4404,28 +4663,14 @@ static void DashPaintDiagram(DashState *s, HDC hdc)
         bool live = (z == s->hoverZone || z == s->selZone);
         HBRUSH b = live ? hot : (on ? set : unset);
 
-        int parts = ZoneHasTwoParts((Zone)z) ? 2 : 1;
-        RECT widest = {};
-        int widestArea = -1;
+        RECT widest = ZoneRectInDiagram((Zone)z, dg);
+        if (widest.right <= widest.left || widest.bottom <= widest.top)
+            continue;
+        FillRect(hdc, &widest, b);
 
-        for (int p = 0; p < parts; p++)
-        {
-            RECT r = ZoneRectInDiagram((Zone)z, dg, p == 1);
-            if (r.right <= r.left || r.bottom <= r.top)
-                continue;
-            FillRect(hdc, &r, b);
-            int area = (r.right - r.left) * (r.bottom - r.top);
-            if (area > widestArea)
-            {
-                widestArea = area;
-                widest = r;
-            }
-        }
-
-        if (!on || widestArea <= 0)
+        if (!on)
             continue;
 
-        // The label goes in the roomier of the two halves of a split edge.
         SetTextColor(hdc, live ? (g_lightTheme ? RGB(255, 255, 255)
                                                : RGB(0, 0, 0))
                                : g_pal.accentText);
@@ -4458,13 +4703,13 @@ static void DashPaintDiagram(DashState *s, HDC hdc)
             SelectObject(hdc, s->hFontSmall);
             RECT t = widest;
             InflateRect(&t, -Sc(3, d), -Sc(2, d));
-            bool corner = (z <= ZONE_BOTTOM_RIGHT);
             // Corners are square and small, so a long name wraps and then
             // clips; edges are wide and short, so they ellipsise on one line.
             DrawTextW(hdc, name, -1, &t,
-                      corner ? (DT_CENTER | DT_WORDBREAK | DT_EDITCONTROL)
-                             : (DT_CENTER | DT_SINGLELINE | DT_VCENTER |
-                                DT_END_ELLIPSIS));
+                      ZoneIsCorner((Zone)z)
+                          ? (DT_CENTER | DT_WORDBREAK | DT_EDITCONTROL)
+                          : (DT_CENTER | DT_SINGLELINE | DT_VCENTER |
+                             DT_END_ELLIPSIS));
         }
     }
 
@@ -4641,13 +4886,9 @@ static int DashHitZone(DashState *s, POINT pt)
     RECT dg = DashDiagramRect(s);
     for (int z = 0; z < ZONE_COUNT; z++)
     {
-        int parts = ZoneHasTwoParts((Zone)z) ? 2 : 1;
-        for (int p = 0; p < parts; p++)
-        {
-            RECT r = ZoneRectInDiagram((Zone)z, dg, p == 1);
-            if (PtInRect(&r, pt))
-                return z;
-        }
+        RECT r = ZoneRectInDiagram((Zone)z, dg);
+        if (PtInRect(&r, pt))
+            return z;
     }
     return -1;
 }
@@ -4718,6 +4959,15 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
             hWnd, (HMENU)(INT_PTR)IDC_CLOSE, GetModuleHandle(nullptr), nullptr);
         SendMessageW(s->hClose, WM_SETFONT, (WPARAM)s->hFont, TRUE);
         ApplyControlTheme(s->hClose, L"BUTTON");
+
+        // Title bar and Alt-Tab. WM_SETICON does not take ownership, so both
+        // handles are kept on the state and destroyed with the window.
+        s->hIcon = MakeHotCornerIcon(GetSystemMetrics(SM_CXICON), true);
+        s->hIconSm = MakeHotCornerIcon(GetSystemMetrics(SM_CXSMICON), true);
+        if (s->hIcon)
+            SendMessageW(hWnd, WM_SETICON, ICON_BIG, (LPARAM)s->hIcon);
+        if (s->hIconSm)
+            SendMessageW(hWnd, WM_SETICON, ICON_SMALL, (LPARAM)s->hIconSm);
 
         ApplyModernFrame(hWnd);
         DashBuildSnapshot(s);
@@ -4900,9 +5150,11 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
                 DeleteObject(s->hBg);
             if (s->hIcon)
                 DestroyIcon(s->hIcon);
+            if (s->hIconSm)
+                DestroyIcon(s->hIconSm);
             s->hFont = s->hFontBold = s->hFontSmall = s->hFontVert = nullptr;
             s->hBg = nullptr;
-            s->hIcon = nullptr;
+            s->hIcon = s->hIconSm = nullptr;
         }
         g_hDashWnd = nullptr;
         PostQuitMessage(0);

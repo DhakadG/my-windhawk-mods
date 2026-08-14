@@ -697,16 +697,13 @@ twice a second, leaving the tick to one cursor read plus a few comparisons.
 Windhawk renders the `@donateUrl` in the metadata block as a Donate button in the mod
 listing, but it only takes one link, so the rest live here.
 
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-losthusky__-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/losthusky_)
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-losthusky__-FFDD00?logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/losthusky_)
-[![Playto](https://img.shields.io/badge/Playto-losthusky__-7C3AED)](https://www.playto.so/losthusky_)
+- [Ko-fi](https://ko-fi.com/losthusky_)
+- [Buy Me a Coffee](https://www.buymeacoffee.com/losthusky_)
+- [Playto](https://www.playto.so/losthusky_)
 
-<!-- To add a platform: copy one badge line and fill in the four fields —
-       [![ALT](https://img.shields.io/badge/LABEL-HANDLE-HEXCOLOUR?logo=SLUG&logoColor=white)](URL)
-     Underscores in the handle must be doubled (losthusky__), and a literal dash in the
-     label must be doubled too (Ko--fi) — shields.io uses both as separators.
-     `logo=` only works for slugs simpleicons.org actually has; omit it otherwise.
-     Keep the lines consecutive so they render as one row.
+<!-- Plain links rather than badge images on purpose: this repository only allows
+     images from i.imgur.com and raw.githubusercontent.com, so a shields.io badge
+     would not render. To add a platform, add a bullet.
      Pending accounts: OnlyChai, BuyMeChai — drop the URLs in when they exist. -->
 */
 // ==/WindhawkModReadme==

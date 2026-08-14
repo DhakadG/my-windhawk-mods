@@ -1,0 +1,94 @@
+# Compile and link every mod against each Windhawk release the gallery tests,
+# so a submission is known-good before it is pushed to a pull request there.
+#
+# The gallery's own compatibility check only runs on a pull request and only for
+# the single file that changed, which means a round trip per attempt and a wait
+# for a maintainer to approve the run on a fork. This does the same compile here,
+# on every push, for every mod.
+#
+# The other four workflows in the gallery are specific to running a catalogue -
+# PR labels, PR commands, submission validation and the site deploy - so there is
+# nothing to mirror.
+
+name: Build mods
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Windhawk ${{ matrix.version }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: '1.6.1'
+            std: 'c++20'
+          - version: '1.7.3'
+            std: 'c++20'
+          - version: '2.0.0-alpha.2'
+            std: 'c++23'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache Windhawk
+        id: cache-windhawk
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/windhawk
+          key: v1-${{ runner.os }}-${{ matrix.version }}
+
+      - name: Install Windhawk (portable)
+        if: steps.cache-windhawk.outputs.cache-hit != 'true'
+        run: |
+          # From 2.0.0-alpha.1 the release tag lost its "v" prefix and the
+          # compiler became a separate component that /DEVTOOLS pulls in.
+          if [[ "${{ matrix.version }}" == 1.* ]]; then
+            release_tag="v${{ matrix.version }}"
+            installer_args=''
+          else
+            release_tag="${{ matrix.version }}"
+            installer_args='/DEVTOOLS'
+          fi
+
+          url="https://github.com/ramensoftware/windhawk/releases/download/$release_tag/windhawk_setup.exe"
+          installer="${{ runner.temp }}/windhawk_setup.exe"
+          curl -L "$url" -o "$installer"
+          MSYS_NO_PATHCONV=1 "$installer" /S /PORTABLE $installer_args \
+            "/D=${{ runner.temp }}\\windhawk"
+
+      - name: Build every mod
+        shell: pwsh
+        run: |
+          ./scripts/build-mod.ps1 `
+            -WindhawkRoot "${{ runner.temp }}\windhawk" `
+            -Std "${{ matrix.std }}"
+
+  settings:
+    name: Settings blocks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: python -m pip install pyyaml
+
+      # A malformed settings block compiles and loads fine, then fails later as
+      # "Failed to extract previous initial settings for engine", so the build
+      # job above cannot catch it.
+      - name: Validate settings blocks
+        run: python scripts/check-settings.py

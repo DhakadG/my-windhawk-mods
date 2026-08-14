@@ -20,7 +20,9 @@
 [CmdletBinding()]
 param(
     [string[]]$Path,
-    [string]$WindhawkRoot = 'C:\Program Files\Windhawk'
+    [string]$WindhawkRoot = 'C:\Program Files\Windhawk',
+    # Older Windhawk releases ship an older clang. Drop to c++20 for those.
+    [string]$Std = 'c++23'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,7 +88,7 @@ try {
             }
 
             $args = @(
-                '-std=c++23', '-O2', '-shared',
+                "-std=$Std", '-O2', '-shared',
                 '-DUNICODE', '-D_UNICODE',
                 '-DWINVER=0x0A00', '-D_WIN32_WINNT=0x0A00',
                 '-D_WIN32_IE=0x0A00', '-DNTDDI_VERSION=0x0A000008',

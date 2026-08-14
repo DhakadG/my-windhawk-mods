@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         4.4.2
+// @version         4.4.3
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -272,6 +272,12 @@ Hot corners are disabled when any excluded process is the foreground window.
 **Example:** `photoshop.exe;premiere.exe;blender.exe`
 
 # Changelog
+
+## What's New in v4.4.3
+
+- **Fixed a build error introduced in 4.4.2.** One log call passed a ternary
+  where `Wh_Log` needs a string literal, which compiles in the editor and fails
+  when the mod is actually built.
 
 ## What's New in v4.4.2
 
@@ -3120,9 +3126,11 @@ static LRESULT CALLBACK DetectWndProc(HWND hWnd, UINT uMsg, WPARAM wParam,
     if (uMsg == WM_DISPLAYCHANGE ||
         (uMsg == WM_SETTINGCHANGE && wParam == SPI_SETWORKAREA))
     {
-        Wh_Log(uMsg == WM_DISPLAYCHANGE
-                   ? L"WM_DISPLAYCHANGE — queueing a zone rebuild"
-                   : L"Work area changed — queueing a zone rebuild");
+        // Wh_Log concatenates its first argument onto a string literal, so it
+        // has to be one - a ternary here is a syntax error in a real build.
+        Wh_Log(L"%s — queueing a zone rebuild",
+               uMsg == WM_DISPLAYCHANGE ? L"WM_DISPLAYCHANGE"
+                                        : L"Work area changed");
         PostMessage(hWnd, WM_APP_REBUILD, 0, 0);
         return 0;
     }

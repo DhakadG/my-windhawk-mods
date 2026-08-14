@@ -31,9 +31,24 @@ if (-not (Test-Path $flagsFile)) { throw "compile_flags.txt not found: $flagsFil
 
 # compile_flags.txt is one argument per line. It carries the language, standard, target,
 # the Windows version defines and the forced -include of windhawk_api.h.
-$baseFlags = Get-Content $flagsFile | Where-Object { $_.Trim() -ne '' }
+#
+# -DWH_EDITING is dropped, and that matters more than it looks. It is the *editor's*
+# configuration, and windhawk_api.h swaps several macros under it - most importantly
+# Wh_Log, which is a permissive variadic stub while editing and
+#
+#     InternalWh_Log_Wrapper(L"[%d:%S]: " message, ...)
+#
+# in a real build. That concatenates the format onto a literal, so anything that is not
+# itself a string literal - a ternary, a variable - is a syntax error when Windhawk
+# actually compiles the mod and compiles clean here. That exact case reached CI once.
+# WH_MOD_ID / WH_MOD_VERSION are only defined under WH_EDITING, so supply them instead;
+# the real values come from the metadata block at build time.
+$baseFlags = Get-Content $flagsFile |
+             Where-Object { $_.Trim() -ne '' -and $_.Trim() -ne '-DWH_EDITING' }
 $baseFlags += '-I'
 $baseFlags += (Join-Path $CompilerRoot 'include')
+$baseFlags += '-DWH_MOD_ID=L"check-mod"'
+$baseFlags += '-DWH_MOD_VERSION=L"0.0"'
 $baseFlags += '-fsyntax-only'
 $baseFlags += '-fno-caret-diagnostics'
 # The editor's clangd surfaces -Wall diagnostics (that is where -Wsign-compare comes
@@ -67,8 +82,35 @@ foreach ($file in $Path) {
     }
 
     Write-Host "== $name" -ForegroundColor Cyan
-    $out = & $clang @baseFlags @modFlags $file 2>&1 | Out-String
-    $clangExit = $LASTEXITCODE
+
+    # The gallery's CI builds every architecture the mod declares, so check the
+    # same set rather than only the target compile_flags.txt happens to name -
+    # a pointer-width or calling-convention problem shows up on exactly one.
+    # No @architecture line means "all of them", which is Windhawk's own rule;
+    # declaring x86-64 is how a 64-bit-only taskbar mod opts out of x86.
+    $archMap = @{ 'x86' = 'i686-w64-mingw32'
+                  'x86-64' = 'x86_64-w64-mingw32'
+                  'amd64' = 'x86_64-w64-mingw32'
+                  'arm64' = 'aarch64-w64-mingw32' }
+    $declared = @(Select-String -Path $file -Pattern '^//\s*@architecture\s+(\S+)' |
+                  ForEach-Object { $archMap[$_.Matches.Groups[1].Value] } |
+                  Where-Object { $_ })
+    if (-not $declared) {
+        $declared = @('i686-w64-mingw32', 'x86_64-w64-mingw32',
+                      'aarch64-w64-mingw32')
+    }
+
+    $out = ''
+    $clangExit = 0
+    foreach ($target in $declared) {
+        $targetFlags = @($baseFlags | Where-Object { $_ -ne '-target' -and
+                                                     $_ -notmatch '-w64-mingw32$' })
+        $targetFlags += '-target'
+        $targetFlags += $target
+        $o = & $clang @targetFlags @modFlags $file 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { $clangExit = $LASTEXITCODE }
+        if ($o.Trim()) { $out += "[$target]`n$o" }
+    }
 
     # Not $errors/$warnings: PowerShell matches variable names case-insensitively, so
     # those would collide with $Error and with the -Warnings switch parameter.

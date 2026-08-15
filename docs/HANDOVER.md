@@ -342,6 +342,36 @@ staging), `rec.ps1` (gdigrab, lossless RGB), `runall.ps1`, `mkgif.ps1`. Lessons:
 - Dull colour is not the palette (128-colour bayer vs 256 undithered: 18.1% → 17.9%
   saturation). The desktop is genuinely near-greyscale — 1.9% measured. `mkgif.ps1`
   applies `eq=saturation=1.25:contrast=1.05`, which measured 17.9% → 26.1%.
+- **Use `ddagrab`, not `gdigrab`, at 4K.** gdigrab sustained ~17 fps on this panel,
+  which reads as stepped pointer motion in a GIF; ddagrab holds ~57 fps. It also
+  captures one *output* rather than a region of the virtual desktop, so a second
+  monitor cannot leak in by getting `-offset_x`/`-video_size` wrong. Needs
+  `hwdownload,format=bgra` or ffmpeg cannot convert its D3D11 frames.
+- **Snap Assist previews every switchable window**, not just staged ones — a folder of
+  personal documents reached a recording that way. `runall.ps1` now refuses to start
+  when a File Explorer window is open, matched on window **class**
+  (`CabinetWClass`/`ExploreWClass`); a title allowlist is useless because browsers and
+  players retitle themselves constantly. Also press Esc right after a snap to dismiss
+  the assist, and only *after* releasing Ctrl — Ctrl+Esc opens Start.
+- **"Switch to last window" follows the system MRU**, which contains every window on the
+  machine. The knock clip alt-tabbed to a window on the *other* monitor, so it recorded
+  as "nothing happened". `Set-Stage` now focuses both staged windows in order to pin
+  MRU[0] and MRU[1]. Stage them overlapping too (`Set-Stage -Overlap`) or a focus change
+  is invisible.
+- **PowerShell timing:** a loop of `Start-Sleep -Milliseconds 8` actually steps at ~21 ms,
+  so scripted moves ran **2.7x** their requested duration (200 ms → 547 ms). That silently
+  broke the knock demo, whose whole point is re-entering inside a 400 ms window. Drive
+  animation from a `Stopwatch` instead of counting sleeps.
+- **Dot-sourced scripts share the caller's scope**, and PowerShell names are
+  case-insensitive: a `foreach ($name in ...)` inside `logger.ps1` overwrote `rec.ps1`'s
+  `-Name` parameter and sent all seven clips to one filename. Keep loop variables in
+  dot-sourced files long and specific.
+- **`Set-StrictMode` plus `$global:` defaults do not mix.** Reading a never-assigned
+  global is a terminating error, so `if ($global:X)` fallbacks blow up on load. Declare
+  them `$null` first.
+- GIF trims are **per clip** (`$TRIMS` in `mkgif.ps1`). One global window either opened
+  mid-staging or ran past the end, because the clips are 6.0-8.5 s and the moment that
+  matters sits at a different offset in each.
 - `gdigrab` does capture Task View, Start and Quick Settings, so it needs no replacing.
 - Synthetic right-clicks on the tray icon never open the menu (likely UIPI against the
   elevated process); `Shell_NotifyIconGetRect` with the mod's GUID locates the icon fine.
@@ -351,10 +381,12 @@ staging), `rec.ps1` (gdigrab, lossless RGB), `runall.ps1`, `mkgif.ps1`. Lessons:
 
 ## 7. Smaller open items
 
-- **The five `trigger-*.gif` files do not exist yet.** The readme's *Ways to trigger a zone*
-  section links them on `raw.githubusercontent.com`, so they 404 until the capture runs.
-  **Do not promote the readme to PR #5001 before those files are pushed here** — that is the
-  one ordering the promotion rule in §0 does not cover by itself.
+- **Media is published and verified** — all six `trigger-*.gif`, `hot-corners.gif` and
+  `dashboard.png` return 200 from `raw.githubusercontent.com` on `main`. Any *new* readme
+  image must be pushed here before the readme reaches PR #5001, since the links resolve
+  against this repo's `main`. That ordering is not covered by the promotion rule in §0.
+- **1.1.2 is on `main` with CI green but is not yet on PR #5001.** Promoting it is the
+  next step in the §0 flow.
 - **Donation links** — Windhawk's `@donateUrl` renders a Donate button but takes only one
   URL; Ko-fi is set on `win-x-hotcorners` and the fork. The rest are plain links in the
   readme's `## Support the mod` section — plain, not shields.io badges, because the gallery

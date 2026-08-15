@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         1.1.1
+// @version         1.1.2
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -171,6 +171,11 @@ moment the key goes down. Either order works.
 **Alternate key press** and **Alternate command** change *what* a zone does
 rather than *when* it fires — the same corner runs the left action, then the
 right one, then the left again. Combine either with any trigger above.
+
+![One edge maximising a window, then restoring it on the next visit](https://raw.githubusercontent.com/DhakadG/my-windhawk-mods/main/docs/media/trigger-alternate.gif)
+
+Above, the right edge is set to `Win+Up | Win+Down`: the first visit maximises
+the window and the next one puts it back.
 
 ## Available Actions
 
@@ -4646,9 +4651,13 @@ static void DashPaintDiagram(DashState *s, HDC hdc)
                 IntersectClipRect(hdc, widest.left, widest.top, widest.right,
                                   widest.bottom);
                 // At 90 degrees the advance runs up the screen and the glyphs
-                // hang left of the baseline, so the baseline sits at the right
-                // of the band and the run starts at its bottom.
-                TextOutW(hdc, cx + ts.cy / 2, cy + ts.cx / 2, lab.c_str(),
+                // hang to the *right* of the baseline, so the baseline sits at
+                // the left of the band and the run starts at its bottom.
+                // Getting this backwards puts the whole label outside its own
+                // strip, where the clip rect shears it in half and it reads as
+                // two labels colliding. Rendered rather than reasoned about:
+                // scripts/probe-vtext.cpp draws all three candidates.
+                TextOutW(hdc, cx - ts.cy / 2, cy + ts.cx / 2, lab.c_str(),
                          (int)lab.size());
                 SelectClipRgn(hdc, nullptr);
             }
@@ -5742,3 +5751,4 @@ void Wh_ModUninit() {
     WhTool_ModUninit();
     ExitProcess(0);
 }
+

@@ -22,6 +22,13 @@ Instantly trigger configurable actions when your cursor reaches any screen
 corner or edge. Configure different actions for each zone on each monitor
 independently.
 
+![Throwing the pointer into the top-left corner opens Task View](https://raw.githubusercontent.com/DhakadG/my-windhawk-mods/main/docs/media/hot-corners.gif)
+
+The tray icon's **Zones & settings** window shows what each zone does on each
+display, and the timings actually in effect for whichever one you point at:
+
+![The Zones and settings window](https://raw.githubusercontent.com/DhakadG/my-windhawk-mods/main/docs/media/dashboard.png)
+
 Inspired by [WinXCorners](https://github.com/vhanla/winxcorners), rebuilt as a
 Windhawk mod.
 

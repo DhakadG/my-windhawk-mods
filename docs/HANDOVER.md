@@ -125,7 +125,7 @@ offered but not yet opened. **Check for replies before doing more work on the fo
 
 | Mod | Version | Original author | State |
 | --- | --- | --- | --- |
-| win-x-hotcorners | 4.1.4 | — (lost_husky's own) | Repo is ahead of installed 4.1.2 |
+| win-x-hotcorners | 1.1.1 | — (lost_husky's own) | Renumbered from 4.4.x for a first release |
 | taskbar-ai-quota-fork | 0.12.0 | Cleroth | Working |
 | taskbar-clock-customization-v3 | 3.1.71 | m417z | Working |
 | taskbar-fluent-media-player-fork | 1.6.1 | Salyts | Working |
@@ -308,6 +308,23 @@ zone cannot re-fire it, and leaving afterwards cannot fire a second release. One
 both and got both wrong. Disable, suspend and rebuild all call `ReleaseHeldZone` first —
 a peeked desktop that cannot be restored is worse than a missed trigger.
 
+**A required modifier vs. any key-based action (fixed in 1.1.1).** `SendInput`
+cannot mask a key the user is physically holding — Windows merges it into the
+injected combination. So a Ctrl-guarded zone running *Snap left* sent
+Ctrl+Win+Left (switch virtual desktop, or nothing at all on a single desktop),
+and it read as "the zone never fires" when the zone was firing perfectly.
+
+`SendKeys` now releases held modifiers that are not already in the batch, and
+**does not re-press them**. Do not "finish" this by restoring the key: a
+re-press is only valid if the key is still down when the restore runs, and the
+version that did this left Ctrl and Win logically stuck for whole sessions. A
+stray key-up has no equivalent failure mode. Both halves of that reasoning are
+in the comment above `SendKeys`.
+
+Verified by slicing the real `SendKeys` out of the `.cpp` into
+`scratchpad/probe-sendkeys.cpp` and driving a live window with it — the pattern
+from §2, and the reason this was not shipped on reasoning alone.
+
 **Show Desktop.** Uses `Win+D` via `SendKeys`. Do not "improve" this to
 `IShellDispatch4::ToggleDesktop`: on Windows 11 26300 it returns **S_OK and does
 nothing**, so there is no error to fall back on. `WM_COMMAND 407` to `Shell_TrayWnd` is
@@ -334,12 +351,14 @@ staging), `rec.ps1` (gdigrab, lossless RGB), `runall.ps1`, `mkgif.ps1`. Lessons:
 
 ## 7. Smaller open items
 
-- **`win-x-hotcorners` 4.1.4 is not installed** — 4.1.2 is. Either compile 4.1.4 or work out
-  why it was skipped. `scripts/sync-from-modssource.ps1` prints versions as it copies.
-- **Donation links** — Windhawk's `@donateUrl` metadata field renders a Donate button but
-  takes only one URL; Ko-fi is set on `win-x-hotcorners` and the fork. The rest are badges in
-  a `## Support` readme section, with a comment explaining the shields.io escaping (doubled
-  underscores, doubled dashes). Placeholders noted for OnlyChai and BuyMeChai.
+- **The five `trigger-*.gif` files do not exist yet.** The readme's *Ways to trigger a zone*
+  section links them on `raw.githubusercontent.com`, so they 404 until the capture runs.
+  **Do not promote the readme to PR #5001 before those files are pushed here** — that is the
+  one ordering the promotion rule in §0 does not cover by itself.
+- **Donation links** — Windhawk's `@donateUrl` renders a Donate button but takes only one
+  URL; Ko-fi is set on `win-x-hotcorners` and the fork. The rest are plain links in the
+  readme's `## Support the mod` section — plain, not shields.io badges, because the gallery
+  only allows images from `i.imgur.com` and `raw.githubusercontent.com`.
 - **Clock mod noise** — the File Explorer process (no tray) logs two `HookSymbols failed`
   lines per launch. Harmless since 3.1.71 releases the latch instead of locking out the retry,
   but it could be gated on the process actually owning a taskbar window.

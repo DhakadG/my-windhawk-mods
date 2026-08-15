@@ -61,13 +61,10 @@ If all you want is one specific behaviour, a smaller mod may suit you better:
   and an end, configured separately. Give neighbouring parts the same action and
   they merge back into one, so you get whichever of `ABC`, `AAB`, `ABB` or `AAA`
   you want without a mode switch. See *Dividing an edge*.
-- **Knock to trigger** — set a knock window on any zone, corners included, and a
-  single arrival does nothing: you have to leave and come back within the window.
-  Handy on a corner you brush past often.
-- **Hold to peek** — a zone can run one action on arrival and another when the
-  pointer leaves, which brings back the old Show Desktop button: peek while you
-  rest in the corner, everything restored when you move away.
-- **Configurable zone size**, optional dwell delay, and a cooldown timer.
+- **Five ways to trigger** — on arrival, after a dwell, on a double knock, only
+  while a modifier is held, or press-and-hold to peek. They combine freely, and
+  any of them works on any zone. See *Ways to trigger a zone*.
+- **Configurable zone size** and a cooldown timer.
 - **Fullscreen protection** — auto-detects games, presentations, and D3D
   fullscreen apps.
 - **Drag protection** — zones don't fire while a mouse button is held.
@@ -88,6 +85,92 @@ the zones you want on it. A zone you do not list does nothing.
 
 If the tray icon is hidden, it is in the overflow area — drag it onto the
 taskbar to keep it there.
+
+## Ways to trigger a zone
+
+A zone does not have to fire the instant you touch it. There are five trigger
+styles, every one of them works on every zone — corners and edge segments alike —
+and they combine: a corner can require a knock *and* a held modifier *and* a
+dwell before it does anything.
+
+### Arrival
+
+The default. Reach the zone, the action runs.
+
+![Task View opening as the pointer reaches the top-left corner](https://raw.githubusercontent.com/DhakadG/my-windhawk-mods/main/docs/media/trigger-arrival.gif)
+
+A short **pass-through guard** (80 ms out of the box) keeps a zone quiet when you
+were only travelling across it on the way somewhere else. If actions still fire
+while you are just moving around, raise it before you reach for anything else.
+
+### Dwell
+
+Set **Activation delay** and the pointer has to rest in the zone that long before
+it fires. Leave early and nothing happens.
+
+![Quick Settings appearing after the pointer rests on the top edge](https://raw.githubusercontent.com/DhakadG/my-windhawk-mods/main/docs/media/trigger-dwell.gif)
+
+Use this on a zone you pass through constantly. 300–500 ms is deliberate without
+feeling sluggish; past about a second it stops feeling like a hot corner.
+
+### Knock
+
+Set **Knock window** and a single arrival never fires. The zone arms only when
+you leave and come straight back within that many milliseconds — a double-knock.
+
+![Leaving and re-entering the bottom-right corner to switch windows](https://raw.githubusercontent.com/DhakadG/my-windhawk-mods/main/docs/media/trigger-knock.gif)
+
+This is the one to reach for on a corner you brush past often but want to keep
+for something disruptive. 400 ms is a comfortable knock; below about 200 ms it
+starts to demand real intent. `0` turns it off.
+
+Knock and dwell answer the same question differently: dwell asks you to wait,
+knock asks you to be deliberate without waiting at all.
+
+### Hold to peek
+
+Older Windows had a thin Show Desktop button past the clock — rest the pointer on
+it and the desktop peeked through, move away and every window came back. Windows
+11 dropped it. Any zone here can work that way.
+
+Set **Hold — action when the pointer leaves** and the zone stops being fire-once.
+The action runs on arrival, and the release action runs when the pointer leaves.
+For anything that toggles — Show Desktop, Mute, Keep Awake — pick **The same
+action again**:
+
+| Setting | Value |
+| --- | --- |
+| Zone | `Top-right corner` |
+| Action | `Show desktop` |
+| Hold — action when the pointer leaves | `The same action again` |
+
+![Resting in the top-right corner to peek at the desktop, windows returning on leaving](https://raw.githubusercontent.com/DhakadG/my-windhawk-mods/main/docs/media/trigger-hold.gif)
+
+The two halves are independent, so a release does not have to undo the entry —
+open Quick Settings on arrival and mute on departure if that is useful to you.
+
+A hold only ever releases what it actually engaged, so a pointer that clips the
+corner without staying long enough to fire leaves nothing behind. Disabling the
+mod, suspending it, or a display waking up all release a held zone first — a
+peeked desktop can never be left stuck.
+
+### With a modifier held
+
+Set **Required modifier**, globally or on one zone, and that zone only fires
+while Ctrl, Alt, Shift or Win is down. Every other time you hit the corner it is
+inert.
+
+![Snapping a window left with Ctrl held while touching the left edge](https://raw.githubusercontent.com/DhakadG/my-windhawk-mods/main/docs/media/trigger-modifier.gif)
+
+The key is checked continuously rather than only on arrival, so you can park the
+pointer in the corner first and press the key afterwards — the zone fires the
+moment the key goes down. Either order works.
+
+### Not a trigger, but often confused with one
+
+**Alternate key press** and **Alternate command** change *what* a zone does
+rather than *when* it fires — the same corner runs the left action, then the
+right one, then the left again. Combine either with any trigger above.
 
 ## Available Actions
 
@@ -173,46 +256,6 @@ cooldowns stay separate, because a merged zone could only carry one cooldown.
 Merging is not cosmetic. Three separate zones all running Task View would each
 re-arm as the pointer crossed a seam, so sliding along the edge would fire it
 repeatedly; one merged zone fires once.
-
-## Hold to peek
-
-Older Windows had a thin Show Desktop button past the clock: rest the pointer on
-it and the desktop peeked through, move away and every window came back. Windows
-11 dropped it. Any zone here can work that way.
-
-Set **Hold — action when the pointer leaves** on a zone and it stops being a
-fire-once zone. The action runs when the pointer arrives, and the release action
-runs when it leaves. For anything that toggles — Show Desktop, Mute, Keep Awake —
-pick **The same action again** and the zone becomes press-and-hold:
-
-| Setting | Value |
-| --- | --- |
-| Zone | `Top-right corner` |
-| Action | `Show desktop` |
-| Hold — action when the pointer leaves | `The same action again` |
-
-Rest in the corner, the desktop shows. Move away, your windows come back.
-
-The two halves are independent, so the release does not have to undo the entry —
-you could open Quick Settings on arrival and mute on departure if that is useful.
-
-A hold only releases what it actually engaged: a pointer that passes straight
-through without dwelling long enough to fire leaves nothing behind. Disabling the
-mod, suspending it, or a display change while a zone is held all release it
-first, so a peeked desktop can never be left stuck.
-
-This combines with everything else. A hold zone can also require a knock, or a
-modifier, or have its own dwell delay.
-
-## Knock to trigger
-
-Set **Knock window** on a zone — globally, or per zone — and a single arrival
-never fires it. The zone arms only when you leave and come back within that many
-milliseconds. `0` turns it off.
-
-This works on every zone, corners included, so a corner you keep brushing past
-on the way to something else can be made deliberate. 400 ms is a comfortable
-double-knock; below about 200 ms it starts to need intent.
 
 ## Identifying your monitors
 
@@ -301,10 +344,11 @@ Hot corners are disabled when any excluded process is the foreground window.
 
 **Example:** `photoshop.exe;premiere.exe;blender.exe`
 
-# Why it works this way
+## Why it works this way
 
-Not a changelog — this is the first release. These are the decisions that are
-easy to second-guess later, and the reason each one went the way it did.
+If you have wondered why a setting behaves the way it does, or you are weighing
+this against another hot-corners tool, here is the reasoning behind the choices
+that are easiest to second-guess.
 
 **Polling, not a mouse hook.** A `WH_MOUSE_LL` hook sits directly on the system
 input path: every mouse event in every process waits for it, and if it is slow
@@ -355,10 +399,18 @@ sampling thread, so a slow `OpenProcess` can never delay cursor sampling. The
 cost is that a suppressed trigger still consumes its cooldown — a wait nobody
 can perceive, traded for a sampling path that never stalls.
 
-## Support
+## Bugs and requests
 
-Windhawk renders the `@donateUrl` in the metadata block as a Donate button in the mod
-listing, but it only takes one link, so the rest live here.
+Please open an issue at
+[github.com/DhakadG/my-windhawk-mods](https://github.com/DhakadG/my-windhawk-mods/issues).
+If a zone is not firing, this mod's log (Windhawk → this mod → **Advanced** →
+**Mod log**) says which zone the pointer entered and why nothing happened, and
+pasting that in saves a round trip.
+
+## Support the mod
+
+This is free and always will be. If it earned you back some clicks and you feel
+like buying me a coffee:
 
 - [Ko-fi](https://ko-fi.com/losthusky_)
 - [Buy Me a Coffee](https://www.buymeacoffee.com/losthusky_)

@@ -389,8 +389,9 @@ staging), `rec.ps1` (gdigrab, lossless RGB), `runall.ps1`, `mkgif.ps1`. Lessons:
   `dashboard.png` return 200 from `raw.githubusercontent.com` on `main`. Any *new* readme
   image must be pushed here before the readme reaches PR #5001, since the links resolve
   against this repo's `main`. That ordering is not covered by the promotion rule in §0.
-- **1.1.2 is on `main` with CI green but is not yet on PR #5001.** Promoting it is the
-  next step in the §0 flow.
+- **1.1.3 is promoted.** On `main` with CI green, and on PR #5001 (commit `771a338f`,
+  gallery check passing); the file on the PR branch is byte-identical to the one CI built.
+  The PR title carries the version, so it needs updating on every promotion.
 - **Donation links** — Windhawk's `@donateUrl` renders a Donate button but takes only one
   URL; Ko-fi is set on `win-x-hotcorners` and the fork. The rest are plain links in the
   readme's `## Support the mod` section — plain, not shields.io badges, because the gallery

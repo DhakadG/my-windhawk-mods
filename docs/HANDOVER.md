@@ -394,8 +394,8 @@ staging), `rec.ps1` (gdigrab, lossless RGB), `runall.ps1`, `mkgif.ps1`. Lessons:
   The PR title carries the version, so it needs updating on every promotion.
 - **Donation links** — Windhawk's `@donateUrl` renders a Donate button but takes only one
   URL; Ko-fi is set on `win-x-hotcorners` and the fork. The rest are plain links in the
-  readme's `## Support the mod` section — plain, not shields.io badges, because the gallery
-  only allows images from `i.imgur.com` and `raw.githubusercontent.com`.
+  readme's `## Support the mod` section. Note the gallery only serves images from
+  `i.imgur.com` and `raw.githubusercontent.com`.
 - **Clock mod noise** — the File Explorer process (no tray) logs two `HookSymbols failed`
   lines per launch. Harmless since 3.1.71 releases the latch instead of locking out the retry,
   but it could be gated on the process actually owning a taskbar window.

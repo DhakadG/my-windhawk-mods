@@ -6,6 +6,20 @@ Starting context for a fresh session. Everything here is verified, not assumed. 
 **Repo:** [DhakadG/my-windhawk-mods](https://github.com/DhakadG/my-windhawk-mods) (public)
 **Working folder:** `C:\Users\lost_husky\Downloads\Programs\VS Code Works\WindHawk Mods`
 
+## 0. How a change reaches the gallery — do not skip a step
+
+1. Edit locally, then `scripts/check-mod.ps1`, `scripts/build-mod.ps1`,
+   `scripts/check-settings.py`.
+2. Push to **this repo** and wait for its **Build mods** workflow to go green on all
+   three Windhawk versions.
+3. **Only then** copy the file into the gallery fork (`DhakadG/windhawk-mods`, branch
+   `add-win-x-hotcorners`) and push, which updates
+   [ramensoftware/windhawk-mods#5001](https://github.com/ramensoftware/windhawk-mods/pull/5001).
+
+Never push a mod change straight to the PR branch, however small. The gallery's check
+only runs on a PR, only for the changed file, and a fork run can sit waiting for a
+maintainer to approve it — the `-luuid` link error reached them exactly that way.
+
 ---
 
 ## 1. Environment facts
@@ -281,6 +295,42 @@ the patched logic standalone (32-bit, matching `windhawk.exe`) — it printed
 `OnePlus Nord Buds 4 Pro 20% [Earbuds]` and `LotsOfHusky 100% [Speaker]`.
 
 ---
+
+## 6b. Hold to peek (1.1.0) and the capture rig
+
+**Hold zones.** A zone with `releaseAction` set to anything but Nothing runs its action
+on arrival and the release action when the pointer leaves — the old Show Desktop button.
+`ACTION_SAME` ("the same action again") covers every toggle.
+
+The trap worth remembering: `g_holdEngaged` is deliberately *not* `g_firedThisEntry`.
+Releasing keeps the visit spent, so re-enabling the mod while the pointer rests in a hold
+zone cannot re-fire it, and leaving afterwards cannot fire a second release. One flag did
+both and got both wrong. Disable, suspend and rebuild all call `ReleaseHeldZone` first —
+a peeked desktop that cannot be restored is worse than a missed trigger.
+
+**Show Desktop.** Uses `Win+D` via `SendKeys`. Do not "improve" this to
+`IShellDispatch4::ToggleDesktop`: on Windows 11 26300 it returns **S_OK and does
+nothing**, so there is no error to fall back on. `WM_COMMAND 407` to `Shell_TrayWnd` is
+the other dead end (undocumented, and a window the mod does not own).
+
+**Capture rig** lives in the session scratchpad (`capture/`): `ctl.ps1` (DPI-aware mouse,
+staging), `rec.ps1` (gdigrab, lossless RGB), `runall.ps1`, `mkgif.ps1`. Lessons:
+
+- Make the process **per-monitor DPI aware** or `SetCursorPos` lands in the 3072×1728
+  logical space while gdigrab records 3840×2160.
+- Shell animations take **~1.3 s** after the trigger. Sampling one frame at t+2.9 s showed
+  "nothing fired" for actions that fired perfectly — always trace several frames before
+  concluding the mod is broken. The user was right that it was the harness, not the mod.
+- Stage the windows before **every** clip, or one clip inherits what the last left behind.
+- Dull colour is not the palette (128-colour bayer vs 256 undithered: 18.1% → 17.9%
+  saturation). The desktop is genuinely near-greyscale — 1.9% measured. `mkgif.ps1`
+  applies `eq=saturation=1.25:contrast=1.05`, which measured 17.9% → 26.1%.
+- `gdigrab` does capture Task View, Start and Quick Settings, so it needs no replacing.
+- Synthetic right-clicks on the tray icon never open the menu (likely UIPI against the
+  elevated process); `Shell_NotifyIconGetRect` with the mod's GUID locates the icon fine.
+  The dashboard can be opened by posting `WM_COMMAND` `IDM_SETTINGS` (100) to the
+  `WindhawkHotCornersTray` window — but `FindWindowW` does not match the dashboard class,
+  so find it by title instead.
 
 ## 7. Smaller open items
 

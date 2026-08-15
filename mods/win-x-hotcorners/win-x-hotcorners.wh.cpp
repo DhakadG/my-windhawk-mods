@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         1.1.0
+// @version         1.1.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -393,6 +393,15 @@ you had to leave and come back.
 monitor rebuilds the zones, and the pointer may already be sitting in one. The
 rebuild adopts that zone with the visit already spent, so a corner bound to
 *Lock* cannot lock the machine because a display woke up.
+
+**A held modifier is released before a key action, and never re-pressed.**
+Windows merges whatever you are physically holding into an injected shortcut, so
+without this a Ctrl-guarded zone bound to *Snap left* would send Ctrl+Win+Left
+and switch virtual desktop instead — or, on a single desktop, do nothing at all.
+Restoring the key afterwards sounds tidier and is a trap: if you let go in
+between, a key-down goes out with no matching key-up and the modifier is stuck
+down for the rest of the session. A stray key-up cannot cause that, so this
+releases and stops there.
 
 **The fullscreen and excluded-app checks run on the worker thread**, not on the
 sampling thread, so a slow `OpenProcess` can never delay cursor sampling. The
@@ -1593,15 +1602,18 @@ static bool IsForegroundAppExcluded(const std::vector<std::wstring> &excluded)
 // Sends key-down for all VKs in order, then key-up in reverse order, as one
 // atomic SendInput batch.
 //
-// Earlier versions also released any modifier the user was physically holding
-// and re-pressed it afterwards. That was removed deliberately: re-pressing is
-// only correct if the key is still held when the restore runs. If the user let
-// go in between — or the restore SendInput failed, or the thread was torn down
-// between the two calls — a key-down was injected with no matching key-up and
-// the modifier stayed logically stuck down for the whole session. A stuck Win
-// or Ctrl key breaks every application at once, which is far worse than the
-// problem it solved (a held Shift leaking into the injected combo).
-// Every key this function presses, it releases in the same batch.
+// Any modifier the user is physically holding is released first, so it cannot
+// leak into the injected combination. It is never re-pressed afterwards, and
+// that asymmetry is the whole point: an earlier version restored the key and
+// could leave it logically stuck down for the rest of the session, because a
+// re-press is only correct if the key is still held when the restore runs. If
+// the user let go in between — or the restore SendInput failed, or the thread
+// was torn down between the two calls — a key-down went out with no matching
+// key-up. A stuck Win or Ctrl breaks every application at once.
+//
+// A key-up carries no such risk in either direction, so releasing is kept and
+// restoring is not. Every key this function presses, it releases in the same
+// batch.
 // Keys that live on the E0-prefixed part of the keyboard. Injected without
 // KEYEVENTF_EXTENDEDKEY they resolve to their numpad twins, so Win+Right
 // (snap) or a custom combo using arrows/Home/End would do nothing or move the
@@ -1647,14 +1659,44 @@ static void SendKeys(const std::vector<WORD> &vks)
     if (vks.empty())
         return;
 
+    // A modifier the user is physically holding cannot be masked by SendInput:
+    // Windows merges it into whatever this batch presses. A zone with a
+    // required modifier guarantees that happens on every trigger, and it
+    // silently changes the action rather than failing — Snap left (Win+Left)
+    // fired from a Ctrl zone arrives as Ctrl+Win+Left, which switches virtual
+    // desktop, or does nothing whatsoever when there is only one desktop.
+    //
+    // Injecting a release first is safe in the way the old release-then-
+    // re-press pair described above was not. An extra key-up can never leave a
+    // key logically stuck, and the user's own release still delivers its
+    // key-up afterwards. Nothing is re-pressed here, deliberately.
+    static const WORD kMods[] = {VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU,
+                                 VK_LSHIFT,   VK_RSHIFT,   VK_LWIN,  VK_RWIN};
+    std::vector<INPUT> inputs;
+    for (WORD mod : kMods)
+    {
+        if (!(GetAsyncKeyState(mod) & 0x8000))
+            continue;
+        // Part of the batch already: it presses and releases this one itself.
+        if (std::find(vks.begin(), vks.end(), mod) != vks.end())
+            continue;
+        INPUT up = {};
+        up.type = INPUT_KEYBOARD;
+        up.ki.wVk = mod;
+        up.ki.dwFlags =
+            (IsExtendedKey(mod) ? KEYEVENTF_EXTENDEDKEY : 0) | KEYEVENTF_KEYUP;
+        inputs.push_back(up);
+    }
+    const size_t pre = inputs.size();
+
     size_t n = vks.size();
-    std::vector<INPUT> inputs(n * 2);
+    inputs.resize(pre + n * 2);
 
     for (size_t i = 0; i < n; i++)
     {
-        inputs[i].type = INPUT_KEYBOARD;
-        inputs[i].ki.wVk = vks[i];
-        inputs[i].ki.dwFlags =
+        inputs[pre + i].type = INPUT_KEYBOARD;
+        inputs[pre + i].ki.wVk = vks[i];
+        inputs[pre + i].ki.dwFlags =
             IsExtendedKey(vks[i]) ? KEYEVENTF_EXTENDEDKEY : 0;
     }
     for (size_t i = 0; i < n; i++)
@@ -1663,9 +1705,9 @@ static void SendKeys(const std::vector<WORD> &vks)
         // not from vks[i] — the release order is reversed, so using the wrong
         // index would tag the extended bit onto the wrong key.
         WORD vk = vks[n - 1 - i];
-        inputs[n + i].type = INPUT_KEYBOARD;
-        inputs[n + i].ki.wVk = vk;
-        inputs[n + i].ki.dwFlags =
+        inputs[pre + n + i].type = INPUT_KEYBOARD;
+        inputs[pre + n + i].ki.wVk = vk;
+        inputs[pre + n + i].ki.dwFlags =
             (IsExtendedKey(vk) ? KEYEVENTF_EXTENDEDKEY : 0) | KEYEVENTF_KEYUP;
     }
 
@@ -1687,7 +1729,7 @@ static void SendKeys(const std::vector<WORD> &vks)
         // and releasing a key that is already up does nothing, so replay all
         // of them. Nothing was pressed if nothing was sent.
         if (sent > 0)
-            SendInput((UINT)n, inputs.data() + n, sizeof(INPUT));
+            SendInput((UINT)n, inputs.data() + pre + n, sizeof(INPUT));
     }
     else
     {

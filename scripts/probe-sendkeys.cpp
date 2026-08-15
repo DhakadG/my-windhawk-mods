@@ -1,5 +1,20 @@
-// Runs the mod's ACTUAL SendKeys (sk.inc is sliced straight out of the .cpp)
-// against a real window, with and without a physically-held Ctrl.
+// Runs the mod's ACTUAL SendKeys against a real window, with and without a
+// physically-held modifier. Proves the 1.1.1 fix: a Ctrl-guarded zone bound to
+// Snap left used to send Ctrl+Win+Left and do nothing on a single desktop.
+//
+// sk.inc is sliced out of the mod rather than copied, so this cannot quietly
+// test a stale copy of the function. Regenerate and build it with:
+//
+//   $m = 'mods/win-x-hotcorners/win-x-hotcorners.wh.cpp'
+//   $s = Get-Content $m
+//   $a = ($s | Select-String '^static bool IsExtendedKey').LineNumber
+//   $b = ($s | Select-String '^// Convenience overload').LineNumber
+//   $s[($a-1)..($b-2)] -replace 'Wh_Log\(','LogStub(' | Set-Content scripts/sk.inc
+//   & 'C:\Program Files\Windhawk\Compiler\bin\clang++.exe' -std=c++20 -static `
+//       '-Wl,--subsystem,console' -Iscripts scripts/probe-sendkeys.cpp `
+//       -o scripts/probe-sendkeys.exe -luser32
+//
+// It drives real input, so it moves a window of its own for ~10 seconds.
 
 #include <windows.h>
 #include <cstdio>

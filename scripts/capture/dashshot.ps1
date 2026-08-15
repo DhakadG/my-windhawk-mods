@@ -2,8 +2,15 @@
 #
 # The tray icon cannot be right-clicked synthetically (UIPI blocks injected
 # input into the elevated Windhawk process), so the dashboard is opened by
-# posting the tray window's own menu command instead. FindWindowW does not match
-# the dashboard's class, so it is located by title afterwards.
+# posting the tray window's own menu command instead.
+#
+# Hover position is a fraction of the window, so it survives the window being a
+# different size. Default is the right edge's middle segment.
+
+param(
+    [double]$HoverX = 0.906,
+    [double]$HoverY = 0.352
+)
 
 $global:DemoLogConsole = $false
 . (Join-Path $PSScriptRoot 'ctl.ps1')
@@ -61,11 +68,14 @@ $w = $r.R - $r.L
 $h = $r.B - $r.T
 "dashboard : $($r.L),$($r.T)  ${w}x${h}"
 
-# Park the pointer over the top-right zone so the detail panel is populated
-# rather than showing its empty prompt - the panel is half the point of the
-# window. Top-right is the hold zone, so the shot also documents the release
-# action, which nothing else in the readme can show as a still.
-[void][Ctl]::SetCursorPos($r.L + [int]($w * 0.888), $r.T + [int]($h * 0.180))
+# Park the pointer over a zone *inside the diagram* so the detail panel is
+# populated rather than showing its empty prompt - the panel is half the point
+# of the window. Note this is the diagram's zone block, not the real screen
+# edge; hovering the actual edge would fire the zone instead.
+#
+# Defaults to the right edge's middle segment, which carries a vertical label
+# and an alternating action, so one still shows both.
+[void][Ctl]::SetCursorPos($r.L + [int]($w * $HoverX), $r.T + [int]($h * $HoverY))
 Start-Sleep -Milliseconds 1100
 
 $out = Join-Path $PSScriptRoot 'dashboard.png'
@@ -78,4 +88,5 @@ $out = Join-Path $PSScriptRoot 'dashboard.png'
 
 if (Test-Path $out) { "written    : $out ({0:N0} KB)" -f ((Get-Item $out).Length / 1KB) }
 else { 'screenshot FAILED' }
+
 

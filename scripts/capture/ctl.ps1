@@ -42,8 +42,19 @@ public static class Ctl {
 }
 
 try {
-    [void][Ctl]::SetProcessDpiAwarenessContext([IntPtr](-4))
-    Write-Log -Level DEBUG -Event 'DPI_AWARENESS' -Message 'Per-monitor V2 DPI awareness requested.'
+    # The return value matters. This call fails with ERROR_ACCESS_DENIED when
+    # awareness is already set for the process, and discarding that would leave
+    # the script logging "per-monitor V2" while the cursor is still being scaled
+    # into a 3072x1728 space - the exact failure that put every scripted click
+    # in the wrong place the first time this rig was built.
+    if ([Ctl]::SetProcessDpiAwarenessContext([IntPtr](-4)) -ne [IntPtr]::Zero) {
+        Write-Log -Level DEBUG -Event 'DPI_AWARENESS' -Message 'Per-monitor V2 DPI awareness set.'
+    }
+    else {
+        $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        [void][Ctl]::SetProcessDPIAware()
+        Write-Log -Level WARN -Event 'DPI_AWARENESS_FALLBACK' -Message "Per-monitor V2 refused (Win32 $err); fell back to system DPI awareness."
+    }
 }
 catch {
     try {

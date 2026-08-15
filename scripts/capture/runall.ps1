@@ -9,7 +9,10 @@
 
 param(
     [string]$LogDir = (Join-Path $PSScriptRoot 'logs'),
-    [switch]$NoDebugWatch,
+    # Opt-in, not opt-out. The debug watcher records OutputDebugString from
+    # every process on the machine, which is far more than this mod's own log
+    # and is not something to collect by default just to record a demo.
+    [switch]$DebugWatch,
     [ValidateRange(60,1200)][int]$DebugWatchSeconds = 300,
     [switch]$StopOnError,
     [switch]$AllowWindows
@@ -77,18 +80,23 @@ function Assert-CleanDesktop {
     $all = @(Get-VisibleWindows)
     $risky = @($all | Where-Object { $RISKY_WINDOW_CLASSES -contains $_.Class })
 
+    # Classes and a count, not titles. A window title is often a document name,
+    # a track, or a conversation, and this log is meant to be shareable.
     Write-Log -Level INFO -Event 'PREFLIGHT_WINDOWS' -Data @{
-        visible = @($all | ForEach-Object { "$($_.Title) [$($_.Class)]" })
-        risky   = @($risky | ForEach-Object { $_.Title })
+        count   = $all.Count
+        classes = @($all | ForEach-Object { $_.Class } | Sort-Object -Unique)
+        riskyCount = $risky.Count
     }
 
     if ($risky.Count -gt 0) {
+        # The titles go to the operator's console, which is the point - they
+        # need to know which window to close. They stay out of the log file.
         $names = ($risky | ForEach-Object { $_.Title }) -join '; '
-        Write-Log -Level ERROR -Event 'PREFLIGHT_EXPLORER_OPEN' -Message $names
+        Write-Log -Level ERROR -Event 'PREFLIGHT_EXPLORER_OPEN' -Data @{ count = $risky.Count }
         if (-not $AllowWindows) {
             throw "File Explorer is open and Snap Assist will preview its contents: $names. Close it, or re-run with -AllowWindows."
         }
-        Write-Log -Level WARN -Event 'PREFLIGHT_OVERRIDDEN' -Message $names
+        Write-Log -Level WARN -Event 'PREFLIGHT_OVERRIDDEN' -Data @{ count = $risky.Count }
     }
     else {
         Write-Log -Level SUCCESS -Event 'PREFLIGHT_CLEAN' -Message "$($all.Count) windows open, no File Explorer."
@@ -125,8 +133,8 @@ function Reset-Stage {
 }
 
 function Start-DebugWatch {
-    if ($NoDebugWatch) {
-        Write-Log -Level INFO -Event 'DEBUG_WATCH_DISABLED'
+    if (-not $DebugWatch) {
+        Write-Log -Level INFO -Event 'DEBUG_WATCH_DISABLED' -Message 'pass -DebugWatch to capture system-wide OutputDebugString'
         return
     }
 
@@ -198,7 +206,15 @@ function Rec {
 
     try {
         Reset-Stage
-        & $recScript -Name $Name -Seconds $Secs -Action $Body -Log $global:DemoLogPath -SessionId $global:DemoSessionId
+        # rec.ps1 sets $global:DemoScriptName to 'rec' and never puts it back,
+        # so without this every later runall event is logged as coming from rec.
+        $callerScript = $global:DemoScriptName
+        try {
+            & $recScript -Name $Name -Seconds $Secs -Action $Body -Log $global:DemoLogPath -SessionId $global:DemoSessionId
+        }
+        finally {
+            $global:DemoScriptName = $callerScript
+        }
         $completedClips.Add($Name)
         $elapsed = ((Get-Date) - $started).TotalSeconds
         Write-Log -Level SUCCESS -Event 'CLIP_COMPLETE' -Message $Name -Data @{ elapsedSec = [math]::Round($elapsed, 2) }

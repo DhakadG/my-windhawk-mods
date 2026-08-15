@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         1.1.2
+// @version         1.1.3
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -831,6 +831,12 @@ struct HitZone
     std::function<void()> releaseExec;
     CornerAction releaseAction = CornerAction::Nothing;
     std::wstring releaseArgs;
+
+    // Queue bookkeeping, set per job rather than per zone. The detection thread
+    // decides that a release is *owed*; only the worker knows whether the entry
+    // it would undo actually ran, because the gates live there.
+    bool engagesHold = false;
+    bool isRelease = false;
 
     // Resolved once at build time - zone override if set, otherwise the
     // global. The detection loop therefore never has to know that per-zone
@@ -2271,7 +2277,9 @@ static bool SameZoneConfig(const ZoneConfig *a, const ZoneConfig *b)
         return true;
     if (!a || !b)
         return false;
-    if (a->action != b->action || a->args != b->args)
+    if (a->action != b->action || a->args != b->args ||
+        a->releaseAction != b->releaseAction ||
+        a->releaseArgs != b->releaseArgs)
         return false;
     const ZoneTuning &x = a->tuning, &y = b->tuning;
     return x.size == y.size && x.delay == y.delay && x.settle == y.settle &&
@@ -2678,7 +2686,10 @@ static bool TopologyChanged()
 static void EnqueueAction(const HitZone &hz)
 {
     EnterCriticalSection(&g_queueLock);
-    if (g_queue.size() < kMaxQueue)
+    // A release is never dropped. The cap is there to bound a runaway burst of
+    // new work, but discarding the half that undoes something already done is
+    // how a peeked desktop gets stuck with no way back.
+    if (g_queue.size() < kMaxQueue || hz.isRelease)
         g_queue.push_back(hz);
     LeaveCriticalSection(&g_queueLock);
     SetEvent(g_hWorkEvent);
@@ -2693,6 +2704,8 @@ static void EnqueueRelease(const HitZone &hz)
     HitZone rel = hz;
     rel.exec = hz.releaseExec;
     rel.label = hz.label + L"  (released)";
+    rel.engagesHold = false;
+    rel.isRelease = true;
     EnqueueAction(rel);
 }
 
@@ -2746,23 +2759,48 @@ static DWORD WINAPI ActionWorkerThread(LPVOID)
             // fullscreen game has focus re-queues the job every cooldown.
             // Report the first skip of a run, then stay quiet until something
             // actually fires. Only this thread touches the flag.
+            // Whether the entry half of a hold actually ran. Only this thread
+            // touches it, and the queue is FIFO, so the entry job is always
+            // seen before the release it pairs with - no synchronisation and no
+            // race with the detection thread's own view of the hold.
+            static bool holdActive = false;
+
             static bool skipLogged = false;
-            HMONITOR fsMon = checkFullscreen ? FullScreenMonitor() : nullptr;
-            if (fsMon && (fsMon == kAllMonitors || fsMon == job.monitor))
+            if (job.isRelease)
             {
-                if (!skipLogged)
-                    Wh_Log(L"SKIP (fullscreen): %s", job.label.c_str());
-                skipLogged = true;
-                continue;
+                // Deliberately not gated. The gates decide whether to *start*
+                // something; refusing to undo something already done would
+                // leave the desktop peeked with no way back - a fullscreen app
+                // appearing while the pointer rests in the corner is exactly
+                // when that would happen.
+                if (!holdActive)
+                {
+                    // The entry was suppressed or never made it onto the queue,
+                    // so there is nothing to undo. Releasing anyway is how a
+                    // hold zone ends up *hiding* your windows on the way out.
+                    Wh_Log(L"SKIP (nothing engaged): %s", job.label.c_str());
+                    continue;
+                }
             }
-            if (IsForegroundAppExcluded(excluded))
+            else
             {
-                if (!skipLogged)
-                    Wh_Log(L"SKIP (excluded app): %s", job.label.c_str());
-                skipLogged = true;
-                continue;
+                HMONITOR fsMon = checkFullscreen ? FullScreenMonitor() : nullptr;
+                if (fsMon && (fsMon == kAllMonitors || fsMon == job.monitor))
+                {
+                    if (!skipLogged)
+                        Wh_Log(L"SKIP (fullscreen): %s", job.label.c_str());
+                    skipLogged = true;
+                    continue;
+                }
+                if (IsForegroundAppExcluded(excluded))
+                {
+                    if (!skipLogged)
+                        Wh_Log(L"SKIP (excluded app): %s", job.label.c_str());
+                    skipLogged = true;
+                    continue;
+                }
+                skipLogged = false;
             }
-            skipLogged = false;
 
             {
                 WCHAR fgClass[64] = L"?";
@@ -2777,6 +2815,13 @@ static DWORD WINAPI ActionWorkerThread(LPVOID)
             // working with no indication why.
             if (job.exec)
                 job.exec();
+
+            // Recorded only now, past the gates and the execution, so a hold is
+            // owed a release exactly when its entry half really happened.
+            if (job.isRelease)
+                holdActive = false;
+            else if (job.engagesHold)
+                holdActive = true;
         }
     }
     CoUninitialize();
@@ -2976,10 +3021,14 @@ static DWORD DetectTick()
 
     // Only a zone that actually engaged owes a release, so this is set here
     // rather than at entry - a pass-through that never fired leaves nothing
-    // behind to undo.
+    // behind to undo. This tracks that a release has been *queued*; whether it
+    // runs is the worker's call, since the gates it would be suppressed by live
+    // there and this thread must not wait on them.
     g_holdEngaged = (bool)zones->zones[idx].releaseExec;
 
-    EnqueueAction(zones->zones[idx]);
+    HitZone job = zones->zones[idx];
+    job.engagesHold = (bool)job.releaseExec;
+    EnqueueAction(job);
     return next;
 }
 
@@ -5751,4 +5800,5 @@ void Wh_ModUninit() {
     WhTool_ModUninit();
     ExitProcess(0);
 }
+
 

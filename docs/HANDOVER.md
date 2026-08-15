@@ -376,8 +376,12 @@ staging), `rec.ps1` (gdigrab, lossless RGB), `runall.ps1`, `mkgif.ps1`. Lessons:
 - Synthetic right-clicks on the tray icon never open the menu (likely UIPI against the
   elevated process); `Shell_NotifyIconGetRect` with the mod's GUID locates the icon fine.
   The dashboard can be opened by posting `WM_COMMAND` `IDM_SETTINGS` (100) to the
-  `WindhawkHotCornersTray` window — but `FindWindowW` does not match the dashboard class,
-  so find it by title instead.
+  `WindhawkHotCornersTray` window. `scripts/capture/dashshot.ps1` then polls for it by
+  class (`WindhawkHotCornersDash`) and falls back to the window title. **An earlier
+  version of this note claimed `FindWindowW` cannot match that class — that was never
+  verified.** Both lookups return 0 when the window simply is not open, which is easy to
+  misread as "the class does not match", and the reopen bug below makes that the common
+  case. Confirm against an actually-open dashboard before concluding anything.
 
 ## 7. Smaller open items
 

@@ -34,23 +34,32 @@ $tray = [Dash]::FindWindowW('WindhawkHotCornersTray', $null)
 if ($tray -eq [IntPtr]::Zero) { throw 'Tray window not found - is the mod loaded?' }
 
 [void][Dash]::PostMessageW($tray, $WM_COMMAND, [IntPtr]$IDM_SETTINGS, [IntPtr]::Zero)
-Start-Sleep -Milliseconds 2200
 
-$dash = Get-VisibleWindows | Where-Object { $_.Title -match 'Zones|Hot Corners' } | Select-Object -First 1
-if (-not $dash) {
-    'dashboard NOT found; visible windows:'
-    Get-VisibleWindows | ForEach-Object { '   ' + $_.Title }
-    throw 'dashboard did not open'
+# Poll rather than sleeping a guessed interval. Class first, since the mod
+# registers WindhawkHotCornersDash and a class cannot drift the way a title can
+# - but fall back to the title, because the class lookup is unproven here: the
+# dashboard will not reopen once closed (a known mod bug), so there was no way
+# to see it succeed. Whichever finds the window is fine.
+$hDash = [IntPtr]::Zero
+for ($i = 0; $i -lt 40; $i++) {
+    Start-Sleep -Milliseconds 100
+    $hDash = [Dash]::FindWindowW('WindhawkHotCornersDash', $null)
+    if ($hDash -ne [IntPtr]::Zero) { break }
+    $byTitle = Get-VisibleWindows | Where-Object { $_.Title -match 'Zones & settings' } | Select-Object -First 1
+    if ($byTitle) { $hDash = $byTitle.H; break }
+}
+if ($hDash -eq [IntPtr]::Zero) {
+    throw 'dashboard did not open within 4s. If it was opened and closed once already, the mod will not reopen it - restart the mod.'
 }
 
-[void][Dash]::SetForegroundWindow($dash.H)
+[void][Dash]::SetForegroundWindow($hDash)
 Start-Sleep -Milliseconds 700
 
 $r = New-Object Dash+RC
-[void][Dash]::GetWindowRect($dash.H, [ref]$r)
+[void][Dash]::GetWindowRect($hDash, [ref]$r)
 $w = $r.R - $r.L
 $h = $r.B - $r.T
-"dashboard : $($dash.Title)  $($r.L),$($r.T)  ${w}x${h}"
+"dashboard : $($r.L),$($r.T)  ${w}x${h}"
 
 # Park the pointer over the top-right zone so the detail panel is populated
 # rather than showing its empty prompt - the panel is half the point of the
@@ -69,3 +78,4 @@ $out = Join-Path $PSScriptRoot 'dashboard.png'
 
 if (Test-Path $out) { "written    : $out ({0:N0} KB)" -f ((Get-Item $out).Length / 1KB) }
 else { 'screenshot FAILED' }
+

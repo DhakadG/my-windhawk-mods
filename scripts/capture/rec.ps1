@@ -66,6 +66,7 @@ Write-Log -Level INFO -Event 'RECORD_START' -Message $Name -Data @{
 }
 
 $startedAt = Get-Date
+$exitCode = -1
 $actionError = $null
 
 try {
@@ -121,6 +122,14 @@ finally {
 
 if ($actionError) { throw $actionError }
 
+# ffmpeg can exit nonzero and still leave a truncated file behind, which the
+# checks below would happily accept: it exists and its first stream is the right
+# size. Fail on the exit code first.
+if ($exitCode -ne 0) {
+    Write-Log -Level ERROR -Event 'FFMPEG_NONZERO_EXIT' -Message $Name -Data @{ exitCode = $exitCode }
+    throw "ffmpeg exited $exitCode while recording '$Name'; see $stderr"
+}
+
 if (-not (Test-Path -LiteralPath $raw)) {
     Write-Log -Level ERROR -Event 'RECORD_OUTPUT_MISSING' -Message $Name
     throw "Recording '$Name' did not produce $raw"
@@ -155,3 +164,4 @@ Write-Log -Level SUCCESS -Event 'RECORD_VERIFIED' -Message $Name -Data @{
 }
 
 "recorded $Name ({0:N2} MB)" -f $sizeMb
+

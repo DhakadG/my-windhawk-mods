@@ -45,12 +45,13 @@ function global:Initialize-DemoLog {
     $global:DemoSessionId = $SessionId
 
     if (-not $Append) {
+        # No hostname or username. These logs get pasted into issues and chats
+        # alongside the clips they describe, and neither field helps debug a
+        # capture.
         $header = @(
             "# Windhawk demo session",
             "# SessionId: $SessionId",
             "# Started: $((Get-Date).ToString('o'))",
-            "# Host: $($env:COMPUTERNAME)",
-            "# User: $env:USERNAME",
             "# PowerShell: $($PSVersionTable.PSVersion)",
             "# ------------------------------------------------------------"
         ) -join [Environment]::NewLine

@@ -2,7 +2,7 @@
 // @id              spicetify-guardian
 // @name            Spicetify Guardian
 // @description     Keeps Spicetify alive across Spotify updates - detects the moment Spotify wipes it, checks compatibility, and re-applies. Plus a tray dashboard for every other Spicetify chore.
-// @version         1.0.0
+// @version         1.1.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -72,6 +72,23 @@ tested, not the ceiling of what works. So it is a warning, not a wall.
 If you would rather it never touch an untested combination, turn on **Strict
 mode** in the dashboard. It will then hold off and point you at the downgrade
 guide instead.
+
+## Dry run
+
+Right-click the tray icon and tick **Dry run**, and nothing is changed by
+anything — not the mod, and not the PowerShell scripts either, since the setting
+is shared. Every step still runs its checks and logs exactly what it *would*
+have done:
+
+```
+-- Repair (DRY RUN - nothing will change) --------------------
+  [1/11] Prerequisites ............................. ok
+  [2/11] Applied state ............................. WIPED
+  ...
+  [9/11] Re-apply .................................. skipped (dry run)
+```
+
+Worth doing once before you trust it with a real Spotify update.
 
 ## Safety
 
@@ -366,11 +383,28 @@ static void EnsureStateDir() {
 }
 
 static CRITICAL_SECTION g_logLock;
+static bool g_logWriteFailed = false;
 
-// The log is shared with the scripts, so it uses their exact line format:
-//   [yyyy-MM-dd HH:mm:ss] [LEVEL] message
+// The log is shared with the PowerShell scripts, so it uses their exact line
+// format, right down to the level padding:
+//   [yyyy-MM-dd HH:mm:ss.fff] [LEVEL ] message
+//
+// Levels: INFO, WARN, ERROR, ACTION, STEP, DRY.
+//
+// Every line also goes to Wh_Log so it shows up in Windhawk's mod log window
+// with the same text - previously the two said different things, and the
+// Windhawk log was too sparse to diagnose anything from.
 static void GuardianLog(const wchar_t* level, const std::wstring& msg) {
-    Wh_Log(L"[%s] %s", level, msg.c_str());
+    std::wstring clean = StripAnsi(msg);
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t stamp[64];
+    swprintf_s(stamp, L"[%04d-%02d-%02d %02d:%02d:%02d.%03d] [%-6s] ", st.wYear, st.wMonth,
+               st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, level);
+
+    // Windhawk stamps its own time, so only the level and text are useful there.
+    Wh_Log(L"[%-6s] %s", level, clean.c_str());
 
     EnsureStateDir();
     std::wstring path = LogFile();
@@ -378,22 +412,49 @@ static void GuardianLog(const wchar_t* level, const std::wstring& msg) {
         return;
     }
 
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    wchar_t stamp[64];
-    swprintf_s(stamp, L"[%04d-%02d-%02d %02d:%02d:%02d] [%s] ", st.wYear, st.wMonth, st.wDay,
-               st.wHour, st.wMinute, st.wSecond, level);
-
-    std::string line = ToUtf8(std::wstring(stamp) + StripAnsi(msg) + L"\r\n");
+    std::string line = ToUtf8(std::wstring(stamp) + clean + L"\r\n");
 
     EnterCriticalSection(&g_logLock);
-    HANDLE h = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h != INVALID_HANDLE_VALUE) {
-        DWORD written = 0;
-        WriteFile(h, line.data(), (DWORD)line.size(), &written, nullptr);
-        CloseHandle(h);
+
+    // FILE_SHARE_DELETE alongside READ/WRITE, and a short retry: the scripts
+    // may be appending to the same file at the same moment. A failure is
+    // reported once via Wh_Log rather than swallowed - a whole run went
+    // unrecorded during development precisely because this was silent.
+    bool wrote = false;
+    // Captured at the point of failure: CloseHandle and Sleep both overwrite
+    // the thread's last-error, so reading it after the loop reports something
+    // unrelated (usually success).
+    DWORD lastErr = 0;
+    for (int attempt = 0; attempt < 3 && !wrote; attempt++) {
+        HANDLE h = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            if (WriteFile(h, line.data(), (DWORD)line.size(), &written, nullptr) &&
+                written == line.size()) {
+                wrote = true;
+            } else {
+                lastErr = GetLastError();
+            }
+            CloseHandle(h);
+        } else {
+            lastErr = GetLastError();
+        }
+        if (!wrote) {
+            Sleep(50u * (unsigned)(attempt + 1));
+        }
     }
+
+    if (!wrote && !g_logWriteFailed) {
+        g_logWriteFailed = true;
+        Wh_Log(L"[ERROR ] Cannot write %s (error %lu). Continuing; this run will not be "
+               L"recorded in guardian.log.",
+               path.c_str(), lastErr);
+    } else if (wrote) {
+        g_logWriteFailed = false;
+    }
+
     LeaveCriticalSection(&g_logLock);
 }
 
@@ -404,6 +465,69 @@ static void LogF(const wchar_t* level, const wchar_t* fmt, ...) {
     _vsnwprintf_s(buf, ARRAYSIZE(buf), _TRUNCATE, fmt, ap);
     va_end(ap);
     GuardianLog(level, buf);
+}
+
+// ---------------------------------------------------------------------------
+// Staged output
+// ---------------------------------------------------------------------------
+//
+// Long operations log as numbered stages with aligned results, identical in
+// shape to the PowerShell side:
+//
+//   -- Repair -------------------------------------------------
+//     [1/11] Prerequisites ........................ ok
+//     [2/11] Applied state ........................ WIPED
+
+static int g_stageTotal = 0;
+static int g_stageIndex = 0;
+
+static void StartStages(const std::wstring& title, int total) {
+    g_stageTotal = total;
+    g_stageIndex = 0;
+    size_t dashes = (title.size() < 54) ? (58 - title.size()) : 4;
+    GuardianLog(L"INFO", L"-- " + title + L" " + std::wstring(dashes, L'-'));
+}
+
+enum class Outcome { Ok, Warn, Fail, Skip, Dry };
+
+static void LogStage(const std::wstring& name,
+                     const std::wstring& result,
+                     const std::wstring& detail = L"",
+                     Outcome outcome = Outcome::Ok) {
+    g_stageIndex++;
+
+    wchar_t head[128];
+    swprintf_s(head, L"  [%d/%d] %s ", g_stageIndex, g_stageTotal, name.c_str());
+
+    std::wstring label = head;
+    size_t pad = (label.size() < 49) ? (52 - label.size()) : 3;
+    std::wstring text = label + std::wstring(pad, L'.') + L" " + result;
+
+    const wchar_t* level = L"STEP";
+    switch (outcome) {
+        case Outcome::Fail: level = L"ERROR"; break;
+        case Outcome::Warn: level = L"WARN";  break;
+        case Outcome::Dry:  level = L"DRY";   break;
+        default: break;
+    }
+    GuardianLog(level, text);
+
+    if (detail.empty()) {
+        return;
+    }
+    size_t start = 0;
+    while (start <= detail.size()) {
+        size_t eol = detail.find(L'\n', start);
+        std::wstring d = Trim(detail.substr(
+            start, (eol == std::wstring::npos) ? std::wstring::npos : eol - start));
+        if (!d.empty()) {
+            GuardianLog(L"INFO", L"          " + d);
+        }
+        if (eol == std::wstring::npos) {
+            break;
+        }
+        start = eol + 1;
+    }
 }
 
 // =====================================================================
@@ -554,6 +678,7 @@ struct GuardianState {
     long long pauseUntil = 0;        // 0 none, -1 until next Spotify version
     std::wstring pauseAtVersion;
     bool strictMode = false;
+    bool dryRun = false;
     std::wstring lastSpotifyVersion;
     int attempts = 0;
     std::wstring lastRunUtc;
@@ -571,6 +696,7 @@ static void LoadState() {
         g_state.pauseUntil         = JsonInt(json, L"pauseUntil", 0);
         g_state.pauseAtVersion     = JsonStr(json, L"pauseAtVersion");
         g_state.strictMode         = JsonBool(json, L"strictMode", false);
+        g_state.dryRun             = JsonBool(json, L"dryRun", false);
         g_state.lastSpotifyVersion = JsonStr(json, L"lastSpotifyVersion");
         g_state.attempts           = (int)JsonInt(json, L"attempts", 0);
         g_state.lastRunUtc         = JsonStr(json, L"lastRunUtc");
@@ -593,6 +719,7 @@ static void SaveState() {
     json += L"  \"pauseUntil\": " + std::to_wstring(s.pauseUntil) + L",\r\n";
     json += L"  \"pauseAtVersion\": \"" + JsonEscape(s.pauseAtVersion) + L"\",\r\n";
     json += std::wstring(L"  \"strictMode\": ") + (s.strictMode ? L"true" : L"false") + L",\r\n";
+    json += std::wstring(L"  \"dryRun\": ") + (s.dryRun ? L"true" : L"false") + L",\r\n";
     json += L"  \"lastSpotifyVersion\": \"" + JsonEscape(s.lastSpotifyVersion) + L"\",\r\n";
     json += L"  \"attempts\": " + std::to_wstring(s.attempts) + L",\r\n";
     json += L"  \"lastRunUtc\": \"" + JsonEscape(s.lastRunUtc) + L"\",\r\n";
@@ -900,11 +1027,27 @@ static RunResult RunCapture(const std::wstring& exe,
     return r;
 }
 
+static bool IsDryRun() {
+    EnterCriticalSection(&g_stateLock);
+    bool d = g_state.dryRun;
+    LeaveCriticalSection(&g_stateLock);
+    return d;
+}
+
 static RunResult RunSpicetify(const std::wstring& args) {
     std::wstring exe = FindSpicetifyExe();
     if (exe.empty()) {
         RunResult r;
         r.output = L"spicetify.exe not found";
+        return r;
+    }
+
+    if (IsDryRun()) {
+        LogF(L"DRY", L"[dry run] would run: spicetify %s", args.c_str());
+        RunResult r;
+        r.exitCode = 0;
+        r.success = true;
+        r.output = L"[dry run] spicetify " + args;
         return r;
     }
 
@@ -1128,31 +1271,52 @@ static BOOL CALLBACK CloseWindowsProc(HWND hWnd, LPARAM lParam) {
     return TRUE;
 }
 
-// Close Spotify the polite way. WM_CLOSE lets it flush playback position, queue
-// and cache; a kill loses all of that. Only escalate if it will not go.
-// Returns true if Spotify was running and is now stopped, i.e. the caller owns
-// restarting it.
-static bool StopSpotifyGracefully(DWORD timeoutMs = 10000) {
+// Close Spotify before touching its files.
+//
+// Spicetify itself just runs `taskkill /F /IM spotify.exe`. We try to be politer
+// first, but only briefly, and the short window is deliberate:
+//
+// Spotify's close button MINIMISES TO TRAY by default, so WM_CLOSE does not exit
+// it - the process stays, we wait out the whole timeout, then force-kill anyway.
+// That is exactly what happened in testing ("Spotify did not close in time" after
+// a full 10 seconds). A long pause before the inevitable is just a worse kill.
+//
+// So: 3 seconds for the polite path, which genuinely works when close-to-tray is
+// off and lets Spotify flush playback position and cache, then the same
+// force-kill spicetify would have used.
+//
+// Returns true if Spotify was running and is now stopped - the caller owns
+// restarting it. Returns false with Spotify still running only when it could not
+// be stopped at all, which callers must treat as "do not patch".
+static bool StopSpotifyGracefully(DWORD politeMs = 3000) {
     std::vector<DWORD> pids = GetProcessIds(L"Spotify.exe");
     if (pids.empty()) {
+        GuardianLog(L"INFO", L"Spotify is not running.");
         return false;
     }
 
-    LogF(L"ACTION", L"Closing Spotify (%d process(es))...", (int)pids.size());
+    if (IsDryRun()) {
+        LogF(L"DRY", L"[dry run] would close Spotify (%d process(es))", (int)pids.size());
+        return false;
+    }
+
+    LogF(L"ACTION", L"Closing Spotify (%d process(es))", (int)pids.size());
 
     CloseEnumCtx ctx{&pids, 0};
     EnumWindows(CloseWindowsProc, (LPARAM)&ctx);
+    LogF(L"INFO", L"  WM_CLOSE sent to %d window(s); waiting up to %lums", ctx.posted, politeMs);
 
-    ULONGLONG deadline = GetTickCount64() + timeoutMs;
+    ULONGLONG deadline = GetTickCount64() + politeMs;
     while (GetTickCount64() < deadline) {
-        Sleep(250);
+        Sleep(200);
         if (!IsProcessRunning(L"Spotify.exe")) {
-            GuardianLog(L"INFO", L"Spotify closed cleanly.");
+            GuardianLog(L"INFO", L"  Spotify exited cleanly.");
             return true;
         }
     }
 
-    GuardianLog(L"WARN", L"Spotify did not close in time; terminating.");
+    // Expected whenever close-to-tray is on. Not an error.
+    GuardianLog(L"INFO", L"  Still running (close-to-tray?), force-killing as spicetify does.");
     for (DWORD pid : GetProcessIds(L"Spotify.exe")) {
         HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
         if (h) {
@@ -1160,21 +1324,67 @@ static bool StopSpotifyGracefully(DWORD timeoutMs = 10000) {
             CloseHandle(h);
         }
     }
-    Sleep(500);
-    return true;
+
+    for (int i = 0; i < 25; i++) {
+        Sleep(200);
+        if (!IsProcessRunning(L"Spotify.exe")) {
+            GuardianLog(L"INFO", L"  Spotify stopped.");
+            return true;
+        }
+    }
+
+    GuardianLog(L"ERROR", L"  Spotify would not stop. Not touching its files.");
+    return false;
 }
 
+// Start Spotify.
+//
+// Prefers `spicetify restart` - spicetify's own launcher, which handles
+// Microsoft Store (AppX) installs and injects spotify_launch_flags from
+// config-xpui.ini. Launching Spotify.exe directly, which this used to do,
+// silently drops those flags, so anyone with launch flags configured lost them
+// on every repair.
+//
+// The direct launch remains only for when spicetify is unavailable, and it reads
+// the flags itself.
 static bool StartSpotify() {
+    if (IsDryRun()) {
+        GuardianLog(L"DRY", L"[dry run] would start Spotify");
+        return false;
+    }
+
+    if (!FindSpicetifyExe().empty()) {
+        RunResult r = RunSpicetify(L"restart");
+        if (r.success) {
+            GuardianLog(L"ACTION", L"Spotify restarted (via spicetify restart).");
+            return true;
+        }
+        GuardianLog(L"WARN", L"spicetify restart failed; launching Spotify directly.");
+    }
+
     SpotifyPaths sp = FindSpotify();
     if (!sp.valid) {
         GuardianLog(L"ERROR", L"Cannot start Spotify: executable not found.");
         return false;
     }
 
+    std::wstring flags;
+    std::wstring cfg = SpicetifyConfigPath();
+    if (!cfg.empty()) {
+        std::wstring raw = IniGet(ReadTextFile(cfg), L"Setting", L"spotify_launch_flags");
+        for (const auto& f : Split(raw, L'|')) {
+            if (!flags.empty()) {
+                flags += L' ';
+            }
+            flags += f;
+        }
+    }
+
     SHELLEXECUTEINFOW ei{};
     ei.cbSize = sizeof(ei);
     ei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
     ei.lpFile = sp.exe.c_str();
+    ei.lpParameters = flags.empty() ? nullptr : flags.c_str();
     ei.lpDirectory = sp.root.c_str();
     ei.nShow = SW_SHOWNORMAL;
 
@@ -1185,7 +1395,8 @@ static bool StartSpotify() {
     if (ei.hProcess) {
         CloseHandle(ei.hProcess);
     }
-    GuardianLog(L"ACTION", L"Spotify restarted.");
+    LogF(L"ACTION", L"Spotify started%s%s.", flags.empty() ? L"" : L" with flags: ",
+         flags.c_str());
     return true;
 }
 
@@ -1219,6 +1430,10 @@ static void PruneSnapshots() {
 static bool SnapshotConfig(const wchar_t* reason) {
     std::wstring cfg = SpicetifyConfigPath();
     if (cfg.empty()) {
+        return false;
+    }
+    if (IsDryRun()) {
+        LogF(L"DRY", L"[dry run] would snapshot %s (reason: %s)", cfg.c_str(), reason);
         return false;
     }
     EnsureStateDir();
@@ -1599,50 +1814,67 @@ static RepairResult DoRepair(bool forced) {
     RepairResult r;
 
     Status st = GetStatus();
+    bool dry = IsDryRun();
+
+    StartStages(dry ? L"Repair (DRY RUN - nothing will change)" : L"Repair", 11);
 
     // --- 1. prerequisites -------------------------------------------------
     if (!st.spotifyInstalled) {
+        LogStage(L"Prerequisites", L"FAIL", L"Spotify is not installed.", Outcome::Fail);
         r.reason = L"Spotify is not installed.";
-        GuardianLog(L"ERROR", r.reason);
         return r;
     }
     if (!st.spicetifyInstalled) {
+        LogStage(L"Prerequisites", L"FAIL", L"Spicetify is not installed.", Outcome::Fail);
         r.reason = L"Spicetify is not installed.";
-        GuardianLog(L"ERROR", r.reason);
         return r;
     }
+    LogStage(L"Prerequisites", L"ok",
+             L"Spotify " + st.spotifyVersion + L" at " + st.paths.root + L"\n" + L"Spicetify " +
+                 st.spicetifyVersion + L" at " + FindSpicetifyExe());
 
-    // --- 2. already healthy -----------------------------------------------
+    // --- 2. applied state -------------------------------------------------
     // This gate is what stops the corrupt-your-backup footgun: running
     // `clear backup apply` over an install that is still patched would back up
     // the PATCHED files as if they were pristine.
     if (st.applied && st.backupMatches) {
+        LogStage(L"Applied state", L"APPLIED",
+                 L"Apps\\xpui is a directory and xpui.spa is absent; backup matches Spotify.\n"
+                 L"Nothing to repair.",
+                 Outcome::Skip);
         r.action = RepairAction::NoOp;
         r.success = true;
         r.reason = L"Spicetify is already applied to Spotify " + st.spotifyVersion +
                    L". Nothing to do.";
-        GuardianLog(L"INFO", r.reason);
         return r;
     }
 
     bool needsRestoreFirst = st.applied && !st.backupMatches;
+    LogStage(L"Applied state", st.applied ? L"STALE BACKUP" : L"WIPED",
+             st.applied ? (L"Patched, but the backup was taken from " + st.backupVersion +
+                           L" and Spotify is " + st.spotifyVersion + L".")
+                        : std::wstring(L"Apps\\xpui.spa is present and Apps\\xpui is gone - "
+                                       L"Spotify overwrote the patch."),
+             Outcome::Warn);
 
     // --- 3. concurrency ---------------------------------------------------
     if (IsProcessRunning(L"spicetify.exe")) {
+        LogStage(L"Concurrency", L"BUSY",
+                 L"A spicetify process is already running; not interfering.", Outcome::Fail);
         r.reason = L"A spicetify process is already running; not interfering.";
-        GuardianLog(L"WARN", r.reason);
         return r;
     }
+    LogStage(L"Concurrency", L"ok", L"No other spicetify process running.");
 
     // --- 4. pause ---------------------------------------------------------
-    if (!forced) {
-        PauseInfo p = GetPauseInfo(st.spotifyVersion);
-        if (p.paused) {
-            r.reason = p.reason;
-            GuardianLog(L"INFO", L"Skipping repair. " + p.reason);
-            return r;
-        }
+    PauseInfo p = GetPauseInfo(st.spotifyVersion);
+    if (p.paused && !forced) {
+        LogStage(L"Pause", L"PAUSED", p.reason, Outcome::Skip);
+        r.reason = p.reason;
+        return r;
     }
+    LogStage(L"Pause", p.paused ? L"overridden" : L"not paused",
+             p.paused ? (p.reason + L" Overridden manually.") : L"");
 
     // --- 5. attempt budget ------------------------------------------------
     EnterCriticalSection(&g_stateLock);
@@ -1651,15 +1883,21 @@ static RepairResult DoRepair(bool forced) {
     bool strict = g_state.strictMode;
     LeaveCriticalSection(&g_stateLock);
 
-    if (!forced && sameVersion && attempts >= kMaxAttemptsPerVersion) {
+    bool overBudget = sameVersion && attempts >= kMaxAttemptsPerVersion;
+    if (overBudget && !forced) {
         wchar_t buf[512];
         swprintf_s(buf,
                    L"Already failed %d times on Spotify %s. Not retrying automatically - "
                    L"use Repair now from the tray menu to override.",
                    attempts, st.spotifyVersion.c_str());
+        LogStage(L"Attempt budget", L"EXHAUSTED", buf, Outcome::Fail);
         r.reason = buf;
-        GuardianLog(L"WARN", r.reason);
         return r;
+    }
+    {
+        wchar_t used[64];
+        swprintf_s(used, L"%d/%d used", attempts, kMaxAttemptsPerVersion);
+        LogStage(L"Attempt budget", used, overBudget ? L"Exhausted, but overridden manually." : L"");
     }
 
     // --- 6. compatibility -------------------------------------------------
@@ -1668,9 +1906,16 @@ static RepairResult DoRepair(bool forced) {
     g_lastVerdict = v;
     LeaveCriticalSection(&g_compatLock);
 
-    GuardianLog(v.tier == Tier::Supported ? L"INFO" : L"WARN", v.message);
+    const wchar_t* tierName = L"Unknown";
+    switch (v.tier) {
+        case Tier::Supported: tierName = L"Supported"; break;
+        case Tier::Untested:  tierName = L"Untested";  break;
+        case Tier::TooOld:    tierName = L"TooOld";    break;
+        case Tier::Unknown:   tierName = L"Unknown";   break;
+    }
 
     if (!v.shouldProceed) {
+        LogStage(L"Compatibility", tierName, v.message, Outcome::Fail);
         r.action = RepairAction::Blocked;
         r.reason = v.message;
 
@@ -1682,29 +1927,73 @@ static RepairResult DoRepair(bool forced) {
         SaveState();
         return r;
     }
+    LogStage(L"Compatibility", tierName,
+             v.compat.available ? (L"Tested range " + v.compat.min + L" -> " + v.compat.max +
+                                   L" per " + v.compat.tag + L".\n" + v.message)
+                                : v.message,
+             v.tier == Tier::Supported ? Outcome::Ok : Outcome::Warn);
 
     // --- 7. snapshot ------------------------------------------------------
-    SnapshotConfig(L"repair");
+    bool snapped = SnapshotConfig(L"repair");
+    LogStage(L"Config snapshot", dry ? L"skipped (dry run)" : (snapped ? L"saved" : L"none"), L"",
+             dry ? Outcome::Dry : Outcome::Ok);
 
     // --- 8. close Spotify (all checks are behind us) ----------------------
     bool weClosedSpotify = StopSpotifyGracefully();
+    if (!weClosedSpotify && st.spotifyRunning && !dry) {
+        // StopSpotifyGracefully only returns false with Spotify running when it
+        // genuinely could not stop it. Patching underneath a live Spotify is how
+        // you get a half-written xpui, so stop here.
+        LogStage(L"Close Spotify", L"FAILED",
+                 L"Spotify would not stop; refusing to patch underneath it.", Outcome::Fail);
+        r.reason = L"Could not stop Spotify; nothing was changed.";
+        return r;
+    }
+    LogStage(L"Close Spotify",
+             dry ? L"skipped (dry run)" : (weClosedSpotify ? L"closed" : L"was not running"), L"",
+             dry ? Outcome::Dry : Outcome::Ok);
 
     // --- 9. repair --------------------------------------------------------
     r.action = RepairAction::Repair;
 
     if (needsRestoreFirst) {
         GuardianLog(L"WARN",
-                    L"Patched against a different Spotify build; restoring to stock first.");
+                    L"          Restoring to stock first so the new backup is of clean files.");
         RunSpicetify(L"restore");
     }
 
     // `spicetify update` self-heals: when it finds itself already up to date it
-    // runs clear -> backup -> apply, which is exactly the repair. Falling back
-    // to that chain covers the offline case.
-    RunResult run = RunSpicetify(L"update");
+    // runs clear -> backup -> apply, which is exactly the repair.
+    //
+    // -n so spicetify does not restart Spotify itself: stage 11 owns the
+    // restart, and letting both do it means Spotify launches twice.
+    RunResult run = RunSpicetify(L"update -n");
+    std::wstring how = L"spicetify update -n";
     if (!run.success) {
-        GuardianLog(L"WARN", L"update failed; falling back to clear/backup/apply.");
+        GuardianLog(L"WARN", L"          update failed; falling back to clear/backup/apply.");
         run = RunSpicetify(L"clear backup apply -n");
+        how = L"clear backup apply (fallback)";
+    }
+    {
+        wchar_t res[64];
+        if (dry) {
+            wcscpy_s(res, L"skipped (dry run)");
+        } else if (run.success) {
+            wcscpy_s(res, L"ok");
+        } else {
+            swprintf_s(res, L"exit %lu", run.exitCode);
+        }
+        LogStage(L"Re-apply", res, how,
+                 dry ? Outcome::Dry : (run.success ? Outcome::Ok : Outcome::Fail));
+    }
+
+    if (dry) {
+        LogStage(L"Verify", L"skipped (dry run)", L"", Outcome::Dry);
+        LogStage(L"Restart Spotify", L"skipped (dry run)", L"", Outcome::Dry);
+        r.success = true;
+        r.reason = L"Dry run complete - nothing was changed.";
+        GuardianLog(L"DRY", r.reason);
+        return r;
     }
 
     // --- 10. verify -------------------------------------------------------
@@ -1712,9 +2001,10 @@ static RepairResult DoRepair(bool forced) {
     Status after = GetStatus();
 
     if (after.applied && run.success) {
+        LogStage(L"Verify", L"APPLIED",
+                 L"Apps\\xpui is a directory again; backup from " + after.backupVersion + L".");
         r.success = true;
         r.reason = L"Spicetify re-applied to Spotify " + after.spotifyVersion + L".";
-        GuardianLog(L"ACTION", r.reason);
 
         EnterCriticalSection(&g_stateLock);
         g_state.attempts = 0;
@@ -1724,21 +2014,26 @@ static RepairResult DoRepair(bool forced) {
         wchar_t buf[256];
         swprintf_s(buf, L"Repair failed (exit %lu).", run.exitCode);
         r.reason = buf;
-        GuardianLog(L"ERROR", r.reason);
 
         EnterCriticalSection(&g_stateLock);
         g_state.attempts++;
+        int nowAttempts = g_state.attempts;
         g_state.lastRunResult = L"Failed";
         LeaveCriticalSection(&g_stateLock);
 
         // Leave the user with a Spotify that launches, even if un-themed.
+        std::wstring restored;
         if (!after.applied) {
-            GuardianLog(L"WARN", L"Restoring Spotify to stock so it still runs.");
             RunSpicetify(L"restore");
+            restored = L"Restored Spotify to stock so it still runs (un-themed).\n";
         }
+        wchar_t tail[256];
+        swprintf_s(tail, L"Attempt %d of %d on Spotify %s.", nowAttempts, kMaxAttemptsPerVersion,
+                   after.spotifyVersion.c_str());
+        LogStage(L"Verify", L"NOT APPLIED", restored + tail, Outcome::Fail);
+
         LogF(L"WARN",
-             L"If this keeps happening, Spicetify may not support Spotify %s yet. "
-             L"Downgrade guidance: %s",
+             L"          Spicetify may not support Spotify %s yet. Downgrade guidance: %s",
              after.spotifyVersion.c_str(), kDowngradeGuide);
     }
 
@@ -1751,7 +2046,11 @@ static RepairResult DoRepair(bool forced) {
 
     // --- 11. restart ------------------------------------------------------
     if (weClosedSpotify) {
-        StartSpotify();
+        bool started = StartSpotify();
+        LogStage(L"Restart Spotify", started ? L"started" : L"FAILED", L"",
+                 started ? Outcome::Ok : Outcome::Warn);
+    } else {
+        LogStage(L"Restart Spotify", L"not needed", L"", Outcome::Skip);
     }
 
     return r;
@@ -2455,7 +2754,17 @@ static void HandleTask(Task t) {
 // change notification there is the trigger. Debounced, because Spotify writes
 // in bursts and repairing mid-update would fight it.
 static DWORD WINAPI WorkerThreadProc(LPVOID) {
+    // First real status read, including `spicetify -v`. Deliberately here and
+    // not in WhTool_ModInit: that runs during host-process initialisation,
+    // where spawning a child process and waiting on it can stall startup.
     RefreshStatus();
+    {
+        Status st = SnapshotStatus();
+        LogF(L"INFO", L"Detected Spotify %s and Spicetify %s; Spicetify is %s.",
+             st.spotifyVersion.empty() ? L"(unknown)" : st.spotifyVersion.c_str(),
+             st.spicetifyVersion.empty() ? L"(unknown)" : st.spicetifyVersion.c_str(),
+             st.applied ? L"applied" : L"NOT applied");
+    }
 
     HANDLE hDir = INVALID_HANDLE_VALUE;
     OVERLAPPED ov{};
@@ -2688,7 +2997,7 @@ static int TrayIconState() {
     if (st.health == Health::Wiped || st.health == Health::StaleBackup) {
         return 2;
     }
-    if (p.paused || !Settings().autoRepair) {
+    if (p.paused || !Settings().autoRepair || IsDryRun()) {
         return 1;
     }
     return 0;
@@ -2712,6 +3021,9 @@ static void UpdateTrayIcon(bool add) {
     }
     if (p.paused) {
         tip += L" (paused)";
+    }
+    if (IsDryRun()) {
+        tip += L" [DRY RUN]";
     }
 
     EnterCriticalSection(&g_statusLock);
@@ -2778,6 +3090,7 @@ enum {
     IDM_OPEN_LOG,
     IDM_OPEN_CONFIG,
     IDM_STRICT_TOGGLE,
+    IDM_DRYRUN_TOGGLE,
 };
 
 static void ShowDashboard();
@@ -2828,9 +3141,12 @@ static void ShowTrayMenu() {
 
     EnterCriticalSection(&g_stateLock);
     bool strict = g_state.strictMode;
+    bool dry = g_state.dryRun;
     LeaveCriticalSection(&g_stateLock);
     AppendMenuW(menu, MF_STRING | (strict ? MF_CHECKED : MF_UNCHECKED), IDM_STRICT_TOGGLE,
                 L"S&trict compatibility mode");
+    AppendMenuW(menu, MF_STRING | (dry ? MF_CHECKED : MF_UNCHECKED), IDM_DRYRUN_TOGGLE,
+                L"&Dry run (log only, change nothing)");
 
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_DASHBOARD, L"&Dashboard...");
@@ -2912,6 +3228,22 @@ static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                     LeaveCriticalSection(&g_stateLock);
                     SaveState();
                     LogF(L"ACTION", L"Strict compatibility mode %s.", now ? L"ON" : L"off");
+                    UpdateTrayIcon(false);
+                    if (g_hDashWnd) {
+                        PostMessageW(g_hDashWnd, WM_APP_STATE_DIRTY, 0, 0);
+                    }
+                    break;
+                }
+
+                case IDM_DRYRUN_TOGGLE: {
+                    EnterCriticalSection(&g_stateLock);
+                    g_state.dryRun = !g_state.dryRun;
+                    bool now = g_state.dryRun;
+                    LeaveCriticalSection(&g_stateLock);
+                    SaveState();
+                    LogF(L"ACTION", L"Dry-run mode %s.",
+                         now ? L"ENABLED - nothing will be changed" : L"disabled - changes are live");
+                    UpdateTrayIcon(false);
                     if (g_hDashWnd) {
                         PostMessageW(g_hDashWnd, WM_APP_STATE_DIRTY, 0, 0);
                     }
@@ -2955,6 +3287,7 @@ enum {
     IDC_BTN_SP_UNINSTALL,
     IDC_BTN_COMPAT,
     IDC_BTN_STRICT,
+    IDC_BTN_DRYRUN,
     IDC_BTN_CONFIG_APPLY,
     IDC_BTN_SNAP_RESTORE,
     IDC_BTN_SNAP_NEW,
@@ -3032,6 +3365,7 @@ static std::wstring BuildStatusText() {
                                   ? (p.paused ? L"PAUSED - " + p.reason : std::wstring(L"active"))
                                   : std::wstring(L"off (see mod settings)"));
     line(L"Strict mode", s.strictMode ? L"on" : L"off");
+    line(L"Dry run", s.dryRun ? L"ON - nothing will be changed" : L"off");
     if (!s.lastRunUtc.empty()) {
         line(L"Last run", s.lastRunUtc);
         line(L"Last result", s.lastRunResult);
@@ -3521,6 +3855,7 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                 {IDC_BTN_SP_INSTALL,   L"Install Spicetify"},
                 {IDC_BTN_SP_UNINSTALL, L"Uninstall Spicetify"},
                 {IDC_BTN_STRICT,       L"Toggle strict mode"},
+                {IDC_BTN_DRYRUN,       L"Toggle dry run"},
                 {IDC_BTN_SNAP_NEW,     L"Snapshot config now"},
                 {IDC_BTN_SNAP_RESTORE, L"Restore selected snapshot"},
                 {IDC_BTN_CONFIG_APPLY, L"Apply config changes"},
@@ -3627,7 +3962,27 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                     LeaveCriticalSection(&g_stateLock);
                     SaveState();
                     LogF(L"ACTION", L"Strict compatibility mode %s.", now ? L"ON" : L"off");
+                    UpdateTrayIcon(false);
                     RefreshDashboard(hWnd);
+                    break;
+                }
+
+                case IDC_BTN_DRYRUN: {
+                    EnterCriticalSection(&g_stateLock);
+                    g_state.dryRun = !g_state.dryRun;
+                    bool now = g_state.dryRun;
+                    LeaveCriticalSection(&g_stateLock);
+                    SaveState();
+                    LogF(L"ACTION", L"Dry-run mode %s.",
+                         now ? L"ENABLED - nothing will be changed" : L"disabled - changes are live");
+                    UpdateTrayIcon(false);
+                    RefreshDashboard(hWnd);
+                    MessageBoxW(hWnd,
+                                now ? L"Dry run is ON.\r\n\r\nEvery action will be logged in full "
+                                      L"but nothing will be changed. This also applies to the "
+                                      L"PowerShell scripts."
+                                    : L"Dry run is OFF.\r\n\r\nActions will make real changes.",
+                                kAppName, MB_OK | MB_ICONINFORMATION);
                     break;
                 }
 
@@ -3659,6 +4014,79 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
     }
 
     return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+// =====================================================================
+// Tray thread
+// =====================================================================
+//
+// The tray window MUST be created on, and pumped by, a thread we own.
+//
+// A tool mod hooks the host process's entry point and calls ExitThread(0) on
+// it, so the thread that ran Wh_ModInit is gone moments later - and Windows
+// destroys every window owned by a thread when that thread exits. Creating the
+// tray window during init therefore produced a window that died immediately,
+// which is exactly why no tray icon appeared even though the mod itself logged
+// "started" and the watcher ran happily.
+//
+// Owning the thread also gives us the message pump the icon's callbacks and the
+// dashboard need.
+
+static HANDLE g_trayThread = nullptr;
+static DWORD g_trayThreadId = 0;
+static HANDLE g_trayReadyEvent = nullptr;
+
+static DWORD WINAPI TrayThreadProc(LPVOID) {
+    static const wchar_t kTrayClass[] = L"SpicetifyGuardianTray";
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+
+    // Registered before the window exists, so an Explorer restart racing our
+    // startup cannot be missed.
+    g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = TrayWndProc;
+    wc.hInstance = inst;
+    wc.lpszClassName = kTrayClass;
+    RegisterClassW(&wc);
+
+    g_hTrayWnd = CreateWindowExW(WS_EX_TOOLWINDOW, kTrayClass, nullptr, WS_POPUP, 0, 0, 0, 0,
+                                 nullptr, nullptr, inst, nullptr);
+    if (!g_hTrayWnd) {
+        LogF(L"ERROR", L"Could not create the tray window (error %lu).", GetLastError());
+        UnregisterClassW(kTrayClass, inst);
+        SetEvent(g_trayReadyEvent);
+        return 1;
+    }
+
+    UpdateTrayIcon(true);
+    GuardianLog(L"INFO", L"Tray icon added. Left-click for the dashboard, right-click for the menu.");
+    SetEvent(g_trayReadyEvent);
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        // So Tab and the arrow keys navigate the dashboard's controls.
+        if (g_hDashWnd && IsWindow(g_hDashWnd) && IsDialogMessageW(g_hDashWnd, &msg)) {
+            continue;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = g_hTrayWnd;
+    nid.uID = kTrayIconId;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+
+    if (g_hDashWnd && IsWindow(g_hDashWnd)) {
+        DestroyWindow(g_hDashWnd);
+        g_hDashWnd = nullptr;
+    }
+    DestroyWindow(g_hTrayWnd);
+    g_hTrayWnd = nullptr;
+    UnregisterClassW(kTrayClass, inst);
+    return 0;
 }
 
 static void ShowDashboard() {
@@ -3728,26 +4156,87 @@ BOOL WhTool_ModInit() {
     icc.dwICC = ICC_TAB_CLASSES | ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES;
     InitCommonControlsEx(&icc);
 
-    g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
-
-    static const wchar_t kTrayClass[] = L"SpicetifyGuardianTray";
-    WNDCLASSW wc{};
-    wc.lpfnWndProc = TrayWndProc;
-    wc.hInstance = GetModuleHandleW(nullptr);
-    wc.lpszClassName = kTrayClass;
-    RegisterClassW(&wc);
-
-    g_hTrayWnd = CreateWindowExW(WS_EX_TOOLWINDOW, kTrayClass, nullptr, WS_POPUP, 0, 0, 0, 0,
-                                 nullptr, nullptr, wc.hInstance, nullptr);
-    if (!g_hTrayWnd) {
-        Wh_Log(L"Could not create the tray window");
+    g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_workEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    g_trayReadyEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!g_stopEvent || !g_workEvent || !g_trayReadyEvent) {
+        Wh_Log(L"Could not create synchronisation objects");
         return FALSE;
     }
 
-    g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    g_workEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    GuardianLog(L"INFO", L"================================================================");
+    LogF(L"INFO", L"Spicetify Guardian %s starting.", WH_MOD_VERSION);
 
-    UpdateTrayIcon(true);
+    // Enough startup detail to diagnose "it did nothing" without a debugger.
+    {
+        ModSettings s = Settings();
+
+        // GetStatus(false): the version-bearing overload shells out to
+        // `spicetify -v`, and this runs inside the host process's
+        // initialisation, before its entry point. Spawning a child process and
+        // blocking on it there risks stalling or deadlocking Windhawk's
+        // startup. The worker thread resolves versions a moment later and logs
+        // them itself.
+        Status st = GetStatus(false);
+
+        StartStages(L"Startup", 6);
+
+        LogStage(L"Spotify", st.spotifyInstalled ? st.spotifyVersion : L"NOT FOUND",
+                 st.spotifyInstalled ? (st.paths.root + L"\n" +
+                                        (st.spotifyRunning ? L"Running." : L"Not running."))
+                                     : L"Looked in %APPDATA%, %LOCALAPPDATA% and %ProgramFiles%.",
+                 st.spotifyInstalled ? Outcome::Ok : Outcome::Fail);
+
+        std::wstring exe = FindSpicetifyExe();
+        LogStage(L"Spicetify", st.spicetifyInstalled ? L"found" : L"NOT FOUND",
+                 st.spicetifyInstalled
+                     ? (exe + L"\nVersion resolved by the worker thread shortly.")
+                     : std::wstring(L"Set 'Path to spicetify.exe' in the mod settings."),
+                 st.spicetifyInstalled ? Outcome::Ok : Outcome::Fail);
+
+        const wchar_t* health = L"?";
+        switch (st.health) {
+            case Health::Applied:      health = L"applied";      break;
+            case Health::Wiped:        health = L"WIPED";        break;
+            case Health::StaleBackup:  health = L"stale backup"; break;
+            case Health::NotInstalled: health = L"no spicetify"; break;
+            case Health::NoSpotify:    health = L"no spotify";   break;
+        }
+        LogStage(L"Applied state", health,
+                 st.spotifyInstalled ? (L"Apps\\xpui dir: " +
+                                        std::wstring(DirExists(st.paths.appsDir + L"\\xpui")
+                                                         ? L"yes" : L"no") +
+                                        L"   xpui.spa file: " +
+                                        std::wstring(FileExists(st.paths.appsDir + L"\\xpui.spa")
+                                                         ? L"yes" : L"no"))
+                                     : L"",
+                 st.health == Health::Applied ? Outcome::Ok : Outcome::Warn);
+
+        PauseInfo p = GetPauseInfo(st.spotifyVersion);
+        EnterCriticalSection(&g_stateLock);
+        bool strict = g_state.strictMode;
+        bool dry = g_state.dryRun;
+        LeaveCriticalSection(&g_stateLock);
+
+        LogStage(L"Settings",
+                 std::wstring(s.autoRepair ? L"auto-repair on" : L"auto-repair OFF"),
+                 std::wstring(L"Notifications: ") + (s.notifications ? L"on" : L"off") +
+                     L"\nStrict compatibility: " + (strict ? L"on" : L"off") +
+                     L"\nDry run: " + (dry ? L"ON - nothing will be changed" : L"off") +
+                     (p.paused ? (L"\n" + p.reason) : L""),
+                 dry ? Outcome::Dry : (s.autoRepair ? Outcome::Ok : Outcome::Warn));
+
+        LogStage(L"State directory", L"ok", StateDir());
+        LogStage(L"Tray icon", L"starting", L"");
+    }
+
+    g_trayThread = CreateThread(nullptr, 0, TrayThreadProc, nullptr, 0, &g_trayThreadId);
+    if (!g_trayThread) {
+        Wh_Log(L"Could not start the tray thread");
+        return FALSE;
+    }
+    // Wait for the window to exist so the worker can post to it immediately.
+    WaitForSingleObject(g_trayReadyEvent, 10000);
 
     g_workerThread = CreateThread(nullptr, 0, WorkerThreadProc, nullptr, 0, nullptr);
     if (!g_workerThread) {
@@ -3779,18 +4268,19 @@ void WhTool_ModUninit() {
         g_workerThread = nullptr;
     }
 
-    if (g_hDashWnd && IsWindow(g_hDashWnd)) {
-        DestroyWindow(g_hDashWnd);
-    }
-
-    if (g_hTrayWnd) {
-        NOTIFYICONDATAW nid{};
-        nid.cbSize = sizeof(nid);
-        nid.hWnd = g_hTrayWnd;
-        nid.uID = kTrayIconId;
-        Shell_NotifyIconW(NIM_DELETE, &nid);
-        DestroyWindow(g_hTrayWnd);
-        g_hTrayWnd = nullptr;
+    // The tray window belongs to the tray thread, so it must tear itself down -
+    // DestroyWindow from another thread is a no-op. Ask its loop to exit and
+    // let it do the cleanup.
+    if (g_trayThread) {
+        if (g_trayThreadId) {
+            PostThreadMessageW(g_trayThreadId, WM_QUIT, 0, 0);
+        }
+        if (WaitForSingleObject(g_trayThread, 10000) == WAIT_TIMEOUT) {
+            Wh_Log(L"Tray thread did not stop in time");
+        }
+        CloseHandle(g_trayThread);
+        g_trayThread = nullptr;
+        g_trayThreadId = 0;
     }
 
     if (g_stopEvent) {
@@ -3800,6 +4290,10 @@ void WhTool_ModUninit() {
     if (g_workEvent) {
         CloseHandle(g_workEvent);
         g_workEvent = nullptr;
+    }
+    if (g_trayReadyEvent) {
+        CloseHandle(g_trayReadyEvent);
+        g_trayReadyEvent = nullptr;
     }
 
     GuardianLog(L"INFO", L"Spicetify Guardian stopped.");

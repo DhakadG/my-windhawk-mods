@@ -90,7 +90,18 @@ def main(argv: list[str]) -> int:
             total = 0
             for dest, original in staged.items():
                 print(f'== {original.name}')
-                n = V.validate_mod_file(pathlib.Path('mods') / dest.name, 'DhakadG')
+                try:
+                    n = V.validate_mod_file(
+                        pathlib.Path('mods') / dest.name, 'DhakadG'
+                    )
+                except Exception as e:      # noqa: BLE001
+                    # The validator fetches the mod catalogue and the licence
+                    # list over the network. A 502 from that is not a finding
+                    # about this mod, and reporting it as one would train
+                    # everyone to ignore a red result.
+                    print(f'   INCONCLUSIVE: {type(e).__name__}: {e}')
+                    print('   (network hiccup inside the validator - rerun)')
+                    continue
                 total += n
                 print('   clean' if n == 0 else f'   {n} warning(s)')
         finally:

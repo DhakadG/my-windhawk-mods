@@ -2,7 +2,7 @@
 // @id              win-x-hotcorners
 // @name            Win-X Hot Corners
 // @description     macOS-style hot corners & edges for Windows with full multi-monitor support — trigger actions instantly when your cursor hits any screen corner or edge
-// @version         1.1.5
+// @version         1.1.6
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -2704,16 +2704,23 @@ static bool TopologyChanged()
 // Action Worker Thread
 // =====================================================================
 
-static void EnqueueAction(const HitZone &hz)
+// Returns whether the job was actually taken. The caller needs to know: a hold
+// whose entry was dropped must not go on to queue a release, or the zone
+// undoes something that never happened.
+static bool EnqueueAction(const HitZone &hz)
 {
     EnterCriticalSection(&g_queueLock);
     // A release is never dropped. The cap is there to bound a runaway burst of
     // new work, but discarding the half that undoes something already done is
-    // how a peeked desktop gets stuck with no way back.
-    if (g_queue.size() < kMaxQueue || hz.isRelease)
+    // how a peeked desktop gets stuck with no way back. It cannot grow without
+    // bound either: a release is only queued for an entry that was accepted,
+    // so there is at most one outstanding per hold zone.
+    const bool queued = (g_queue.size() < kMaxQueue) || hz.isRelease;
+    if (queued)
         g_queue.push_back(hz);
     LeaveCriticalSection(&g_queueLock);
     SetEvent(g_hWorkEvent);
+    return queued;
 }
 
 // A hold zone's second half, queued when the pointer leaves. The copy carries
@@ -3054,11 +3061,14 @@ static DWORD DetectTick()
     // behind to undo. This tracks that a release has been *queued*; whether it
     // runs is the worker's call, since the gates it would be suppressed by live
     // there and this thread must not wait on them.
-    g_holdEngaged = (bool)zones->zones[idx].releaseExec;
-
     HitZone job = zones->zones[idx];
     job.engagesHold = (bool)job.releaseExec;
-    EnqueueAction(job);
+
+    // Only owe a release if the entry was actually accepted. A full queue drops
+    // the entry, and arming the release anyway would leave the zone undoing
+    // something that never ran. The worker gates this a second time, from the
+    // far side of the fullscreen and excluded-app checks.
+    g_holdEngaged = EnqueueAction(job) && job.engagesHold;
     return next;
 }
 

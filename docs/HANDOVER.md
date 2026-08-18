@@ -125,7 +125,7 @@ offered but not yet opened. **Check for replies before doing more work on the fo
 
 | Mod | Version | Original author | State |
 | --- | --- | --- | --- |
-| win-x-hotcorners | 1.1.1 | — (lost_husky's own) | Renumbered from 4.4.x for a first release |
+| win-x-hotcorners | 1.1.8 | — (lost_husky's own) | Renumbered from 4.4.x for a first release; live on PR #5001 |
 | taskbar-ai-quota-fork | 0.12.0 | Cleroth | Working |
 | taskbar-clock-customization-v3 | 3.1.71 | m417z | Working |
 | taskbar-fluent-media-player-fork | 1.6.1 | Salyts | Working |

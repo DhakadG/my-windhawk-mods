@@ -77,7 +77,7 @@ pwsh -File scripts/check-mod.ps1 -Warnings && python scripts/check-settings.py  
   returned a single row here, which is how a failing required check was reported as green
   for a whole round. Read the plain output.
 - All five mods currently pass with **zero warnings**.
-- `scripts/cpp_sanity_check.ps1` is the older heuristic checker. Its brace/paren counts are
+- `scripts/legacy/cpp_sanity_check.ps1` is the older heuristic checker. Its brace/paren counts are
   wrong on files containing `LR"(...)"` raw strings (the mangled symbol literals) — compare
   the delta against the unmodified baseline rather than trusting the absolute number. Its
   `@architecture` rule only applies to `windhawk.exe` tool mods.
@@ -174,12 +174,12 @@ makes it correct for both configuration sources without knowing which is live, a
 it can no longer drift from what actually fires. `DashFillZones` mirrors `ResolveZone`
 exactly — own configuration first, then wildcard, decided *per zone*.
 
-Geometry is verified rather than eyeballed: `scratchpad/zonegeom.cpp` copies
+Geometry is verified rather than eyeballed: `scripts/probes/zonegeom.cpp` copies
 `ZoneRectInDiagram` verbatim and asserts the 16 pieces tile the border ring with no overlap,
 no gap and nothing outside the box, at six aspect ratios including portrait. Re-run it if you
 touch the proportions.
 
-Reference: [docs/hotcorners-dashboard-draft.html](hotcorners-dashboard-draft.html).
+Reference: [docs/design/hotcorners-dashboard-draft.html](design/hotcorners-dashboard-draft.html).
 
 **Not done, deliberately:** the tray's "skip while fullscreen" / "skip while dragging"
 toggles still write `ovr_*`. They change the live configuration immediately, but in
@@ -204,7 +204,7 @@ The decision reached: **do both, with a clear split.**
 
 ### Dashboard UI draft — DONE, awaiting sign-off
 
-**[docs/hotcorners-dashboard-draft.html](hotcorners-dashboard-draft.html)** (also published at
+**[docs/design/hotcorners-dashboard-draft.html](design/hotcorners-dashboard-draft.html)** (also published at
 <https://claude.ai/code/artifact/5f3b97ba-c5ed-4db6-9b4f-18256f336b78>). Interactive: tabs
 switch, zones respond to hover, and it follows the viewer's theme so both of the mod's
 palettes are visible.
@@ -335,7 +335,7 @@ stray key-up has no equivalent failure mode. Both halves of that reasoning are
 in the comment above `SendKeys`.
 
 Verified by slicing the real `SendKeys` out of the `.cpp` into
-`scratchpad/probe-sendkeys.cpp` and driving a live window with it — the pattern
+`scripts/probes/probe-sendkeys.cpp` and driving a live window with it — the pattern
 from §2, and the reason this was not shipped on reasoning alone.
 
 **Show Desktop.** Uses `Win+D` via `SendKeys`. Do not "improve" this to

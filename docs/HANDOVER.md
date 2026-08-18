@@ -389,9 +389,25 @@ staging), `rec.ps1` (gdigrab, lossless RGB), `runall.ps1`, `mkgif.ps1`. Lessons:
   `dashboard.png` return 200 from `raw.githubusercontent.com` on `main`. Any *new* readme
   image must be pushed here before the readme reaches PR #5001, since the links resolve
   against this repo's `main`. That ordering is not covered by the promotion rule in §0.
-- **1.1.3 is promoted.** On `main` with CI green, and on PR #5001 (commit `771a338f`,
-  gallery check passing); the file on the PR branch is byte-identical to the one CI built.
-  The PR title carries the version, so it needs updating on every promotion.
+- **1.1.8 is promoted.** On `main` with CI green and on PR #5001, gallery check passing.
+  The PR title carries the version, so it needs updating on every promotion, and the PR
+  **body** was rewritten at 1.1.7 - it still described the 4.1.x tray-only design ("there
+  is no settings page") and counted twelve zones instead of sixteen.
+- **Review round of 1.1.3-1.1.8, for context on why that code looks the way it does.**
+  The gallery reviewer, CodeRabbit and three local agents between them found: a held zone
+  was never released on unload; a solo Win key-up opened the Start menu; `g_holdEngaged`
+  armed even when the queue dropped the entry; `SameZoneConfig` ignored the release fields;
+  `ProcessNameOfWindow` truncated at `MAX_PATH` so long-path processes never matched the
+  exclusion list; `g_hDashWnd`/`g_hDetectWnd`/`g_hTrayWnd` were non-atomic across threads;
+  `TrayThread` did not pin its DPI context; "the same action again" used a second executor
+  so Alternate zones drifted across displays; and a dashboard opened at the instant of
+  unload could strand its thread. All fixed. An over-engineering audit of the whole
+  non-dashboard file found nothing worth cutting.
+- **The Start-menu behaviour behind the Win-key mask was never reproduced locally.** The
+  detector could not see the Start window at all - `EnumWindows` does not return it on
+  26300 - and a control case proved the detector broken rather than the finding absent. The
+  fix is the documented AutoHotkey masking trick, taken on reasoning. If it ever needs
+  revisiting, test visually; window enumeration is a dead end here.
 - **Donation links** — Windhawk's `@donateUrl` renders a Donate button but takes only one
   URL; Ko-fi is set on `win-x-hotcorners` and the fork. The rest are plain links in the
   readme's `## Support the mod` section. Note the gallery only serves images from

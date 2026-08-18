@@ -45,7 +45,7 @@ by its own `compile_flags.txt`. That is the same setup clangd uses for the squig
 Windhawk editor, so it reproduces those diagnostics offline.
 
 ```bash
-pwsh -File scripts/check-mod.ps1 -Warnings && python scripts/check-settings.py
+pwsh -File scripts/check-mod.ps1 -Warnings && python scripts/check-settings.py   && pwsh -File scripts/build-mod.ps1 && python scripts/check-gallery.py
 ```
 
 - `check-mod.ps1` — real type check (`-fsyntax-only -Wall`). Not a link; it will not produce
@@ -63,6 +63,19 @@ pwsh -File scripts/check-mod.ps1 -Warnings && python scripts/check-settings.py
   - When adding a rule here, run it against the **other** mods first. The first version of the
     `$options` rule flagged `taskbar-fluent-media-player-fork`, which works — the rule was
     wrong, not the mod.
+- `check-gallery.py` — downloads the **gallery's own** `pr_validation.py` and runs it over
+  the mod. This exists because 1.1.8 went red on PR #5001 for something no local check
+  looked at: the three "Mod compatibility check" jobs only *compile* the mod, while
+  "PR mod validation" is a separate job enforcing metadata/readme/settings rules. Run it
+  before every promotion.
+  - It cannot check the PR **description** rules (the required `## Mod authorship`
+    section), because those read the `pull_request` event payload. That one is only
+    verifiable on the PR itself — so when editing the PR body, keep the template sections.
+  - Set UTF-8 output or a warning containing a zero-width character dies in cp1252 and
+    looks like a crash. The gallery's workflow sets `PYTHONUTF8=1` for the same reason.
+- **`gh pr checks` without `--json` lists every check.** With `--json name,state` it
+  returned a single row here, which is how a failing required check was reported as green
+  for a whole round. Read the plain output.
 - All five mods currently pass with **zero warnings**.
 - `scripts/cpp_sanity_check.ps1` is the older heuristic checker. Its brace/paren counts are
   wrong on files containing `LR"(...)"` raw strings (the mangled symbol literals) — compare

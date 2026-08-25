@@ -11,9 +11,15 @@ in one place.
 
 ```
 mods/<mod-id>/<mod-id>.wh.cpp   the mod source, mirrored from ModsSource
-mods/<mod-id>/README.md         per-mod docs, where they exist
-docs/                           handover notes and feature backlogs
-scripts/                        sanity checks + the ModsSource sync script
+mods/<mod-id>/README.md         per-mod pointer, where one exists
+docs/HANDOVER.md                the working notes that matter across sessions
+docs/per-mod/                   per-mod handovers, backlogs, launch plans
+docs/media/                     readme GIFs and screenshots, referenced by raw URL
+docs/design/                    design drafts
+scripts/                        the four verification tools + the ModsSource sync
+scripts/capture/                the demo-recording rig
+scripts/probes/                 standalone C++ probes for verifying Windows behaviour
+scripts/legacy/                 superseded checkers, kept for reference
 archive/                        superseded working copies, kept for reference only
 ```
 
@@ -24,11 +30,16 @@ the top of each mod's readme.
 
 | Mod | Version | Original author | Notes |
 | --- | --- | --- | --- |
-| [win-x-hotcorners](mods/win-x-hotcorners/) | 4.1.4 | — | macOS-style hot corners. PR [#5001](https://github.com/ramensoftware/windhawk-mods/pull/5001) is open against the gallery. |
+| [win-x-hotcorners](mods/win-x-hotcorners/) | 1.3.0 | — | macOS-style hot corners and edges. **Published** — [in the gallery](https://windhawk.net/mods/win-x-hotcorners) via [#5001](https://github.com/ramensoftware/windhawk-mods/pull/5001), merged 22 Aug 2026. |
 | [taskbar-ai-quota-fork](mods/taskbar-ai-quota-fork/) | 0.12.0 | [Cleroth](https://github.com/Cleroth) | AI quota bars. Fixed for the 26300 StackPanel tray. |
 | [taskbar-clock-customization-v3](mods/taskbar-clock-customization-v3/) | 3.1.71 | [m417z](https://github.com/m417z) | Clock with sensors, weather and network throughput. |
 | [taskbar-fluent-media-player-fork](mods/taskbar-fluent-media-player-fork/) | 1.6.1 | [Salyts](https://github.com/Salyts) | Fluent media player. Fixed for the 26300 StackPanel tray. |
 | [mac-magnifying-cursor](mods/mac-magnifying-cursor/) | 1.5.0 | [Jaali](https://github.com/alivca) | Shake-to-magnify cursor. |
+| [bt-battery-monitor-fork](mods/bt-battery-monitor-fork/) | 1.1.1 | — | Bluetooth battery levels. |
+| [spicetify-guardian](mods/spicetify-guardian/) | 1.1.0 | — | Keeps a Spicetify install from being undone by a Spotify update. |
+
+Only `win-x-hotcorners` is in the public gallery. The rest are personal builds and forks,
+installed from source.
 
 ### Windows 11 26H2 (build 26300)
 
@@ -64,8 +75,8 @@ pwsh -File scripts/sync-from-modssource.ps1
 
 4. `git diff` to review, then commit.
 
-Installed versions can lag behind this repo — `win-x-hotcorners` here is 4.1.4 while 4.1.2 is
-what is currently installed. The sync script prints the version of everything it copies.
+Installed versions can lag behind this repo. The sync script prints the version of
+everything it copies, which is the quickest way to spot a mismatch.
 
 ## Licence
 

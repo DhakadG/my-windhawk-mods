@@ -12,11 +12,18 @@ Starting context for a fresh session. Everything here is verified, not assumed. 
    `scripts/check-settings.py`.
 2. Push to **this repo** and wait for its **Build mods** workflow to go green on all
    three Windhawk versions.
-3. **Only then** copy the file into the gallery fork (`DhakadG/windhawk-mods`, branch
-   `add-win-x-hotcorners`) and push, which updates
-   [ramensoftware/windhawk-mods#5001](https://github.com/ramensoftware/windhawk-mods/pull/5001).
+3. **Only then** copy the file into the gallery fork (`DhakadG/windhawk-mods`) on a
+   **fresh branch cut from an up-to-date `main`**, and open a **new** PR.
 
-Never push a mod change straight to the PR branch, however small. The gallery's check
+> **Changed after #5001 merged (2026-08-22).** There is no standing PR branch any
+> more. `add-win-x-hotcorners` was deleted post-merge; its tip is kept as the tag
+> `pr-5001-merged` because the PR was **squash**-merged, so those 23 commits are in
+> no upstream history. Before each new submission:
+> `gh api repos/DhakadG/windhawk-mods/merge-upstream -f branch=main`, then branch
+> from `main`. Do not resurrect the old branch — it is 31 commits behind and would
+> reopen settled review.
+
+Never push a mod change straight to a live PR branch, however small. The gallery's check
 only runs on a PR, only for the changed file, and a fork run can sit waiting for a
 maintainer to approve it — the `-luuid` link error reached them exactly that way.
 
@@ -138,7 +145,7 @@ offered but not yet opened. **Check for replies before doing more work on the fo
 
 | Mod | Version | Original author | State |
 | --- | --- | --- | --- |
-| win-x-hotcorners | 1.1.8 | — (lost_husky's own) | Renumbered from 4.4.x for a first release; live on PR #5001 |
+| win-x-hotcorners | 1.3.0 | — (lost_husky's own) | **Published.** Merged via #5001, live at windhawk.net/mods/win-x-hotcorners |
 | taskbar-ai-quota-fork | 0.12.0 | Cleroth | Working |
 | taskbar-clock-customization-v3 | 3.1.71 | m417z | Working |
 | taskbar-fluent-media-player-fork | 1.6.1 | Salyts | Working |
@@ -402,7 +409,13 @@ staging), `rec.ps1` (gdigrab, lossless RGB), `runall.ps1`, `mkgif.ps1`. Lessons:
   `dashboard.png` return 200 from `raw.githubusercontent.com` on `main`. Any *new* readme
   image must be pushed here before the readme reaches PR #5001, since the links resolve
   against this repo's `main`. That ordering is not covered by the promotion rule in §0.
-- **1.1.8 is promoted.** On `main` with CI green and on PR #5001, gallery check passing.
+- **1.3.0 is published.** PR #5001 merged 2026-08-22 (squash, upstream `ed03744`); the
+  mod is live at <https://windhawk.net/mods/win-x-hotcorners>. The standalone repo
+  `DhakadG/win-x-hotcorners` is synced to 1.3.0 and tagged `v1.3.0`; it had been stale
+  at 1.2.1 with an install section still telling people to await the merge. Reach and
+  SEO plan, with ready-to-post drafts, is in
+  [`docs/per-mod/LAUNCH-win-x-hotcorners.md`](per-mod/LAUNCH-win-x-hotcorners.md).
+- **1.1.8 was the first promotion.** On `main` with CI green and on PR #5001, gallery check passing.
   The PR title carries the version, so it needs updating on every promotion, and the PR
   **body** was rewritten at 1.1.7 - it still described the 4.1.x tray-only design ("there
   is no settings page") and counted twelve zones instead of sixteen.

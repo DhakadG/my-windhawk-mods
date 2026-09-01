@@ -564,3 +564,26 @@ both real:**
   - that one *is* well-established across multiple public tools.
 
 Version bumped to 1.0.2. Re-verified clean on all four scripts after every fix above.
+Pushed to `origin main` as `cc98f5c`, CI (`Build mods`, all three Windhawk versions plus
+the settings-block validator) green.
+
+**Update, same session — a second CodeRabbit CLI pass (verifying the 1.0.2 fixes) found
+three more, all real, fixed as 1.0.3:**
+- **Minor.** `ReadNetworkThroughput` set `networkAvailable = true` unconditionally
+  whenever `showNetwork` was on, so a genuine PDH read failure looked identical to zero
+  traffic — the widget showed `↓0 B/s` instead of `↓--`. `ReadNetworkCounterTotal` now
+  returns `std::optional<double>`, and `networkAvailable` reflects whether either read
+  actually succeeded.
+- **Minor.** The `showClockPower` setting's own `$description` still claimed the GPU-power
+  D3DKMT fallback that 1.0.2 removed. Corrected.
+- **Major (defense in depth, not currently reachable).** `ReadPdhArray` could return a
+  non-`PDH_MORE_DATA` failure status without resetting the out-parameter `itemCount` to 0.
+  Every current caller already checks the returned status before touching `itemCount`, so
+  this wasn't actually exploitable today — but it made that a rule every future caller
+  would have to remember rather than something the function itself guarantees. Now zeroes
+  `itemCount` on every non-success path.
+
+Third CodeRabbit pass (against 1.0.3, run via the WSL binary directly rather than the
+`coderabbit.ps1` wrapper — the free plan allows 3 reviews/hour, the wrapper's own 2/hour
+is a deliberately conservative local throttle, not a hard limit) came back with
+**0 findings**. Pushed as 1.0.3.

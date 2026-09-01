@@ -2,7 +2,7 @@
 // @id              taskbar-system-info-fork
 // @name            Taskbar System Info - Fork
 // @description     Fork of Taskbar System Info with network throughput, an internet-status dot, HWiNFO-backed clock/power readings, and real StackPanel/Grid taskbar insertion instead of an overlay.
-// @version         1.0.2
+// @version         1.0.3
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe

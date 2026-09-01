@@ -149,6 +149,7 @@ offered but not yet opened. **Check for replies before doing more work on the fo
 | taskbar-ai-quota-fork | 0.12.0 | Cleroth | Working |
 | taskbar-clock-customization-v3 | 3.1.71 | m417z | Working |
 | taskbar-fluent-media-player-fork | 1.6.1 | Salyts | Working |
+| taskbar-system-info-fork | 1.0.0 | Yevhenii Starychenko | **New — see §9. Verified by script only, not yet installed.** |
 | mac-magnifying-cursor | 1.5.0 | Jaali | Working; suggestion filed as [#5051](https://github.com/ramensoftware/windhawk-mods/issues/5051) |
 | bt-battery-monitor-fork | 1.0.1 | BlackPaw | **Skeleton only — see §6** |
 
@@ -458,3 +459,108 @@ staging), `rec.ps1` (gdigrab, lossless RGB), `runall.ps1`, `mkgif.ps1`. Lessons:
 - Correct the record when a premise turns out false, including your own from earlier in the
   session.
 - Don't file issues, open PRs, or change repo visibility without an explicit go-ahead.
+
+---
+
+## 9. NEW — taskbar-system-info-fork 1.0.0
+
+Combines three things the user already had working in separate mods into one. Built by
+reading all three sources in full first, not by reasoning about their APIs from memory.
+
+**Base engine, from `taskbar-system-info` (GPL-3.0, Yevhenii Starychenko, pulled from
+`ModsSource` at 1.3.3, 3328 lines):** PDH-based CPU/GPU/RAM/VRAM collection, D3DKMT GPU
+adapter enumeration/identity, and the HWiNFO shared-memory (`Global\HWiNFO_SENS_SM2`) and
+Gadget Registry (`HKCU\Software\HWiNFO64\VSB`) temperature readers, including the
+sensor-name scoring heuristics. Kept close to verbatim — that engine is proven.
+
+**What was replaced, and why.** The base mod's placement was the actual problem statement:
+`InjectWidget` appended a full-`ColumnSpan` `Grid` to the taskbar's `RootGrid` at
+`Canvas.ZIndex 10000` with `IsHitTestVisible(false)`, then faked "reserved space" by
+shrinking `TaskbarFrameRepeater`'s left margin by the widget's own width — a click-through
+overlay, not a tray citizen. Replaced with the `InjectionTarget`/`ResolveInjectionTarget`
+pattern from this author's own `taskbar-ai-quota-fork` (0.12.0, the cleanest of the three
+placement implementations in this repo): a real `StackPanel.Children().InsertAt()` on the
+26300+ tray, a real `Grid.ColumnDefinitions().InsertAt()` on the pre-26300 tray, or a
+tracked taskbar-button margin for the eight anchored positions, with three overlay
+positions kept as an explicit opt-out. Also ported: the permanent watchdog thread
+(`TrayUI::StartTaskbar` hook + poll loop) from the same fork, since the base mod only
+re-injects on `TaskbarFrame::Loaded` and has no recovery if Explorer rebuilds the tray
+without that firing.
+
+**What was added.** Network throughput (two more PDH counters,
+`\Network Interface(*)\Bytes Received|Sent/sec`, following
+`taskbar-clock-customization-v3`'s dynamic KB/s-MB/s formatter) and an internet-status dot
+(ICMP ping via `IcmpSendEcho`, ported near-verbatim from that same mod's `NetStatusThread`).
+CPU/GPU clock and power: HWiNFO shared memory extended to read power (type 4) and clock
+(type 5) readings in the *same pass* as temperature (type 1) rather than a second scan,
+with native fallbacks where one actually exists — `NtPowerInformation`'s per-core
+`CurrentMhz` for CPU clock, and `D3DKMT_ADAPTER_PERFDATA.Power` (already being queried for
+GPU temperature, previously read and discarded) for GPU power. GPU clock and CPU power have
+no native Windows equivalent and stay HWiNFO-only, shown as `--` otherwise — deliberate, not
+an oversight.
+
+**Three bugs the compiler and a manual review pass caught, worth remembering:**
+- A ternary passed as a `Wh_Log` format argument — the exact trap `HANDOVER.md §2` already
+  documents (`Wh_Log` is a permissive stub under `-DWH_EDITING` but concatenates onto a
+  literal in a real build). `check-mod.ps1` reproduced it immediately.
+- Switching the `position` setting between tray and taskbar-anchored positions left the old
+  widget stranded: removal only swept the *newly resolved* panel, not wherever the widget
+  currently lived. Fixed by sweeping `g_injectionParent` first, then the new target
+  defensively.
+- Tray sub-positions (`tray_left`, `tray_before_clock`, ...) all resolve to the same
+  `SystemTrayFrameGrid` object, so the ai-quota-fork's own `panel == injectionParent`
+  liveness check can't tell "still in the right spot" from "position changed to another
+  spot in the same panel" — it would silently skip re-injection. Fixed by tracking the
+  position string alongside the panel and requiring both to match.
+
+**Verified:** `check-mod.ps1 -Warnings` clean, `check-settings.py` clean (10 groups),
+`build-mod.ps1` links on x86-64, `check-gallery.py` clean.
+
+**Not verified — next session or the user should do this before trusting it:** never pasted
+into the Windhawk editor or run against a live taskbar. Compiling clean proves the C++ is
+sound; it says nothing about whether the two-column layout looks right at the computed
+default width, whether HWiNFO's shared-memory struct offsets still match a current HWiNFO
+build, or whether every one of the 25 placement positions (14 tray + 8 anchored + 3
+overlay) actually lands where its label says. Install it, and eyeball every position in
+the dropdown once.
+
+**Update, same session:** a second review (this time by an external CodeRabbit CLI pass,
+see below) caught a real HIGH-severity bug the first pass missed: `AttachAnchorTracking`'s
+`LayoutUpdated` subscription and pushed-aside anchor margin were only ever torn down in
+`RemoveWidget()` (final unload), never in `InjectWidget()` (every position change and every
+watchdog-triggered re-injection). Fixed by factoring the cleanup into
+`DetachAnchorTracking()` and calling it from both places. Also fixed: `ReadHwInfoSharedMemory`/
+`ReadHwInfoGadgetRegistry` now stamp which of the two actually supplied each clock/power/temp
+value (`HwInfoExtras`'s new `*Provider` fields) instead of `ReadTemperatures`/`ReadExtraSensors`
+hardcoding `HwInfoSharedMemory` regardless of source; a misleading comment in
+`RunFromWindowThread` that claimed the hook stays installed for a late reply when the code
+actually unhooks immediately (rewritten to state the small bounded leak honestly); and the
+`fontSize` clamp widened to 9-20 while its own setting description still said "9 to 13"
+(tightened the clamp back to match).
+
+**Update, same session — CodeRabbit CLI (see `[[coderabbit-cli-setup]]`) found two more,
+both real:**
+- **Critical.** `RemoveWidget()` only nulled the C++-side `winrt::Grid` references
+  (`g_widget`, `g_injectionParent`, ...) and never actually removed the widget from its
+  parent panel's `Children()` collection. Since the panel holds its own reference, the
+  widget stayed visible in the live taskbar after unload, with event handlers still
+  pointing into the about-to-be-unmapped DLL. Fixed: `RemoveWidget()` now calls
+  `RemoveWidgetFromPanel` (plus the same reserved-column cleanup `InjectWidget` already
+  did) before dropping its own references.
+- **Major.** `StopWatchdogThread()` waited only 2000ms for `WatchdogThreadProc` to exit
+  before closing its thread handle and wake event. Since `RunFromWindowThread`'s own
+  `SendMessageTimeoutW` call can legitimately take up to 2000ms, a bad race let the wait
+  give up while the thread was still mid-iteration - closing the wake event out from
+  under a thread that might still call `WaitForSingleObject` on it, and risking the DLL
+  being unmapped while that thread was still executing. Changed to `INFINITE`; the inner
+  call is already bounded, so this doesn't introduce a real deadlock risk.
+- **Also removed, not fixed:** the GPU-power native fallback via
+  `D3DKMT_ADAPTER_PERFDATA::Power`. CodeRabbit flagged that this field's actual unit has
+  no authoritative source - the original `taskbar-system-info` mod already had this
+  field available and never used it, which in hindsight was a signal worth taking more
+  seriously the first time. Rather than guess a conversion, GPU power is now HWiNFO-only
+  like CPU power and GPU clock already were; the mod's own readme/comments are updated to
+  match. The `WindowsGpuPerfData::temperature` field this same query also returns is kept
+  - that one *is* well-established across multiple public tools.
+
+Version bumped to 1.0.2. Re-verified clean on all four scripts after every fix above.

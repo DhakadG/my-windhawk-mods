@@ -2,7 +2,7 @@
 // @id              taskbar-system-info-fork
 // @name            Taskbar System Info - Fork
 // @description     Fork of Taskbar System Info with network throughput, an internet-status dot, HWiNFO- or LibreHardwareMonitor-backed clock/power readings, and real StackPanel/Grid taskbar insertion instead of an overlay.
-// @version         1.3.0
+// @version         1.4.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -54,9 +54,12 @@ inserted into the taskbar like a native tray item, not overlaid on top of it. Tw
 in three columns:
 
 ```text
-● ↑ 48 KB/s   CPU  13.8%  28°C  4.52GHz · 53W  [graph]   RAM   78.0%  24.97/31.71G
-  ↓ 1.2 MB/s  GPU  27.1%  55°C   690MHz ·  8W  [graph]   VRAM  51.5%   2.98/ 5.78G
+● ↑ 033.96 KB/s │ CPU 030.0% 065°C 4.52GHz 032W ▁▂▃ │ RAM  051.0% 16.38/31.78G
+  ↓ 353.56 KB/s │ GPU 002.9% 047°C 0585MHz 012W ▁▁▂ │ VRAM 038.4% 02.22/05.78G
 ```
+
+Every value occupies a constant number of digits and every cell a constant width, so
+nothing shifts as the numbers change.
 
 ## Placement
 
@@ -70,15 +73,29 @@ anyone who prefers that instead.
 ## Appearance
 
 A card-style background box appears **on hover** by default (or always, or never —
-**Background box** under Appearance), matching how this author's other taskbar forks
-behave. Thin frosted dividers separate the three column groups.
+**Background box**), matching how this author's other taskbar forks behave. Thin
+frosted dividers separate the three column groups, and each history graph sits on a
+faint panel so its extent and baseline stay visible when the trace is flat.
 
-Every numeric field is laid out in a fixed-width cell and padded with figure spaces
-(`U+2007`, a digit-width blank), so values keep their position as they change digit
-count instead of the row shuffling sideways — the same technique as this author's
-`taskbar-clock-customization-v3`. Width and height are content-driven (`0 0` = no
-clamp) with optional min/max overrides; row gap, column gap, box padding, corner radius
-and per-graph visibility are all settings.
+### Why the columns don't shift
+
+Three things together, all configurable:
+
+1. **A monospaced font** (default Consolas; Cascadia Mono/Code, Lucida Console and
+   Courier New are offered, plus any family you like via *Custom font family*). This is
+   the part that actually matters — in a proportional font like Segoe UI, `1` is
+   narrower than `0`, so no amount of padding can hold a column still.
+2. **Tabular figures** (*Force tabular figures*) — asks the font for fixed-advance
+   digits via the OpenType `tnum` feature. Redundant for a monospaced font; it is what
+   makes the proportional options usable if you prefer one.
+3. **Padding to a constant digit count** (*Number padding*) — `030.0%` rather than
+   `30.0%`, so the digit count never changes either. Leading zeros by default; blank
+   figure-spaces and no padding are the alternatives.
+
+Every cell is a fixed pixel width sized to its widest possible string plus a uniform
+gutter, and the panels are the exact sum of their cells, so the widget is as narrow as
+its content allows. Font size, row/column gap, graph width, bar thickness, box padding,
+corner radius, opacities, colours and per-graph visibility are all settings.
 
 ## Readings
 
@@ -204,7 +221,11 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
   - rowGap: 2
     $name: Row gap (px)
   - columnGap: 14
-    $name: Column gap between CPU/GPU and RAM/VRAM (px)
+    $name: Column gap between sections (px)
+  - graphWidth: 56
+    $name: History graph width (px)
+  - barHeight: 3
+    $name: RAM/VRAM bar thickness (px)
   $name: Sizing & Spacing
 
 - Metrics:
@@ -227,6 +248,16 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
   - capacityDecimals: 2
     $name: RAM/VRAM capacity decimals
     $description: 'Default: 2 (e.g. 16.68/32.00G). From 0 to 2.'
+  - numberPadding: zero
+    $name: Number padding
+    $description: >-
+      Default: Leading zeros. Pads every value to a constant digit count so nothing
+      shifts as numbers grow or shrink - "07.8%" rather than "7.8%". Combined with
+      tabular figures (see Font below) this makes the columns perfectly stable.
+    $options:
+      - zero: 'Leading zeros (07.8%)'
+      - space: 'Blank space ( 7.8%)'
+      - none: 'None (7.8%)'
   $name: Metrics
 
 - Network:
@@ -351,14 +382,40 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
   $name: Memory Alerts
 
 - Appearance:
-  - fontFamily: "Segoe UI Variable Text"
-    $name: Font family
+  - fontFamily: "Consolas"
+    $name: Font
+    $description: >-
+      Default: Consolas. A monospaced font is strongly recommended - every digit is
+      then the same width, which is what actually keeps the columns from shifting as
+      values change. Proportional fonts (the Segoe entries) are only stable if the font
+      supports tabular figures, which the setting below requests where available.
+    $options:
+      - "Consolas": 'Consolas (monospace, on every Windows)'
+      - "Cascadia Mono": 'Cascadia Mono (monospace, Windows 11)'
+      - "Cascadia Code": 'Cascadia Code (monospace, Windows 11)'
+      - "Lucida Console": 'Lucida Console (monospace)'
+      - "Courier New": 'Courier New (monospace)'
+      - "Segoe UI Variable Text": 'Segoe UI Variable Text (system default, proportional)'
+      - "Segoe UI": 'Segoe UI (proportional)'
+      - "": 'Custom - use the field below'
+  - fontFamilyCustom: ""
+    $name: Custom font family
+    $description: 'Only used when Font is set to "Custom". Any installed family name.'
+  - tabularFigures: true
+    $name: Force tabular figures
+    $description: >-
+      Default: true. Asks the font for fixed-width digits (the OpenType "tnum" feature).
+      Monospaced fonts are unaffected; for proportional fonts that support it, such as
+      Segoe UI, this is what stops digits of different widths shifting the layout.
   - fontSize: 11
     $name: Font size (px)
     $description: 'From 9 to 13.'
   - textColor: ""
     $name: Text color
     $description: '#RRGGBB or #AARRGGBB. Empty uses the system color.'
+  - labelColor: ""
+    $name: Label color
+    $description: 'Colour of the CPU/GPU/RAM/VRAM labels. Empty follows the text color at reduced opacity.'
   - graphColor: "#78A8FF"
     $name: Graph, bar and dot color
   - warningColor: "#FFFFB900"
@@ -367,6 +424,18 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
     $name: Critical color
   - textOpacity: 96
     $name: Text opacity (%)
+  - labelOpacity: 62
+    $name: Label opacity (%)
+    $description: 'Default: 62. Relative to the text opacity, so labels read as secondary.'
+  - graphBackgroundOpacity: 10
+    $name: Graph background opacity (%)
+    $description: >-
+      Default: 10. A faint panel behind each history graph so its extent and baseline
+      are visible even when the trace is flat. 0 disables it.
+  - graphOpacity: 85
+    $name: Graph line opacity (%)
+  - showDividers: true
+    $name: Show dividers between sections
   - boxMode: hover
     $name: Background box
     $description: >-
@@ -434,6 +503,7 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.UI.Xaml.Controls.h>
+#include <winrt/Windows.UI.Xaml.Documents.h>
 #include <winrt/Windows.UI.Xaml.Input.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.Xaml.Shapes.h>
@@ -451,28 +521,35 @@ using XamlEllipse = winrt::Windows::UI::Xaml::Shapes::Ellipse;
 
 namespace {
 
-// Row heights and paddings are deliberately tight. The tray gives a child roughly 40px
-// of usable height inside a 48px taskbar; anything taller is silently clipped from the
-// bottom, which is what hid the VRAM capacity bar (it sits at the bottom of the last
-// row, while RAM's bar sits mid-widget and survived). 16 + gap + 16 + padding stays
-// under that ceiling with room to spare.
+// Every row is one band of text plus a reserved strip beneath it for the memory bars.
+// Text is Top-aligned at a fixed line height and bars are Bottom-aligned, so text in
+// every column - metric rows, memory rows, network rows - shares one baseline while the
+// bars still get clear space instead of overlapping the glyphs.
+//
+// The total must stay under roughly 40px: that is what the tray gives a child inside a
+// 48px taskbar, and it clips the overflow from the bottom (which is what hid the VRAM
+// bar entirely, since it sits on the last row's bottom edge).
+//   17 + gap + 17 + 2*2 padding = 38 + gap
 constexpr wchar_t kWidgetName[] = L"WindhawkTaskbarSystemInfoFork";
-constexpr double kRowHeight = 16.0;
+constexpr double kRowHeight = 17.0;
+constexpr double kTextLineHeight = 13.0;
 constexpr double kGraphHeight = 11.0;
+// Sized for the widest string each cell can hold, in a monospaced 11px face (~6.05px
+// per character), plus a uniform ~6px gutter. Every cell therefore has the same visual
+// spacing rather than each one carrying whatever slack it happened to be given.
+//   label "VRAM" 24 | usage "100.0%" 36 | temp "100°C" 30
+//   extras "4.52GHz 100W" 73 | capacity "24.97/31.78G" 73 | net "353.56 KB/s" 67
 constexpr double kMetricLabelWidth = 26.0;
-constexpr double kMetricUsageWidth = 40.0;
+constexpr double kMetricUsageWidth = 42.0;
 constexpr double kMetricTempWidth = 36.0;
 constexpr double kExtrasWidth = 80.0;
 constexpr double kGraphLeftGap = 6.0;
-constexpr double kGraphWidth = 56.0;
-constexpr double kMemoryLabelWidth = 36.0;
-constexpr double kMemoryPercentWidth = 40.0;
-constexpr double kMemoryCapacityWidth = 76.0;
-constexpr double kMemoryBarHeight = 2.5;
+constexpr double kMemoryLabelWidth = 32.0;
+constexpr double kMemoryPercentWidth = 42.0;
+constexpr double kMemoryCapacityWidth = 80.0;
 constexpr double kDotDiameter = 7.0;
-constexpr double kNetArrowWidth = 11.0;
-// Dot + arrow + enough for the widest dynamic-unit value ("999.99 KB/s").
-constexpr double kNetworkColumnWidth = 90.0;
+constexpr double kNetArrowWidth = 10.0;
+constexpr double kNetValueWidth = 72.0;
 constexpr uint32_t kHwInfoSignature = 0x53695748;  // "HWiS"
 // HWiNFO shared-memory reading types (SDK-documented, stable across versions).
 constexpr uint32_t kHwInfoReadingTemperature = 1;
@@ -517,6 +594,12 @@ enum class BoxMode {
     None,
 };
 
+enum class NumberPadding {
+    Zero,
+    Space,
+    None,
+};
+
 enum class NetworkFormat {
     Mbs,
     MbsDynamic,
@@ -528,6 +611,7 @@ struct ModSettings {
     std::wstring position = L"tray_left";
     std::wstring fontFamily;
     std::wstring textColor;
+    std::wstring labelColor;
     std::wstring graphColor;
     std::wstring boxColor;
     std::wstring warningColor;
@@ -558,12 +642,15 @@ struct ModSettings {
     int heightMax = 0;
     int rowGap = 2;
     int columnGap = 14;
+    int graphWidth = 56;
+    int barHeight = 3;
     int updateInterval = 1;
     int historySeconds = 60;
     bool showCpuGraph = true;
     bool showGpuGraph = true;
     int usageDecimals = 0;
     int capacityDecimals = 2;
+    NumberPadding numberPadding = NumberPadding::Zero;
     bool showNetwork = true;
     int networkDecimals = -1;
     bool showInternetStatus = true;
@@ -575,6 +662,11 @@ struct ModSettings {
     int lhmUpdateInterval = 2;
     int fontSize = 11;
     int textOpacity = 96;
+    int labelOpacity = 62;
+    bool tabularFigures = true;
+    int graphBackgroundOpacity = 10;
+    int graphOpacity = 85;
+    bool showDividers = true;
     BoxMode boxMode = BoxMode::Hover;
     int boxCornerRadius = 6;
     int boxPadding = 8;
@@ -654,6 +746,20 @@ event_token g_timerToken{};
 [[clang::no_destroy]] XamlEllipse g_netDot{nullptr};
 [[clang::no_destroy]] XamlPolyline g_cpuGraph{nullptr};
 [[clang::no_destroy]] XamlPolyline g_gpuGraph{nullptr};
+[[clang::no_destroy]] XamlRectangle g_cpuGraphBackground{nullptr};
+[[clang::no_destroy]] XamlRectangle g_gpuGraphBackground{nullptr};
+[[clang::no_destroy]] XamlRectangle g_dividerNet{nullptr};
+[[clang::no_destroy]] XamlRectangle g_dividerPanels{nullptr};
+
+// Fixed-width cells are calibrated for the 11px default font; every one of them is
+// registered here at build time so a font-size change rescales the whole grid in one
+// pass. A settings change does not rebuild the widget, so the definitions have to stay
+// reachable rather than being sized once at construction.
+struct ScaledColumn {
+    ColumnDefinition column{nullptr};
+    double baseWidth = 0.0;
+};
+[[clang::no_destroy]] std::vector<ScaledColumn> g_scaledColumns;
 [[clang::no_destroy]] XamlRectangle g_ramTrack{nullptr};
 [[clang::no_destroy]] XamlRectangle g_ramFill{nullptr};
 [[clang::no_destroy]] XamlRectangle g_vramTrack{nullptr};
@@ -768,6 +874,12 @@ ThermalZoneAggregation ParseThermalZoneAggregation(const std::wstring& value) {
                                 : ThermalZoneAggregation::Average;
 }
 
+NumberPadding ParseNumberPadding(const std::wstring& value) {
+    if (value == L"space") return NumberPadding::Space;
+    if (value == L"none") return NumberPadding::None;
+    return NumberPadding::Zero;
+}
+
 BoxMode ParseBoxMode(const std::wstring& value) {
     if (value == L"always") return BoxMode::Always;
     if (value == L"none") return BoxMode::None;
@@ -785,7 +897,11 @@ void LoadSettings() {
     ModSettings settings;
     settings.position = GetStringSetting(L"Placement.position");
     settings.fontFamily = GetStringSetting(L"Appearance.fontFamily");
+    if (settings.fontFamily.empty()) {
+        settings.fontFamily = GetStringSetting(L"Appearance.fontFamilyCustom");
+    }
     settings.textColor = GetStringSetting(L"Appearance.textColor");
+    settings.labelColor = GetStringSetting(L"Appearance.labelColor");
     settings.graphColor = GetStringSetting(L"Appearance.graphColor");
     settings.boxColor = GetStringSetting(L"Appearance.boxColor");
     settings.warningColor = GetStringSetting(L"Appearance.warningColor");
@@ -821,6 +937,8 @@ void LoadSettings() {
     settings.heightMax = std::clamp(Wh_GetIntSetting(L"Sizing.heightMax"), 0, 500);
     settings.rowGap = std::clamp(Wh_GetIntSetting(L"Sizing.rowGap"), 0, 40);
     settings.columnGap = std::clamp(Wh_GetIntSetting(L"Sizing.columnGap"), 0, 100);
+    settings.graphWidth = std::clamp(Wh_GetIntSetting(L"Sizing.graphWidth"), 20, 400);
+    settings.barHeight = std::clamp(Wh_GetIntSetting(L"Sizing.barHeight"), 1, 6);
     settings.updateInterval =
         std::clamp(Wh_GetIntSetting(L"Metrics.updateInterval"), 1, 10);
     settings.historySeconds =
@@ -830,6 +948,8 @@ void LoadSettings() {
     settings.usageDecimals = std::clamp(Wh_GetIntSetting(L"Metrics.usageDecimals"), 0, 1);
     settings.capacityDecimals =
         std::clamp(Wh_GetIntSetting(L"Metrics.capacityDecimals"), 0, 2);
+    settings.numberPadding =
+        ParseNumberPadding(GetStringSetting(L"Metrics.numberPadding"));
     settings.showNetwork = Wh_GetIntSetting(L"Network.showNetwork") != 0;
     settings.networkDecimals =
         std::clamp(Wh_GetIntSetting(L"Network.networkDecimals"), -1, 2);
@@ -847,6 +967,14 @@ void LoadSettings() {
     settings.fontSize = std::clamp(Wh_GetIntSetting(L"Appearance.fontSize"), 9, 13);
     settings.textOpacity =
         std::clamp(Wh_GetIntSetting(L"Appearance.textOpacity"), 0, 100);
+    settings.labelOpacity =
+        std::clamp(Wh_GetIntSetting(L"Appearance.labelOpacity"), 0, 100);
+    settings.tabularFigures = Wh_GetIntSetting(L"Appearance.tabularFigures") != 0;
+    settings.graphBackgroundOpacity =
+        std::clamp(Wh_GetIntSetting(L"Appearance.graphBackgroundOpacity"), 0, 100);
+    settings.graphOpacity =
+        std::clamp(Wh_GetIntSetting(L"Appearance.graphOpacity"), 0, 100);
+    settings.showDividers = Wh_GetIntSetting(L"Appearance.showDividers") != 0;
     settings.boxMode = ParseBoxMode(GetStringSetting(L"Appearance.boxMode"));
     settings.boxCornerRadius =
         std::clamp(Wh_GetIntSetting(L"Appearance.boxCornerRadius"), 0, 20);
@@ -869,7 +997,7 @@ void LoadSettings() {
     settings.verboseLogging = Wh_GetIntSetting(L"Debug.verboseLogging") != 0;
 
     if (settings.position.empty()) settings.position = L"tray_left";
-    if (settings.fontFamily.empty()) settings.fontFamily = L"Segoe UI Variable Text";
+    if (settings.fontFamily.empty()) settings.fontFamily = L"Consolas";
     if (settings.graphColor.empty()) settings.graphColor = L"#78A8FF";
     // Near-opaque dark gray, matching taskbar-fluent-media-player-fork's own default
     // background (solidColor "35 35 35" at 100% opacity when a background is enabled)
@@ -2852,37 +2980,41 @@ std::wstring FormatFixed(double value, int decimals) {
     return buffer;
 }
 
-// Ported from taskbar-clock-customization-v3's PadNumberWithFigureSpace: prefixes the
-// integer part with U+2007 FIGURE SPACE (defined to be digit-width in fonts that
-// support it, including the default Segoe UI Variable) until it reaches
-// minIntegerDigits, so a value's on-screen width stays close to constant as it
-// fluctuates instead of the text visibly growing/shrinking within its cell. A pure
-// string operation - works the same whether the number came from GDI text (the
-// original) or a XAML TextBlock (here).
-std::wstring PadFigureSpace(std::wstring text, int minIntegerDigits) {
+// Pads the integer part out to a constant digit count. Character padding alone is only
+// half the job: it fixes the glyph *count*, not the rendered width, and in a
+// proportional font a "1" is narrower than a "0". The other half is the font - either a
+// monospaced family or tabular figures, both handled in ApplyTextStyle.
+std::wstring PadNumber(std::wstring text, int minIntegerDigits, NumberPadding mode) {
+    if (mode == NumberPadding::None) return text;
     size_t start = (!text.empty() && text[0] == L'-') ? 1 : 0;
     size_t i = start;
     while (i < text.size() && std::iswdigit(text[i])) i++;
-    int intDigits = static_cast<int>(i - start);
-    int pad = minIntegerDigits - intDigits;
-    if (pad > 0) text.insert(start, std::wstring(pad, L' '));
+    int pad = minIntegerDigits - static_cast<int>(i - start);
+    if (pad > 0) {
+        // U+2007 FIGURE SPACE is digit-width by definition, so it occupies exactly the
+        // room a digit would; a plain space does not.
+        wchar_t filler = mode == NumberPadding::Zero ? L'0' : L'\u2007';
+        text.insert(start, std::wstring(pad, filler));
+    }
     return text;
 }
 
-std::wstring FormatPercent(double value, int decimals) {
-    return PadFigureSpace(FormatFixed(std::clamp(value, 0.0, 100.0), decimals), 3) + L"%";
+std::wstring FormatPercent(double value, int decimals, NumberPadding pad) {
+    return PadNumber(FormatFixed(std::clamp(value, 0.0, 100.0), decimals), 3, pad) + L"%";
 }
 
-std::wstring FormatTemperature(const std::optional<double>& value) {
-    if (!value) return L"--°C";
-    return PadFigureSpace(FormatFixed(*value, 0), 2) + L"°C";
+std::wstring FormatTemperature(const std::optional<double>& value, NumberPadding pad) {
+    if (!value) return L"--\u00B0C";
+    return PadNumber(FormatFixed(*value, 0), 2, pad) + L"\u00B0C";
 }
 
-// "Paired" padding, matching the original's approach for values that are naturally
-// compared side by side (e.g. CPU and GPU temperature reaching 100° together): the
-// used value pads to the *total* value's own integer-digit count, so "3.08/24.00"
-// lines up as "_3.08/24.00" instead of the used figure drifting a digit narrower.
-std::wstring FormatCapacity(double usedGb, double totalGb, bool available, int decimals) {
+// The used figure pads to the total's own integer-digit count, so the pair reads as one
+// column ("03.08/24.00") instead of the left half drifting a digit narrower.
+std::wstring FormatCapacity(double usedGb,
+                            double totalGb,
+                            bool available,
+                            int decimals,
+                            NumberPadding pad) {
     if (!available || !std::isfinite(usedGb) || !std::isfinite(totalGb) ||
         totalGb <= 0.0) {
         return L"--/--G";
@@ -2890,35 +3022,31 @@ std::wstring FormatCapacity(double usedGb, double totalGb, bool available, int d
     std::wstring totalText = FormatFixed(totalGb, decimals);
     size_t totalIntDigits = totalText.find(L'.');
     if (totalIntDigits == std::wstring::npos) totalIntDigits = totalText.size();
-    std::wstring usedText = PadFigureSpace(FormatFixed(usedGb, decimals),
-                                           static_cast<int>(totalIntDigits));
+    std::wstring usedText =
+        PadNumber(FormatFixed(usedGb, decimals), static_cast<int>(totalIntDigits), pad);
     return usedText + L"/" + totalText + L"G";
 }
 
-// Both branches land on 7 glyphs ("4.52GHz" / " 690MHz") so the clock half of the
+// Both branches land on 7 glyphs ("4.52GHz" / "0690MHz"), so the clock half of the
 // extras cell keeps a constant width across the MHz/GHz switch.
-std::wstring FormatClock(const std::optional<double>& mhz) {
-    if (!mhz) return L"";
-    return *mhz >= 1000.0 ? PadFigureSpace(FormatFixed(*mhz / 1000.0, 2), 1) + L"GHz"
-                          : PadFigureSpace(FormatFixed(*mhz, 0), 3) + L"MHz";
+std::wstring FormatClock(const std::optional<double>& mhz, NumberPadding pad) {
+    if (!mhz) return L"-------";
+    return *mhz >= 1000.0 ? PadNumber(FormatFixed(*mhz / 1000.0, 2), 1, pad) + L"GHz"
+                          : PadNumber(FormatFixed(*mhz, 0), 4, pad) + L"MHz";
 }
 
-// Always whole watts: a sub-10W reading rendered as "8.7W" is two glyphs wider than
-// "53W", which pushed the whole extras cell past its column and clipped the trailing
-// "W" off entirely.
-std::wstring FormatPower(const std::optional<double>& watts) {
-    if (!watts) return L"";
-    return PadFigureSpace(FormatFixed(*watts, 0), 2) + L"W";
+// Whole watts always: a sub-10W reading rendered as "8.7W" is two glyphs wider than
+// "53W", which pushed the extras cell past its column and clipped the trailing "W".
+std::wstring FormatPower(const std::optional<double>& watts, NumberPadding pad) {
+    if (!watts) return L"---";
+    return PadNumber(FormatFixed(*watts, 0), 2, pad) + L"W";
 }
 
+// Fixed-width on both halves and a constant separator, so the cell never reflows.
 std::wstring FormatClockPower(const std::optional<double>& mhz,
-                              const std::optional<double>& watts) {
-    std::wstring clock = FormatClock(mhz);
-    std::wstring power = FormatPower(watts);
-    if (clock.empty() && power.empty()) return L"--";
-    if (clock.empty()) return power;
-    if (power.empty()) return clock;
-    return clock + L" · " + power;
+                              const std::optional<double>& watts,
+                              NumberPadding pad) {
+    return FormatClock(mhz, pad) + L" " + FormatPower(watts, pad);
 }
 
 // Mirrors taskbar-clock-customization-v3's dynamic KB/s-MB/s formatter: -1 decimals
@@ -3154,16 +3282,34 @@ void ApplyTextStyle(TextBlock text, bool label, const ModSettings& settings) {
     text.FontSize(settings.fontSize);
     text.FontWeight(label ? Text::FontWeights::SemiBold() : Text::FontWeights::Normal());
     double opacity = static_cast<double>(settings.textOpacity) / 100.0;
-    text.Opacity(label ? opacity * 0.62 : opacity);
+    text.Opacity(label ? opacity * settings.labelOpacity / 100.0 : opacity);
     text.TextWrapping(TextWrapping::NoWrap);
     text.TextTrimming(TextTrimming::None);
-    // Pin every cell to one line box of exactly the row height. Without this a
-    // TextBlock's height follows its font's natural metrics, so cells whose glyphs
-    // differ in ascender/descender extent (an arrow, a degree sign, plain digits) each
-    // center on a slightly different line and the rows read as unevenly spaced.
-    text.LineHeight(kRowHeight);
+
+    // The half of column stability that padding cannot provide. Padding fixes the
+    // number of glyphs; this fixes their width, by asking the font for tabular
+    // (fixed-advance) figures - the OpenType "tnum" feature. Without it, in any
+    // proportional font, "11" is visibly narrower than "00" and every cell still
+    // shifts no matter how carefully the string was padded.
+    Documents::Typography::SetNumeralAlignment(
+        text, settings.tabularFigures ? FontNumeralAlignment::Tabular
+                                      : FontNumeralAlignment::Normal);
+
+    // Pin every cell to one line box of exactly the text band height, top-aligned.
+    // Left to its own font metrics a TextBlock's height varies with which glyphs it
+    // holds, so an arrow, a degree sign and plain digits would each sit on a slightly
+    // different line; this puts every column on one baseline and leaves the strip
+    // below the band clear for the memory bars.
+    text.LineHeight(kTextLineHeight);
     text.LineStackingStrategy(LineStackingStrategy::BlockLineHeight);
-    text.VerticalAlignment(VerticalAlignment::Center);
+    text.VerticalAlignment(VerticalAlignment::Top);
+
+    if (label && !settings.labelColor.empty()) {
+        if (auto color = ParseColor(settings.labelColor)) {
+            text.Foreground(SolidColorBrush(*color));
+            return;
+        }
+    }
     SetTextForeground(text, AlertLevel::Normal, settings);
 }
 
@@ -3185,18 +3331,19 @@ void ApplyBoxBackground(const ModSettings& settings) {
 void ApplyWidgetGeometry(const ModSettings& settings) {
     if (!g_widget || !g_widgetBorder) return;
 
-    // Default (no widthMax): the same 145-170 baseline the original mod used.
     // Widths are the sum of what each column actually needs, not a ratio of some
     // overall figure - every cell is a fixed pixel width holding padded, fixed-shape
     // text, so deriving the panel from its parts leaves no slack anywhere and keeps
-    // the widget as narrow as its content allows.
-    double extrasWidth = settings.showClockPower ? kExtrasWidth : 0.0;
+    // the widget as narrow as its content allows. Cells scale with the font size,
+    // since the constants are calibrated for the 11px default.
+    double scale = static_cast<double>(settings.fontSize) / 11.0;
+    double extrasWidth = settings.showClockPower ? kExtrasWidth * scale : 0.0;
     bool anyGraph = settings.showCpuGraph || settings.showGpuGraph;
-    g_graphWidth = anyGraph ? kGraphWidth : 0.0;
-    double leftWidth = kMetricLabelWidth + kMetricUsageWidth + kMetricTempWidth +
+    g_graphWidth = anyGraph ? static_cast<double>(settings.graphWidth) : 0.0;
+    double leftWidth = (kMetricLabelWidth + kMetricUsageWidth + kMetricTempWidth) * scale +
                        extrasWidth + (anyGraph ? kGraphLeftGap + g_graphWidth : 0.0);
     double rightWidth =
-        kMemoryLabelWidth + kMemoryPercentWidth + kMemoryCapacityWidth;
+        (kMemoryLabelWidth + kMemoryPercentWidth + kMemoryCapacityWidth) * scale;
     // The capacity bar underlines the whole RAM/VRAM row rather than a sub-range of it.
     g_memoryBarWidth = rightWidth;
 
@@ -3228,16 +3375,20 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
                                      GridUnitType::Pixel});
     }
     if (g_rightColumn) g_rightColumn.Width(GridLength{rightWidth, GridUnitType::Pixel});
+    for (const ScaledColumn& sc : g_scaledColumns) {
+        if (sc.column) {
+            sc.column.Width(GridLength{sc.baseWidth * scale, GridUnitType::Pixel});
+        }
+    }
     for (RowDefinition row : {g_leftGapRow, g_rightGapRow, g_netGapRow}) {
         if (row) {
             row.Height(GridLength{static_cast<double>(settings.rowGap), GridUnitType::Pixel});
         }
     }
 
-    // A third column, not a third row: network + internet status live beside RAM/VRAM,
-    // spanning the same two-row height, instead of adding a third row pair.
     bool showNetColumn = settings.showNetwork || settings.showInternetStatus;
-    double netWidth = showNetColumn ? kNetworkColumnWidth : 0.0;
+    double netWidth =
+        showNetColumn ? kDotDiameter + 4 + (kNetArrowWidth + kNetValueWidth) * scale : 0.0;
     if (g_netGapColumn) {
         g_netGapColumn.Width(GridLength{
             showNetColumn ? static_cast<double>(settings.columnGap) : 0.0,
@@ -3275,8 +3426,23 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
         g_gpuGraph.Visibility(settings.showGpuGraph ? Visibility::Visible
                                                     : Visibility::Collapsed);
     }
+    double barH = static_cast<double>(settings.barHeight);
+    for (XamlRectangle bar : {g_ramTrack, g_vramTrack, g_ramFill, g_vramFill}) {
+        if (!bar) continue;
+        bar.Height(barH);
+        bar.RadiusX(barH / 2);
+        bar.RadiusY(barH / 2);
+    }
     for (XamlRectangle track : {g_ramTrack, g_vramTrack}) {
         if (track) track.Width(g_memoryBarWidth);
+    }
+    for (XamlRectangle background : {g_cpuGraphBackground, g_gpuGraphBackground}) {
+        if (!background) continue;
+        background.Width(g_graphWidth);
+        background.Height(kGraphHeight);
+        background.Visibility(anyGraph && settings.graphBackgroundOpacity > 0
+                                  ? Visibility::Visible
+                                  : Visibility::Collapsed);
     }
     for (TextBlock extras : {g_cpuExtrasText, g_gpuExtrasText}) {
         if (extras) {
@@ -3320,7 +3486,19 @@ void ApplyWidgetSettings() {
             graph.StrokeStartLineCap(PenLineCap::Round);
             graph.StrokeEndLineCap(PenLineCap::Round);
             graph.StrokeLineJoin(PenLineJoin::Round);
-            graph.Opacity(0.78);
+            graph.Opacity(settings.graphOpacity / 100.0);
+        }
+    }
+    for (XamlRectangle background : {g_cpuGraphBackground, g_gpuGraphBackground}) {
+        if (background) {
+            background.Fill(graphBrush);
+            background.Opacity(settings.graphBackgroundOpacity / 100.0);
+        }
+    }
+    for (XamlRectangle divider : {g_dividerNet, g_dividerPanels}) {
+        if (divider) {
+            divider.Visibility(settings.showDividers ? Visibility::Visible
+                                                     : Visibility::Collapsed);
         }
     }
     for (XamlRectangle track : {g_ramTrack, g_vramTrack}) {
@@ -3391,44 +3569,49 @@ void UpdateWidgetText() {
                                      settings.memoryCriticalPercent, g_vramAlert, 3.0)
                      : AlertLevel::Normal;
 
-    if (g_cpuUsageText) g_cpuUsageText.Text(FormatPercent(snapshot.cpu, settings.usageDecimals));
+    NumberPadding pad = settings.numberPadding;
+    if (g_cpuUsageText) {
+        g_cpuUsageText.Text(FormatPercent(snapshot.cpu, settings.usageDecimals, pad));
+    }
     if (g_cpuTempText) {
-        g_cpuTempText.Text(FormatTemperature(snapshot.cpuTemp));
+        g_cpuTempText.Text(FormatTemperature(snapshot.cpuTemp, pad));
         SetTextForeground(g_cpuTempText, g_cpuTemperatureAlert, settings);
     }
     if (g_cpuExtrasText) {
-        g_cpuExtrasText.Text(FormatClockPower(snapshot.cpuClockMhz, snapshot.cpuPowerW));
+        g_cpuExtrasText.Text(
+            FormatClockPower(snapshot.cpuClockMhz, snapshot.cpuPowerW, pad));
     }
     if (g_gpuUsageText) {
         g_gpuUsageText.Text(snapshot.gpuAvailable
-                               ? FormatPercent(snapshot.gpu, settings.usageDecimals)
+                               ? FormatPercent(snapshot.gpu, settings.usageDecimals, pad)
                                : L"--%");
     }
     if (g_gpuTempText) {
-        g_gpuTempText.Text(FormatTemperature(snapshot.gpuTemp));
+        g_gpuTempText.Text(FormatTemperature(snapshot.gpuTemp, pad));
         SetTextForeground(g_gpuTempText, g_gpuTemperatureAlert, settings);
     }
     if (g_gpuExtrasText) {
-        g_gpuExtrasText.Text(FormatClockPower(snapshot.gpuClockMhz, snapshot.gpuPowerW));
+        g_gpuExtrasText.Text(
+            FormatClockPower(snapshot.gpuClockMhz, snapshot.gpuPowerW, pad));
     }
     if (g_ramPercentText) {
-        g_ramPercentText.Text(FormatPercent(snapshot.ram, settings.usageDecimals));
+        g_ramPercentText.Text(FormatPercent(snapshot.ram, settings.usageDecimals, pad));
         SetTextForeground(g_ramPercentText, g_ramAlert, settings);
     }
     if (g_ramCapacityText) {
-        g_ramCapacityText.Text(FormatCapacity(snapshot.ramUsedGb, snapshot.ramTotalGb, true,
-                                              settings.capacityDecimals));
+        g_ramCapacityText.Text(FormatCapacity(snapshot.ramUsedGb, snapshot.ramTotalGb,
+                                              true, settings.capacityDecimals, pad));
     }
     if (g_vramPercentText) {
         g_vramPercentText.Text(snapshot.vramAvailable
-                                   ? FormatPercent(snapshot.vram, settings.usageDecimals)
+                                   ? FormatPercent(snapshot.vram, settings.usageDecimals, pad)
                                    : L"--%");
         SetTextForeground(g_vramPercentText, g_vramAlert, settings);
     }
     if (g_vramCapacityText) {
         g_vramCapacityText.Text(FormatCapacity(snapshot.vramUsedGb, snapshot.vramTotalGb,
                                                snapshot.vramAvailable,
-                                               settings.capacityDecimals));
+                                               settings.capacityDecimals, pad));
     }
     if (settings.showNetwork) {
         if (g_netDownText) {
@@ -3496,6 +3679,12 @@ RowDefinition PixelRow(double height) {
     return row;
 }
 
+ColumnDefinition ScaledPixelColumn(double baseWidth) {
+    ColumnDefinition column = PixelColumn(baseWidth);
+    g_scaledColumns.push_back({column, baseWidth});
+    return column;
+}
+
 TextBlock CreateCellText(PCWSTR name, TextAlignment alignment) {
     TextBlock text;
     text.Name(name);
@@ -3516,14 +3705,15 @@ Grid CreateComputeRow(PCWSTR label,
                       TextBlock& temperatureText,
                       TextBlock& extrasText,
                       XamlPolyline& graph,
+                      XamlRectangle& graphBackground,
                       ColumnDefinition& extrasColumn) {
     Grid row;
     row.Height(kRowHeight);
     row.IsHitTestVisible(false);
 
-    row.ColumnDefinitions().Append(PixelColumn(kMetricLabelWidth));
-    row.ColumnDefinitions().Append(PixelColumn(kMetricUsageWidth));
-    row.ColumnDefinitions().Append(PixelColumn(kMetricTempWidth));
+    row.ColumnDefinitions().Append(ScaledPixelColumn(kMetricLabelWidth));
+    row.ColumnDefinitions().Append(ScaledPixelColumn(kMetricUsageWidth));
+    row.ColumnDefinitions().Append(ScaledPixelColumn(kMetricTempWidth));
     extrasColumn = PixelColumn(kExtrasWidth);
     row.ColumnDefinitions().Append(extrasColumn);
     row.ColumnDefinitions().Append(StarColumn());
@@ -3545,11 +3735,22 @@ Grid CreateComputeRow(PCWSTR label,
     extrasText.Text(L"--");
     extrasText.Margin(Thickness{4, 0, 0, 0});
 
+    // A faint panel behind the trace so the graph's extent and baseline stay legible
+    // even when the line is flat against the bottom.
+    graphBackground = XamlRectangle();
+    graphBackground.Name((std::wstring(prefix) + L"GraphBg").c_str());
+    graphBackground.HorizontalAlignment(HorizontalAlignment::Left);
+    graphBackground.VerticalAlignment(VerticalAlignment::Top);
+    graphBackground.Margin(Thickness{kGraphLeftGap, 1, 0, 0});
+    graphBackground.RadiusX(2);
+    graphBackground.RadiusY(2);
+    graphBackground.IsHitTestVisible(false);
+
     graph = XamlPolyline();
     graph.Name((std::wstring(prefix) + L"History").c_str());
     graph.HorizontalAlignment(HorizontalAlignment::Left);
-    graph.VerticalAlignment(VerticalAlignment::Center);
-    graph.Margin(Thickness{kGraphLeftGap, 0, 0, 0});
+    graph.VerticalAlignment(VerticalAlignment::Top);
+    graph.Margin(Thickness{kGraphLeftGap, 1, 0, 0});
     graph.Stretch(Stretch::None);
     graph.IsHitTestVisible(false);
 
@@ -3557,11 +3758,13 @@ Grid CreateComputeRow(PCWSTR label,
     Grid::SetColumn(usageText, 1);
     Grid::SetColumn(temperatureText, 2);
     Grid::SetColumn(extrasText, 3);
+    Grid::SetColumn(graphBackground, 4);
     Grid::SetColumn(graph, 4);
     row.Children().Append(labelText);
     row.Children().Append(usageText);
     row.Children().Append(temperatureText);
     row.Children().Append(extrasText);
+    row.Children().Append(graphBackground);
     row.Children().Append(graph);
     return row;
 }
@@ -3579,32 +3782,22 @@ Grid CreateMemoryRow(PCWSTR label,
     row.Height(kRowHeight);
     row.IsHitTestVisible(false);
 
-    row.ColumnDefinitions().Append(PixelColumn(kMemoryLabelWidth));
-    row.ColumnDefinitions().Append(PixelColumn(kMemoryPercentWidth));
+    row.ColumnDefinitions().Append(ScaledPixelColumn(kMemoryLabelWidth));
+    row.ColumnDefinitions().Append(ScaledPixelColumn(kMemoryPercentWidth));
     row.ColumnDefinitions().Append(StarColumn());
 
-    // 1px clear of the row's bottom edge: flush against it, the last row's bar lands on
-    // the widget's own boundary and is the first thing the tray clips away.
-    const Thickness barMargin{0, 0, 0, 1};
-
+    // Bottom-aligned in the strip below the text band, never overlapping the glyphs.
+    // Height and radius are set from settings in ApplyWidgetGeometry.
     track = XamlRectangle();
     track.Name((std::wstring(prefix) + L"Track").c_str());
-    track.Height(kMemoryBarHeight);
     track.HorizontalAlignment(HorizontalAlignment::Left);
     track.VerticalAlignment(VerticalAlignment::Bottom);
-    track.Margin(barMargin);
-    track.RadiusX(kMemoryBarHeight / 2);
-    track.RadiusY(kMemoryBarHeight / 2);
     track.IsHitTestVisible(false);
 
     fill = XamlRectangle();
     fill.Name((std::wstring(prefix) + L"Fill").c_str());
-    fill.Height(kMemoryBarHeight);
     fill.HorizontalAlignment(HorizontalAlignment::Left);
     fill.VerticalAlignment(VerticalAlignment::Bottom);
-    fill.Margin(barMargin);
-    fill.RadiusX(kMemoryBarHeight / 2);
-    fill.RadiusY(kMemoryBarHeight / 2);
     fill.IsHitTestVisible(false);
 
     labelText =
@@ -3646,7 +3839,7 @@ Grid CreateNetworkColumn() {
     // arrows from drifting as the number beside them changes width, and provides the
     // arrow-to-value gap without padding either string.
     column.ColumnDefinitions().Append(PixelColumn(kDotDiameter + 4));
-    column.ColumnDefinitions().Append(PixelColumn(kNetArrowWidth));
+    column.ColumnDefinitions().Append(ScaledPixelColumn(kNetArrowWidth));
     column.ColumnDefinitions().Append(StarColumn());
 
     g_netDot = XamlEllipse();
@@ -3796,6 +3989,10 @@ void RemoveWidget() {
     g_netDot = nullptr;
     g_cpuGraph = nullptr;
     g_gpuGraph = nullptr;
+    g_cpuGraphBackground = nullptr;
+    g_gpuGraphBackground = nullptr;
+    g_dividerNet = nullptr;
+    g_dividerPanels = nullptr;
     g_ramTrack = nullptr;
     g_ramFill = nullptr;
     g_vramTrack = nullptr;
@@ -3810,6 +4007,7 @@ void RemoveWidget() {
     g_leftGapRow = nullptr;
     g_rightGapRow = nullptr;
     g_netGapRow = nullptr;
+    g_scaledColumns.clear();
     g_cpuHistory.clear();
     g_gpuHistory.clear();
     g_lastRenderedMetricsSequence = 0;
@@ -3851,6 +4049,8 @@ XamlRectangle CreateColumnDivider(PCWSTR name) {
 }
 
 Border BuildWidgetGrid() {
+    g_scaledColumns.clear();
+
     Grid widget;
     widget.IsHitTestVisible(false);
     widget.VerticalAlignment(VerticalAlignment::Center);
@@ -3877,10 +4077,10 @@ Border BuildWidgetGrid() {
 
     Grid cpuRow = CreateComputeRow(L"CPU", L"Cpu", g_cpuLabel, g_cpuUsageText,
                                    g_cpuTempText, g_cpuExtrasText, g_cpuGraph,
-                                   g_cpuExtrasColumn);
+                                   g_cpuGraphBackground, g_cpuExtrasColumn);
     Grid gpuRow = CreateComputeRow(L"GPU", L"Gpu", g_gpuLabel, g_gpuUsageText,
                                    g_gpuTempText, g_gpuExtrasText, g_gpuGraph,
-                                   g_gpuExtrasColumn);
+                                   g_gpuGraphBackground, g_gpuExtrasColumn);
     Grid::SetRow(cpuRow, 0);
     Grid::SetRow(gpuRow, 2);
     leftPanel.Children().Append(cpuRow);
@@ -3909,6 +4109,8 @@ Border BuildWidgetGrid() {
     // each end so it doesn't read as a hard line touching the row edges.
     XamlRectangle dividerNet = CreateColumnDivider(L"DividerNet");
     XamlRectangle dividerPanels = CreateColumnDivider(L"DividerPanels");
+    g_dividerNet = dividerNet;
+    g_dividerPanels = dividerPanels;
 
     Grid::SetColumn(netColumn, 0);
     Grid::SetColumn(dividerNet, 1);

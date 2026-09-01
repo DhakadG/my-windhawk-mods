@@ -809,4 +809,55 @@ spacing" ask for free.
   `ApplyWidgetGeometry` pass on every pointer enter/exit.
 - Verbose narrative comments trimmed; the ones documenting real traps kept.
 
-Version 1.3.0, all four scripts clean. **Not yet verified live.**
+Version 1.3.0, all four scripts clean.
+
+---
+
+## 13. 1.4.0 — the alignment fix that should have happened in 1.2.0
+
+The user was (rightly) frustrated: three rounds of "width stability" work and the
+columns still visibly shifted. **The cause was a finding I had already been handed and
+did not act on.** The research agent's Part B answer in §11 said plainly that
+figure-space padding "doesn't guarantee fixed *pixel* width unless digits are also
+tabular/monospaced", and that `taskbar-clock-customization-v3` relies on the *user*
+picking a tabular font for its own padding to work. I ported the padding and left the
+default font as `Segoe UI Variable Text` — a proportional face where `1` is narrower
+than `0`, so the padding could never have worked. Padding fixes the glyph *count*; it
+cannot fix the glyph *width*.
+
+**The actual fix is three things, all now configurable:**
+1. **A monospaced default font.** `fontFamily` became a dropdown (Consolas by default,
+   plus Cascadia Mono/Code, Lucida Console, Courier New, the two Segoe faces, and a
+   `fontFamilyCustom` escape hatch). This is the part that matters.
+2. **Tabular figures.** `Documents::Typography::SetNumeralAlignment(text,
+   FontNumeralAlignment::Tabular)` on every cell - the OpenType `tnum` feature. Free
+   for monospaced fonts; it is what makes the proportional options usable at all.
+3. **Zero padding.** `numberPadding` (zero / figure-space / none, default zero), so
+   `030.0%` rather than `30.0%` - the user asked for this explicitly.
+
+**Other work this round:**
+- **Vertical structure reworked.** Rows are now a fixed 13px *text band* (top-aligned,
+  `LineHeight` pinned) plus a strip beneath it for the memory bars, inside a 17px row.
+  Previously text was centre-aligned in the row and the bars were bottom-aligned in the
+  same space, so the bars sat in the text's descender area - the "crunched" look. Text
+  in every column now shares one baseline and the bars have clear space.
+- **Graph background.** A faint panel (`graphBackgroundOpacity`, default 10%) behind
+  each trace, so its extent and baseline are visible when the line is flat - the user
+  couldn't see where the graph was.
+- **Cell widths recalibrated** against a monospaced 11px face (~6.05px/char) so every
+  gutter is a uniform ~6px instead of each cell carrying arbitrary slack. The arrow
+  column narrowed to 10px, which was the "too much gap" between arrow and value.
+- **Font-size scaling.** Cells are calibrated for 11px and now rescale with
+  `fontSize`. This needed a registry of the fixed-width `ColumnDefinition`s
+  (`g_scaledColumns`), because a settings change does *not* rebuild the widget - it
+  only calls `ApplyWidgetSettings`, so column definitions sized once at construction
+  would never update.
+- **New settings:** graph width, bar thickness, label colour, label opacity, graph line
+  and background opacity, divider toggle, tabular-figures toggle, number padding, font
+  dropdown + custom family.
+
+Version 1.4.0, all scripts clean. **Not yet verified live.**
+
+**Lesson worth keeping:** when a research pass hands back a caveat about *why* a
+technique might not work, treat it as a requirement, not a footnote. The whole 1.2.0 →
+1.4.0 detour was one unread sentence.

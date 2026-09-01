@@ -2,7 +2,7 @@
 // @id              taskbar-system-info-fork
 // @name            Taskbar System Info - Fork
 // @description     Fork of Taskbar System Info with network throughput, an internet-status dot, HWiNFO- or LibreHardwareMonitor-backed clock/power readings, and real StackPanel/Grid taskbar insertion instead of an overlay.
-// @version         1.2.0
+// @version         1.3.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -44,19 +44,18 @@
 >    author's `taskbar-ai-quota-fork` and `taskbar-fluent-media-player-fork`, including
 >    the Windows 11 26H2 (build 26300) StackPanel tray branch.
 > 2. **More readings.** Network upload/download throughput, a subtle internet-status
->    dot, and CPU/GPU clock and power — HWiNFO shared memory first, with a native
->    `NtPowerInformation` fallback for CPU clock only, so that one reading doesn't
->    need HWiNFO running.
+>    dot, and CPU/GPU clock and power — from LibreHardwareMonitor or HWiNFO, with a
+>    native `NtPowerInformation` fallback for CPU clock so that one reading needs
+>    neither tool running.
 
 A compact taskbar system monitor: CPU and GPU usage/temperature with 60-second history
-graphs, RAM/VRAM capacity bars, network throughput, and an internet-status dot — inserted
-into the taskbar like a native tray item, not overlaid on top of it. Two rows, not three:
-network and internet status sit in their own column beside RAM/VRAM rather than adding a
-row underneath.
+graphs, RAM/VRAM capacity bars, network throughput, and an internet-status dot —
+inserted into the taskbar like a native tray item, not overlaid on top of it. Two rows,
+in three columns:
 
 ```text
-CPU  10%  72°C  [graph]      RAM   52%  16.68/32.00G     ● ↓1.2 MB/s
-GPU   4%  56°C  [graph]      VRAM   9%   2.14/24.00G       ↑48 KB/s
+● ↑ 48 KB/s   CPU  13.8%  28°C  4.52GHz · 53W  [graph]   RAM   78.0%  24.97/31.71G
+  ↓ 1.2 MB/s  GPU  27.1%  55°C   690MHz ·  8W  [graph]   VRAM  51.5%   2.98/ 5.78G
 ```
 
 ## Placement
@@ -68,11 +67,18 @@ slot so they never overlap Explorer's own icons; taskbar positions track the Sta
 Search, Task View, or Widgets buttons; three edge positions overlay the taskbar for
 anyone who prefers that instead.
 
-## Sizing
+## Appearance
 
-Width and height are content-driven (`0 0` = no clamp) with optional min/max overrides,
-and row/column gap are numeric settings — everything defaults to the original's
-proportions but nothing is hardcoded.
+A card-style background box appears **on hover** by default (or always, or never —
+**Background box** under Appearance), matching how this author's other taskbar forks
+behave. Thin frosted dividers separate the three column groups.
+
+Every numeric field is laid out in a fixed-width cell and padded with figure spaces
+(`U+2007`, a digit-width blank), so values keep their position as they change digit
+count instead of the row shuffling sideways — the same technique as this author's
+`taskbar-clock-customization-v3`. Width and height are content-driven (`0 0` = no
+clamp) with optional min/max overrides; row gap, column gap, box padding, corner radius
+and per-graph visibility are all settings.
 
 ## Readings
 
@@ -361,11 +367,16 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
     $name: Critical color
   - textOpacity: 96
     $name: Text opacity (%)
-  - showBox: true
-    $name: Show background box
+  - boxMode: hover
+    $name: Background box
     $description: >-
-      Default: true. A card-style background behind the whole widget, matching this
-      author's other taskbar forks, instead of floating text directly on the taskbar.
+      Default: On hover. A card-style background behind the whole widget, matching this
+      author's other taskbar forks. "On hover" keeps the taskbar clean until you point
+      at the widget; "Always" keeps it drawn permanently.
+    $options:
+      - hover: On hover
+      - always: Always
+      - none: Never
   - boxColor: ""
     $name: Box background color
     $description: '#RRGGBB or #AARRGGBB. Empty uses a near-opaque dark gray default.'
@@ -423,6 +434,7 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.UI.Xaml.Controls.h>
+#include <winrt/Windows.UI.Xaml.Input.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.Xaml.Shapes.h>
 #include <winrt/Windows.UI.Xaml.h>
@@ -439,18 +451,28 @@ using XamlEllipse = winrt::Windows::UI::Xaml::Shapes::Ellipse;
 
 namespace {
 
+// Row heights and paddings are deliberately tight. The tray gives a child roughly 40px
+// of usable height inside a 48px taskbar; anything taller is silently clipped from the
+// bottom, which is what hid the VRAM capacity bar (it sits at the bottom of the last
+// row, while RAM's bar sits mid-widget and survived). 16 + gap + 16 + padding stays
+// under that ceiling with room to spare.
 constexpr wchar_t kWidgetName[] = L"WindhawkTaskbarSystemInfoFork";
-constexpr double kRowHeight = 18.0;
-constexpr double kGraphHeight = 12.0;
-constexpr double kMetricLabelWidth = 31.0;
-constexpr double kMetricUsageWidth = 42.0;
-constexpr double kMetricTempWidth = 48.0;
-constexpr double kExtrasWidth = 78.0;
-constexpr double kGraphLeftGap = 8.0;
-constexpr double kMemoryLabelWidth = 43.0;
-constexpr double kMemoryPercentWidth = 38.0;
+constexpr double kRowHeight = 16.0;
+constexpr double kGraphHeight = 11.0;
+constexpr double kMetricLabelWidth = 26.0;
+constexpr double kMetricUsageWidth = 40.0;
+constexpr double kMetricTempWidth = 36.0;
+constexpr double kExtrasWidth = 80.0;
+constexpr double kGraphLeftGap = 6.0;
+constexpr double kGraphWidth = 56.0;
+constexpr double kMemoryLabelWidth = 36.0;
+constexpr double kMemoryPercentWidth = 40.0;
+constexpr double kMemoryCapacityWidth = 76.0;
+constexpr double kMemoryBarHeight = 2.5;
 constexpr double kDotDiameter = 7.0;
-constexpr double kNetworkColumnWidth = 70.0;
+constexpr double kNetArrowWidth = 11.0;
+// Dot + arrow + enough for the widest dynamic-unit value ("999.99 KB/s").
+constexpr double kNetworkColumnWidth = 90.0;
 constexpr uint32_t kHwInfoSignature = 0x53695748;  // "HWiS"
 // HWiNFO shared-memory reading types (SDK-documented, stable across versions).
 constexpr uint32_t kHwInfoReadingTemperature = 1;
@@ -487,6 +509,12 @@ enum class MetricProvider {
     WindowsD3dkmt,
     WindowsThermalZones,
     WindowsPowerInformation,
+};
+
+enum class BoxMode {
+    Hover,
+    Always,
+    None,
 };
 
 enum class NetworkFormat {
@@ -547,7 +575,7 @@ struct ModSettings {
     int lhmUpdateInterval = 2;
     int fontSize = 11;
     int textOpacity = 96;
-    bool showBox = true;
+    BoxMode boxMode = BoxMode::Hover;
     int boxCornerRadius = 6;
     int boxPadding = 8;
     int cpuWarningTemp = 75;
@@ -583,6 +611,9 @@ struct InjectionTarget {
 // Grid) is its Child. A Border, not the Grid itself, because Grid has no Padding
 // property in this XAML version, and a card-style background needs one.
 [[clang::no_destroy]] Border g_widgetBorder{nullptr};
+bool g_widgetHovered = false;
+event_token g_pointerEnteredToken{};
+event_token g_pointerExitedToken{};
 [[clang::no_destroy]] Panel g_injectionParent{nullptr};
 // Tray sub-positions (tray_left, tray_before_clock, ...) all resolve to the same
 // SystemTrayFrameGrid object, so a plain "same panel" check can't tell a real
@@ -618,6 +649,8 @@ event_token g_timerToken{};
 [[clang::no_destroy]] TextBlock g_vramCapacityText{nullptr};
 [[clang::no_destroy]] TextBlock g_netDownText{nullptr};
 [[clang::no_destroy]] TextBlock g_netUpText{nullptr};
+[[clang::no_destroy]] TextBlock g_netDownArrow{nullptr};
+[[clang::no_destroy]] TextBlock g_netUpArrow{nullptr};
 [[clang::no_destroy]] XamlEllipse g_netDot{nullptr};
 [[clang::no_destroy]] XamlPolyline g_cpuGraph{nullptr};
 [[clang::no_destroy]] XamlPolyline g_gpuGraph{nullptr};
@@ -735,6 +768,12 @@ ThermalZoneAggregation ParseThermalZoneAggregation(const std::wstring& value) {
                                 : ThermalZoneAggregation::Average;
 }
 
+BoxMode ParseBoxMode(const std::wstring& value) {
+    if (value == L"always") return BoxMode::Always;
+    if (value == L"none") return BoxMode::None;
+    return BoxMode::Hover;
+}
+
 NetworkFormat ParseNetworkFormat(const std::wstring& value) {
     if (value == L"mbs") return NetworkFormat::Mbs;
     if (value == L"mbits") return NetworkFormat::Mbits;
@@ -808,7 +847,7 @@ void LoadSettings() {
     settings.fontSize = std::clamp(Wh_GetIntSetting(L"Appearance.fontSize"), 9, 13);
     settings.textOpacity =
         std::clamp(Wh_GetIntSetting(L"Appearance.textOpacity"), 0, 100);
-    settings.showBox = Wh_GetIntSetting(L"Appearance.showBox") != 0;
+    settings.boxMode = ParseBoxMode(GetStringSetting(L"Appearance.boxMode"));
     settings.boxCornerRadius =
         std::clamp(Wh_GetIntSetting(L"Appearance.boxCornerRadius"), 0, 20);
     settings.boxPadding = std::clamp(Wh_GetIntSetting(L"Appearance.boxPadding"), 0, 24);
@@ -1179,10 +1218,9 @@ struct HwInfoExtras {
     MetricProvider gpuPowerProvider = MetricProvider::None;
 };
 
-// One pass over every HWiNFO reading, scoring each against whichever of the six
-// wanted values is still enabled - cheaper than the six separate scans a naive
-// per-metric reader would need, and the reason temperature and clock/power share this
-// function instead of each keeping its own copy of the shared-memory walk.
+// One pass over every HWiNFO reading, scoring each against whichever of the six wanted
+// values is enabled - hence temperature and clock/power sharing one walk rather than
+// each keeping its own copy.
 // Diagnoses exactly where a shared-memory read comes up empty, logged once per distinct
 // reason (not every cycle) so a report from the user actually says something - "HWiNFO
 // unavailable" alone doesn't distinguish "not running", "running without Shared Memory
@@ -1522,21 +1560,14 @@ void ReadHwInfoGadgetRegistry(HwInfoExtras& out,
     RegCloseKey(key);
 }
 
-// ---------------------------------------------------------------------------
-// LibreHardwareMonitor. An alternative to HWiNFO for CPU/GPU temperature, clock and
-// power - LHM exposes a web server (Options > Remote Web Server > Run) whose
-// /data.json is a recursive tree of {Text, Value, Children} nodes: hardware devices ->
-// sensor-type groups ("Temperatures", "Clocks", "Powers", ...) -> individual sensor
-// leaves. Fetching, parsing and the tree-search heuristics below follow the same
-// approach already proven in this author's own taskbar-clock-customization-v3 (see
-// FetchAndParseLhmData/FindLhmSensorValue there), with one correctness fix: that
-// version uses 0.0 as a "sensor not found" sentinel, which is indistinguishable from a
-// genuine 0 reading. This version returns std::optional<double> instead, so a real
-// zero doesn't wrongly fall through to the next candidate name in a fallback chain.
-// Only temperature/clock/power are fetched here - usage and RAM/VRAM already have a
-// better source (native PDH counters), so pulling them from LHM too would just be a
-// second, potentially disagreeing copy of data this mod already has.
-// ---------------------------------------------------------------------------
+// LibreHardwareMonitor: an alternative to HWiNFO for CPU/GPU temperature, clock and
+// power. Its web server (Options > Remote Web Server > Run) serves /data.json as a
+// recursive tree of {Text, Value, Children} nodes. Only temperature/clock/power are
+// read; usage and RAM/VRAM already come from native PDH counters.
+//
+// Adapted from taskbar-clock-customization-v3, with one fix: that version uses 0.0 as
+// a "not found" sentinel, indistinguishable from a genuine zero reading. This one
+// returns std::optional so a real zero can't fall through to the next candidate name.
 
 struct LhmJsonNode {
     std::wstring text;
@@ -1853,16 +1884,11 @@ void StopLhmWorker() {
     g_lhmDataLoaded = false;
 }
 
-// Fills in whatever HWiNFO (and native fallbacks) left empty - LHM never overrides an
-// already-populated value, matching "additional provider" rather than "replacement".
-// Split in two (rather than one function covering all six fields) because temperature
-// and clock/power each have their own source-mode setting, and the two need different
-// ordering: called *before* the corresponding Read function when that mode is Auto (so
-// LHM is the primary source per the user's preference - it has no HWiNFO-free-tier
-// 12-hour Shared Memory cutoff), and called again *after* unconditionally as a
-// harmless no-op-if-already-filled catch-all for every other explicit mode, where
-// HWiNFO (or the selected source) must stay authoritative and LHM only fills a
-// genuine gap rather than preempting an explicit choice.
+// LHM only ever fills fields that are still empty, never overwrites. Split in two
+// because temperature and clock/power have separate source-mode settings: each half is
+// called before its Read function when that mode is Auto (making LHM primary - it has
+// no HWiNFO free-tier 12-hour cutoff), and again after for every other mode, where the
+// explicitly chosen source must stay authoritative.
 bool GetLhmSnapshotIfEnabled(const ModSettings& settings, LhmSnapshot& out) {
     if (!settings.lhmEnabled) return false;
     std::lock_guard lock(g_lhmMutex);
@@ -2159,13 +2185,10 @@ bool HasGpuAdapterIdentityChanged(const GpuAdapterInfo& cachedAdapter,
     return currentAdapter && currentAdapter->luid != cachedAdapter.luid;
 }
 
-// The base mod only ever read Temperature from this struct - a choice worth keeping:
-// D3DKMT_ADAPTER_PERFDATA is an undocumented, reverse-engineered layout, and while the
-// tenths-of-a-degree Temperature field is well-established (multiple public tools agree
-// on it), the actual unit of the Power field has no authoritative source. Surfacing a
-// number labeled "W" that might not really be watts is worse than showing nothing -
-// GPU power stays HWiNFO-only, matching CPU power and GPU clock, which have the same
-// gap for the same reason.
+// Temperature only. D3DKMT_ADAPTER_PERFDATA is a reverse-engineered layout: the
+// tenths-of-a-degree Temperature field is corroborated by multiple public tools, but
+// the Power field's unit has no authoritative source, and a number labelled "W" that
+// might not be watts is worse than no number.
 struct WindowsGpuPerfData {
     std::optional<double> temperature;
 };
@@ -2847,7 +2870,7 @@ std::wstring PadFigureSpace(std::wstring text, int minIntegerDigits) {
 }
 
 std::wstring FormatPercent(double value, int decimals) {
-    return PadFigureSpace(FormatFixed(std::clamp(value, 0.0, 100.0), decimals), 2) + L"%";
+    return PadFigureSpace(FormatFixed(std::clamp(value, 0.0, 100.0), decimals), 3) + L"%";
 }
 
 std::wstring FormatTemperature(const std::optional<double>& value) {
@@ -2872,15 +2895,20 @@ std::wstring FormatCapacity(double usedGb, double totalGb, bool available, int d
     return usedText + L"/" + totalText + L"G";
 }
 
+// Both branches land on 7 glyphs ("4.52GHz" / " 690MHz") so the clock half of the
+// extras cell keeps a constant width across the MHz/GHz switch.
 std::wstring FormatClock(const std::optional<double>& mhz) {
     if (!mhz) return L"";
     return *mhz >= 1000.0 ? PadFigureSpace(FormatFixed(*mhz / 1000.0, 2), 1) + L"GHz"
-                          : PadFigureSpace(FormatFixed(*mhz, 0), 4) + L"MHz";
+                          : PadFigureSpace(FormatFixed(*mhz, 0), 3) + L"MHz";
 }
 
+// Always whole watts: a sub-10W reading rendered as "8.7W" is two glyphs wider than
+// "53W", which pushed the whole extras cell past its column and clipped the trailing
+// "W" off entirely.
 std::wstring FormatPower(const std::optional<double>& watts) {
     if (!watts) return L"";
-    return PadFigureSpace(FormatFixed(*watts, *watts < 10.0 ? 1 : 0), 2) + L"W";
+    return PadFigureSpace(FormatFixed(*watts, 0), 2) + L"W";
 }
 
 std::wstring FormatClockPower(const std::optional<double>& mhz,
@@ -3129,24 +3157,48 @@ void ApplyTextStyle(TextBlock text, bool label, const ModSettings& settings) {
     text.Opacity(label ? opacity * 0.62 : opacity);
     text.TextWrapping(TextWrapping::NoWrap);
     text.TextTrimming(TextTrimming::None);
+    // Pin every cell to one line box of exactly the row height. Without this a
+    // TextBlock's height follows its font's natural metrics, so cells whose glyphs
+    // differ in ascender/descender extent (an arrow, a degree sign, plain digits) each
+    // center on a slightly different line and the rows read as unevenly spaced.
+    text.LineHeight(kRowHeight);
+    text.LineStackingStrategy(LineStackingStrategy::BlockLineHeight);
+    text.VerticalAlignment(VerticalAlignment::Center);
     SetTextForeground(text, AlertLevel::Normal, settings);
+}
+
+// Background only - what a hover enter/exit needs, without redoing every column width.
+void ApplyBoxBackground(const ModSettings& settings) {
+    if (!g_widgetBorder) return;
+    bool visible = settings.boxMode == BoxMode::Always ||
+                   (settings.boxMode == BoxMode::Hover && g_widgetHovered);
+    if (visible) {
+        g_widgetBorder.Background(
+            BrushFromSetting(settings.boxColor, MakeColor(0xE6, 0x24, 0x24, 0x24)));
+    } else {
+        // A transparent brush rather than ClearValue: an unset Background makes the
+        // Border invisible to hit testing, which would break hover-to-reveal.
+        g_widgetBorder.Background(SolidColorBrush(MakeColor(0x00, 0x00, 0x00, 0x00)));
+    }
 }
 
 void ApplyWidgetGeometry(const ModSettings& settings) {
     if (!g_widget || !g_widgetBorder) return;
 
     // Default (no widthMax): the same 145-170 baseline the original mod used.
-    double rightWidth = 150.0;
-    if (settings.widthMax > 0) {
-        rightWidth = std::clamp(static_cast<double>(settings.widthMax) * 0.38, 100.0,
-                                static_cast<double>(settings.widthMax));
-    }
-    double leftWidth = std::max(120.0, rightWidth * 1.85);
+    // Widths are the sum of what each column actually needs, not a ratio of some
+    // overall figure - every cell is a fixed pixel width holding padded, fixed-shape
+    // text, so deriving the panel from its parts leaves no slack anywhere and keeps
+    // the widget as narrow as its content allows.
     double extrasWidth = settings.showClockPower ? kExtrasWidth : 0.0;
-    g_graphWidth = std::max(24.0, leftWidth - kMetricLabelWidth - kMetricUsageWidth -
-                                      kMetricTempWidth - extrasWidth - kGraphLeftGap);
-    g_memoryBarWidth = rightWidth - kMemoryLabelWidth - kMemoryPercentWidth;
-    if (g_memoryBarWidth < 20.0) g_memoryBarWidth = 20.0;
+    bool anyGraph = settings.showCpuGraph || settings.showGpuGraph;
+    g_graphWidth = anyGraph ? kGraphWidth : 0.0;
+    double leftWidth = kMetricLabelWidth + kMetricUsageWidth + kMetricTempWidth +
+                       extrasWidth + (anyGraph ? kGraphLeftGap + g_graphWidth : 0.0);
+    double rightWidth =
+        kMemoryLabelWidth + kMemoryPercentWidth + kMemoryCapacityWidth;
+    // The capacity bar underlines the whole RAM/VRAM row rather than a sub-range of it.
+    g_memoryBarWidth = rightWidth;
 
     g_widgetBorder.MinWidth(settings.widthMin);
     g_widgetBorder.MaxWidth(settings.widthMax > 0 ? settings.widthMax
@@ -3155,22 +3207,20 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
     g_widgetBorder.MaxHeight(settings.heightMax > 0
                                  ? settings.heightMax
                                  : std::numeric_limits<double>::infinity());
-    if (settings.showBox) {
-        g_widgetBorder.Background(BrushFromSetting(settings.boxColor,
-                                                    MakeColor(0xE6, 0x24, 0x24, 0x24)));
-        g_widgetBorder.CornerRadius(
-            CornerRadius{static_cast<double>(settings.boxCornerRadius),
-                        static_cast<double>(settings.boxCornerRadius),
-                        static_cast<double>(settings.boxCornerRadius),
-                        static_cast<double>(settings.boxCornerRadius)});
-        g_widgetBorder.Padding(Thickness{
-            static_cast<double>(settings.boxPadding), static_cast<double>(settings.boxPadding) / 2,
-            static_cast<double>(settings.boxPadding), static_cast<double>(settings.boxPadding) / 2});
-    } else {
-        g_widgetBorder.ClearValue(Border::BackgroundProperty());
-        g_widgetBorder.CornerRadius(CornerRadius{0, 0, 0, 0});
-        g_widgetBorder.Padding(Thickness{0, 0, 0, 0});
-    }
+    // Padding is applied whatever the box mode, so the layout doesn't jump sideways the
+    // moment a hover-revealed background appears or disappears. The vertical half is
+    // capped hard: the tray clips a too-tall child from the bottom, and the memory bars
+    // live on that edge.
+    double padX = static_cast<double>(settings.boxPadding);
+    double padY = std::min(2.0, padX / 2);
+    g_widgetBorder.Padding(Thickness{padX, padY, padX, padY});
+    g_widgetBorder.CornerRadius(
+        CornerRadius{static_cast<double>(settings.boxCornerRadius),
+                     static_cast<double>(settings.boxCornerRadius),
+                     static_cast<double>(settings.boxCornerRadius),
+                     static_cast<double>(settings.boxCornerRadius)});
+
+    ApplyBoxBackground(settings);
 
     if (g_leftColumn) g_leftColumn.Width(GridLength{leftWidth, GridUnitType::Pixel});
     if (g_gapColumn) {
@@ -3201,6 +3251,12 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
     if (g_netUpText) {
         g_netUpText.Visibility(settings.showNetwork ? Visibility::Visible
                                                      : Visibility::Collapsed);
+    }
+    for (TextBlock arrow : {g_netUpArrow, g_netDownArrow}) {
+        if (arrow) {
+            arrow.Visibility(settings.showNetwork ? Visibility::Visible
+                                                  : Visibility::Collapsed);
+        }
     }
     if (g_netDot) {
         g_netDot.Visibility(settings.showInternetStatus ? Visibility::Visible
@@ -3251,7 +3307,8 @@ void ApplyWidgetSettings() {
     for (TextBlock value :
         {g_cpuUsageText, g_cpuTempText, g_cpuExtrasText, g_gpuUsageText, g_gpuTempText,
          g_gpuExtrasText, g_ramPercentText, g_ramCapacityText, g_vramPercentText,
-         g_vramCapacityText, g_netDownText, g_netUpText}) {
+         g_vramCapacityText, g_netDownText, g_netUpText, g_netDownArrow,
+         g_netUpArrow}) {
         ApplyTextStyle(value, false, settings);
     }
 
@@ -3377,18 +3434,18 @@ void UpdateWidgetText() {
         if (g_netDownText) {
             g_netDownText.Text(
                 snapshot.networkRecvAvailable
-                    ? L"↓" + FormatTransferSpeed(snapshot.networkRecvBytesPerSec,
-                                                 settings.networkFormat,
-                                                 settings.networkDecimals)
-                    : L"↓--");
+                    ? FormatTransferSpeed(snapshot.networkRecvBytesPerSec,
+                                          settings.networkFormat,
+                                          settings.networkDecimals)
+                    : L"--");
         }
         if (g_netUpText) {
             g_netUpText.Text(
                 snapshot.networkSentAvailable
-                    ? L"↑" + FormatTransferSpeed(snapshot.networkSentBytesPerSec,
-                                                 settings.networkFormat,
-                                                 settings.networkDecimals)
-                    : L"↑--");
+                    ? FormatTransferSpeed(snapshot.networkSentBytesPerSec,
+                                          settings.networkFormat,
+                                          settings.networkDecimals)
+                    : L"--");
         }
     }
     UpdateInternetStatusUi(settings);
@@ -3526,22 +3583,28 @@ Grid CreateMemoryRow(PCWSTR label,
     row.ColumnDefinitions().Append(PixelColumn(kMemoryPercentWidth));
     row.ColumnDefinitions().Append(StarColumn());
 
+    // 1px clear of the row's bottom edge: flush against it, the last row's bar lands on
+    // the widget's own boundary and is the first thing the tray clips away.
+    const Thickness barMargin{0, 0, 0, 1};
+
     track = XamlRectangle();
     track.Name((std::wstring(prefix) + L"Track").c_str());
-    track.Height(2.5);
+    track.Height(kMemoryBarHeight);
     track.HorizontalAlignment(HorizontalAlignment::Left);
     track.VerticalAlignment(VerticalAlignment::Bottom);
-    track.RadiusX(1.25);
-    track.RadiusY(1.25);
+    track.Margin(barMargin);
+    track.RadiusX(kMemoryBarHeight / 2);
+    track.RadiusY(kMemoryBarHeight / 2);
     track.IsHitTestVisible(false);
 
     fill = XamlRectangle();
     fill.Name((std::wstring(prefix) + L"Fill").c_str());
-    fill.Height(2.5);
+    fill.Height(kMemoryBarHeight);
     fill.HorizontalAlignment(HorizontalAlignment::Left);
     fill.VerticalAlignment(VerticalAlignment::Bottom);
-    fill.RadiusX(1.25);
-    fill.RadiusY(1.25);
+    fill.Margin(barMargin);
+    fill.RadiusX(kMemoryBarHeight / 2);
+    fill.RadiusY(kMemoryBarHeight / 2);
     fill.IsHitTestVisible(false);
 
     labelText =
@@ -3567,12 +3630,8 @@ Grid CreateMemoryRow(PCWSTR label,
     return row;
 }
 
-// A third column, not a third row: down/up stacked over the same two-row height as the
-// CPU/GPU and RAM/VRAM panels, with the internet-status dot as a small color-only corner
-// badge (deliberately not hit-testable: a widget.IsHitTestVisible(false) ancestor
-// excludes its whole subtree from hit testing in WinRT XAML regardless of what a
-// descendant sets on itself, so a hoverable tooltip here would need restructuring the
-// whole widget's click-through model - not worth it for a "subtle" indicator).
+// A column, not a third row: up/down stacked over the same two-row height as the
+// CPU/GPU and RAM/VRAM panels, with the internet-status dot as a colour-only badge.
 Grid CreateNetworkColumn() {
     Grid column;
     column.Name(L"NetworkColumn");
@@ -3583,7 +3642,11 @@ Grid CreateNetworkColumn() {
     column.RowDefinitions().Append(PixelRow(kRowHeight));
     column.RowDefinitions().Append(g_netGapRow);
     column.RowDefinitions().Append(PixelRow(kRowHeight));
+    // Arrow in its own fixed column rather than glued onto the value string: keeps the
+    // arrows from drifting as the number beside them changes width, and provides the
+    // arrow-to-value gap without padding either string.
     column.ColumnDefinitions().Append(PixelColumn(kDotDiameter + 4));
+    column.ColumnDefinitions().Append(PixelColumn(kNetArrowWidth));
     column.ColumnDefinitions().Append(StarColumn());
 
     g_netDot = XamlEllipse();
@@ -3594,24 +3657,34 @@ Grid CreateNetworkColumn() {
     g_netDot.VerticalAlignment(VerticalAlignment::Center);
     g_netDot.IsHitTestVisible(false);
 
-    // Upload on top, download on bottom - matching the convention from the user's own
+    // Upload on top, download on bottom, matching the user's own
     // taskbar-clock-customization-v3 config (TopLine carries %upload_speed%).
+    g_netUpArrow = CreateCellText(L"NetUpArrow", TextAlignment::Left);
+    g_netUpArrow.Text(L"↑");
+    g_netDownArrow = CreateCellText(L"NetDownArrow", TextAlignment::Left);
+    g_netDownArrow.Text(L"↓");
     g_netUpText = CreateCellText(L"NetUp", TextAlignment::Right);
-    g_netUpText.Text(L"↑--");
+    g_netUpText.Text(L"--");
     g_netDownText = CreateCellText(L"NetDown", TextAlignment::Right);
-    g_netDownText.Text(L"↓--");
+    g_netDownText.Text(L"--");
 
     Grid::SetColumn(g_netDot, 0);
     Grid::SetRow(g_netDot, 0);
     Grid::SetRowSpan(g_netDot, 3);
-    Grid::SetColumn(g_netUpText, 1);
+    Grid::SetColumn(g_netUpArrow, 1);
+    Grid::SetRow(g_netUpArrow, 0);
+    Grid::SetColumn(g_netUpText, 2);
     Grid::SetRow(g_netUpText, 0);
-    Grid::SetColumn(g_netDownText, 1);
+    Grid::SetColumn(g_netDownArrow, 1);
+    Grid::SetRow(g_netDownArrow, 2);
+    Grid::SetColumn(g_netDownText, 2);
     Grid::SetRow(g_netDownText, 2);
 
     column.Children().Append(g_netDot);
-    column.Children().Append(g_netDownText);
+    column.Children().Append(g_netUpArrow);
     column.Children().Append(g_netUpText);
+    column.Children().Append(g_netDownArrow);
+    column.Children().Append(g_netDownText);
     return column;
 }
 
@@ -3640,6 +3713,27 @@ void DetachAnchorTracking() {
 }
 
 int RemoveWidgetFromPanel(Panel const& targetPanel);
+
+// Revokes the hover handlers off whatever Border currently owns them. Must run before
+// a new Border replaces g_widgetBorder as well as at teardown: re-injection builds a
+// fresh Border and would otherwise overwrite the tokens, stranding live delegates that
+// point into this DLL on the discarded one.
+void DetachHoverTracking() {
+    if (g_widgetBorder) {
+        try {
+            if (g_pointerEnteredToken.value) {
+                g_widgetBorder.PointerEntered(g_pointerEnteredToken);
+            }
+            if (g_pointerExitedToken.value) {
+                g_widgetBorder.PointerExited(g_pointerExitedToken);
+            }
+        } catch (...) {
+        }
+    }
+    g_pointerEnteredToken = {};
+    g_pointerExitedToken = {};
+    g_widgetHovered = false;
+}
 
 void RemoveWidget() {
     if (g_timer) {
@@ -3673,6 +3767,8 @@ void RemoveWidget() {
         }
     }
 
+    DetachHoverTracking();
+
     g_widget = nullptr;
     g_widgetBorder = nullptr;
     g_injectionParent = nullptr;
@@ -3695,6 +3791,8 @@ void RemoveWidget() {
     g_vramCapacityText = nullptr;
     g_netDownText = nullptr;
     g_netUpText = nullptr;
+    g_netDownArrow = nullptr;
+    g_netUpArrow = nullptr;
     g_netDot = nullptr;
     g_cpuGraph = nullptr;
     g_gpuGraph = nullptr;
@@ -3825,11 +3923,26 @@ Border BuildWidgetGrid() {
 
     Border border;
     border.Name(kWidgetName);
-    border.IsHitTestVisible(false);
+    // The one hit-testable element in the widget, so hover-to-reveal works. Everything
+    // inside stays click-through; the Border occupies its own reserved tray slot, so
+    // there is nothing underneath it to swallow clicks from.
+    border.IsHitTestVisible(true);
     border.VerticalAlignment(VerticalAlignment::Center);
     border.Child(widget);
     g_widget = widget;
     g_widgetBorder = border;
+    g_widgetHovered = false;
+
+    g_pointerEnteredToken = border.PointerEntered(
+        [](IInspectable const&, winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs const&) {
+            g_widgetHovered = true;
+            if (!g_unloading) ApplyBoxBackground(CurrentSettings());
+        });
+    g_pointerExitedToken = border.PointerExited(
+        [](IInspectable const&, winrt::Windows::UI::Xaml::Input::PointerRoutedEventArgs const&) {
+            g_widgetHovered = false;
+            if (!g_unloading) ApplyBoxBackground(CurrentSettings());
+        });
     return border;
 }
 
@@ -4441,12 +4554,13 @@ bool InjectWidget(HWND taskbarWindow) {
         // sitting there from an injection that never got torn down.
         RemoveWidgetFromPanel(target.panel);
 
-        Border widget = BuildWidgetGrid();
-        // Revoke any LayoutUpdated subscription and restore any pushed-aside anchor
-        // margin from the *previous* injection before adopting the new target - a
-        // stale handler left running here would fire against the new state below.
+        // Revoke the previous injection's handlers before BuildWidgetGrid overwrites
+        // g_widgetBorder / the anchor-tracking globals - a stale delegate left live on
+        // the discarded element would keep firing against the new state below.
+        DetachHoverTracking();
         DetachAnchorTracking();
 
+        Border widget = BuildWidgetGrid();
         g_injectionParent = target.panel;
 
         bool overlay = IsOverlayPosition(position);

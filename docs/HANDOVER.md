@@ -746,7 +746,67 @@ and asked for several things to be *ported from those*, not invented fresh:
   screenshot) rather than a real bug, but **not confirmed live** - if it's still
   missing after 1.2.0, that becomes a real bug to chase rather than a hunch to fix.
 
-Version 1.2.0. Re-verified clean on all four local scripts. **Not yet re-verified
-live** - this entire round (LHM-primary reorder, net column repositioning, box
-opacity, dividers, padding, bar thickness) was written and compile-checked but not
-yet reinstalled/reviewed against the real taskbar.
+Version 1.2.0. Re-verified clean on all four local scripts.
+
+---
+
+## 12. 1.3.0 — the VRAM bar was a clipping bug, not a drawing bug
+
+The user reported the VRAM capacity bar still missing while RAM's showed fine, plus
+asked for tighter spacing, a hover-reveal box, and the width-stability technique
+"properly implemented". The bar turned out to explain several of those at once.
+
+**Root cause: the widget was taller than the tray gives a child.** Rows were
+18 + gap 2 + 18, plus 4px vertical Border padding = **46px**; the tray's usable child
+height inside a 48px taskbar is roughly **40px**, and it clips from the bottom. The
+memory bars sit at `VerticalAlignment::Bottom` of their row, so RAM's bar (mid-widget,
+y≈18) survived and VRAM's (on the widget's bottom edge) was cut off entirely. There was
+never any RAM/VRAM code asymmetry to find - 1.2.0's guess that it was "probably just
+thin and hard to see" was wrong, and thickening the bar to 2.5px did not and could not
+have fixed it.
+
+Fixed by shrinking to fit rather than by moving the bar: `kRowHeight` 18 → 16,
+vertical padding capped at 2px regardless of `boxPadding` (horizontal keeps the full
+value), and a 1px bottom margin on both bars so neither sits flush on the boundary.
+Total is now ~38px with room to spare. This also delivered the "reduce vertical
+spacing" ask for free.
+
+**Other changes this round:**
+- **Hover-reveal box.** `showBox` (bool) → `boxMode` (hover / always / never, default
+  hover), matching `taskbar-fluent-media-player-fork`. Needed
+  `IsHitTestVisible(true)` on the outer Border - and note the non-obvious part: when
+  the box is hidden the Background is set to a **transparent brush rather than
+  `ClearValue`**, because a Border with no Background at all is invisible to hit
+  testing and would never receive the `PointerEntered` that reveals it.
+- **A real handler leak, same class as the anchor-tracking bug from §9.** Re-injection
+  builds a fresh Border and overwrote `g_pointerEnteredToken`/`g_pointerExitedToken`
+  without revoking the old ones, stranding live delegates pointing into this DLL on the
+  discarded element. Extracted `DetachHoverTracking()` and called it from both
+  `RemoveWidget` and `InjectWidget` - exactly the fix shape the anchor-tracking bug
+  needed. Worth internalising the pattern: *every* subscription this mod makes on a
+  per-injection element needs a detach that runs on re-injection, not only on unload.
+- **Width stability, properly this time.** 1.2.0 added figure-space padding but the
+  visible jitter had a different cause: the extras cell (`"690MHz · 8.7W"`) was wider
+  than its 78px column and clipped its own trailing `W`. Fixed at the source -
+  `FormatPower` now uses whole watts always (a sub-10W `8.7W` is two glyphs wider than
+  `53W`), and `FormatClock`'s two branches were tuned to both land on 7 glyphs across
+  the MHz/GHz switch. Percentages pad to 3 integer digits so 100% doesn't widen a cell.
+- **Deterministic vertical text alignment.** Every cell now gets an explicit
+  `LineHeight(kRowHeight)` + `LineStackingStrategy::BlockLineHeight`. Without it a
+  TextBlock's height follows its font's natural metrics, so cells whose glyphs differ
+  in ascender/descender extent (an arrow, a degree sign, plain digits) each centre on a
+  slightly different line.
+- **Content-derived widths.** `leftWidth` was `max(120, rightWidth * 1.85)` - a magic
+  ratio that left slack. Both panels are now the exact sum of their fixed columns, so
+  the widget is as narrow as its content allows. Label/temp/graph-gap columns were also
+  tightened per the ask (31→26, 48→36, 8→6).
+- **Network column**: arrow moved into its own fixed column so it stops drifting as the
+  number beside it changes width, which also supplies the requested arrow-to-value gap
+  without padding either string. Column widened to 90px to fit `999.99 KB/s` at the
+  user's 2-decimal setting.
+- Memory bar now spans the full RAM/VRAM row width instead of an arbitrary sub-range.
+- Hover repaint is background-only (`ApplyBoxBackground`) rather than a full
+  `ApplyWidgetGeometry` pass on every pointer enter/exit.
+- Verbose narrative comments trimmed; the ones documenting real traps kept.
+
+Version 1.3.0, all four scripts clean. **Not yet verified live.**

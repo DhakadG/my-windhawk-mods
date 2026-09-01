@@ -2,7 +2,7 @@
 // @id              taskbar-system-info-fork
 // @name            Taskbar System Info - Fork
 // @description     Fork of Taskbar System Info with network throughput, an internet-status dot, HWiNFO- or LibreHardwareMonitor-backed clock/power readings, and real StackPanel/Grid taskbar insertion instead of an overlay.
-// @version         1.1.0
+// @version         1.2.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -95,9 +95,22 @@ proportions but nothing is hardcoded.
 ## Getting temperature, clock and power data
 
 Every one of these needs a third-party monitor running — the free tier (usage,
-capacity, network) never does. Two are supported, and either is enough on its own:
+capacity, network) never does. Two are supported, and either is enough on its own.
+**LibreHardwareMonitor is the recommended default** — it's free with no time limit,
+unlike HWiNFO's free-tier restriction below.
 
-**HWiNFO** (Settings → **Temperature** source, default):
+**LibreHardwareMonitor** (recommended; the default **Temperature source** and
+**Clock/power source** are Automatic, which tries this first):
+1. Download [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
+   (portable, no install needed) and run it.
+2. **Options → Remote Web Server → Run** — this is what actually exposes the
+   `data.json` this mod reads; LHM running without it is invisible to the mod, the
+   same way HWiNFO running without Shared Memory Support is (below).
+3. Turn on **Enable LibreHardwareMonitor integration** under this mod's
+   **LibreHardwareMonitor** settings group; the port (default `8085`) must match
+   LHM's own web server port.
+
+**HWiNFO** (an alternative or a supplement, not required if LHM is enabled):
 1. Install and run [HWiNFO](https://www.hwinfo.com/) in Sensors-only or full mode.
 2. Open **Settings** (the gear icon) → enable **Shared Memory Support**. This is
    **off by default** — HWiNFO running without it looks identical to HWiNFO not
@@ -105,23 +118,19 @@ capacity, network) never does. Two are supported, and either is enough on its ow
    shows up. Enable **Verbose logging** in this mod's Debug settings and check the
    Windhawk log (or a tool like DebugView) if readings still don't appear after this —
    it reports exactly which step failed.
-3. The free edition disables shared memory after 12 hours of continuous use; HWiNFO64
-   Pro has no such limit. Gadget Registry (Settings → Sensor Settings → HWiNFO Gadget →
-   **Report to Gadget**) is a separate, always-on alternative interface if you'd rather
-   not restart HWiNFO daily.
+3. The free edition disables shared memory after 12 hours of continuous use, needing a
+   restart to resume — HWiNFO64 Pro has no such limit, and neither does
+   LibreHardwareMonitor, which is why LHM is the better default for most people.
+   Gadget Registry (Settings → Sensor Settings → HWiNFO Gadget → **Report to
+   Gadget**) is a separate, always-on HWiNFO interface if you'd rather not restart
+   HWiNFO daily but still don't want to run LHM.
 
-**LibreHardwareMonitor** (Clock & Power settings → set **Clock/power source** or
-**Temperature source** to include it, then enable it under **LibreHardwareMonitor**):
-1. Download [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
-   (portable, no install needed) and run it.
-2. **Options → Remote Web Server → Run** — this is what actually exposes the
-   `data.json` this mod reads; LHM running without it is also invisible to the mod.
-3. Turn on **Enable LibreHardwareMonitor integration** in this mod's settings; the
-   port (default `8085`) must match LHM's web server port.
-
-Both can run at once — in **Automatic** mode this mod tries HWiNFO first, then
-LibreHardwareMonitor, then falls back to what Windows exposes natively. Any reading
-still unavailable after all of that shows `--` — every other reading keeps working.
+Both can run at once. In **Automatic** mode (the default for both Temperature source
+and Clock/power source) this mod tries LibreHardwareMonitor first, then HWiNFO, then
+falls back to what Windows exposes natively — picking an explicit source instead of
+Automatic makes that one exclusive (LHM only fills a genuine gap afterward, never
+overriding an explicit non-Automatic choice). Any reading still unavailable after all
+of that shows `--` — every other reading keeps working.
 
 ## Compatibility
 
@@ -359,7 +368,7 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
       author's other taskbar forks, instead of floating text directly on the taskbar.
   - boxColor: ""
     $name: Box background color
-    $description: '#RRGGBB or #AARRGGBB. Empty uses a theme-neutral translucent default.'
+    $description: '#RRGGBB or #AARRGGBB. Empty uses a near-opaque dark gray default.'
   - boxCornerRadius: 6
     $name: Box corner radius (px)
   - boxPadding: 8
@@ -823,9 +832,11 @@ void LoadSettings() {
     if (settings.position.empty()) settings.position = L"tray_left";
     if (settings.fontFamily.empty()) settings.fontFamily = L"Segoe UI Variable Text";
     if (settings.graphColor.empty()) settings.graphColor = L"#78A8FF";
-    // Semi-transparent near-black reads as a card on both light and dark taskbars,
-    // matching how taskbar-fluent-media-player-fork's default background behaves.
-    if (settings.boxColor.empty()) settings.boxColor = L"#66202020";
+    // Near-opaque dark gray, matching taskbar-fluent-media-player-fork's own default
+    // background (solidColor "35 35 35" at 100% opacity when a background is enabled)
+    // - a translucent fill was tried first and was nearly invisible against an
+    // already-near-black taskbar.
+    if (settings.boxColor.empty()) settings.boxColor = L"#E6242424";
     if (settings.warningColor.empty()) settings.warningColor = L"#FFFFB900";
     if (settings.criticalColor.empty()) settings.criticalColor = L"#FFFF6B6B";
     if (settings.primaryHost.empty()) settings.primaryHost = L"8.8.8.8";
@@ -1844,14 +1855,25 @@ void StopLhmWorker() {
 
 // Fills in whatever HWiNFO (and native fallbacks) left empty - LHM never overrides an
 // already-populated value, matching "additional provider" rather than "replacement".
-void FillFromLhm(MetricsSnapshot& snapshot, const ModSettings& settings) {
-    if (!settings.lhmEnabled) return;
+// Split in two (rather than one function covering all six fields) because temperature
+// and clock/power each have their own source-mode setting, and the two need different
+// ordering: called *before* the corresponding Read function when that mode is Auto (so
+// LHM is the primary source per the user's preference - it has no HWiNFO-free-tier
+// 12-hour Shared Memory cutoff), and called again *after* unconditionally as a
+// harmless no-op-if-already-filled catch-all for every other explicit mode, where
+// HWiNFO (or the selected source) must stay authoritative and LHM only fills a
+// genuine gap rather than preempting an explicit choice.
+bool GetLhmSnapshotIfEnabled(const ModSettings& settings, LhmSnapshot& out) {
+    if (!settings.lhmEnabled) return false;
+    std::lock_guard lock(g_lhmMutex);
+    if (!g_lhmDataLoaded) return false;
+    out = g_lhmSnapshot;
+    return true;
+}
+
+void FillTempFromLhm(MetricsSnapshot& snapshot, const ModSettings& settings) {
     LhmSnapshot lhm;
-    {
-        std::lock_guard lock(g_lhmMutex);
-        if (!g_lhmDataLoaded) return;
-        lhm = g_lhmSnapshot;
-    }
+    if (!GetLhmSnapshotIfEnabled(settings, lhm)) return;
     if (!snapshot.cpuTemp && lhm.cpuTemp) {
         snapshot.cpuTemp = lhm.cpuTemp;
         snapshot.cpuTempProvider = MetricProvider::LibreHardwareMonitor;
@@ -1860,6 +1882,11 @@ void FillFromLhm(MetricsSnapshot& snapshot, const ModSettings& settings) {
         snapshot.gpuTemp = lhm.gpuTemp;
         snapshot.gpuTempProvider = MetricProvider::LibreHardwareMonitor;
     }
+}
+
+void FillExtrasFromLhm(MetricsSnapshot& snapshot, const ModSettings& settings) {
+    LhmSnapshot lhm;
+    if (!GetLhmSnapshotIfEnabled(settings, lhm)) return;
     if (!snapshot.cpuClockMhz && lhm.cpuClockMhz) {
         snapshot.cpuClockMhz = lhm.cpuClockMhz;
         snapshot.cpuClockProvider = MetricProvider::LibreHardwareMonitor;
@@ -2701,11 +2728,14 @@ void ReadTemperatures(MetricsSnapshot& snapshot, const ModSettings& settings) {
                 ReadHwInfoGadgetRegistry(extras, settings, true, false);
             }
         }
-        if (extras.cpuTemp) {
+        // Gap-aware (not an unconditional overwrite): in Auto mode, CollectMetrics
+        // now runs FillFromLhm before this, so LibreHardwareMonitor is the primary
+        // source when enabled - HWiNFO only supplies what LHM didn't already.
+        if (extras.cpuTemp && !snapshot.cpuTemp) {
             snapshot.cpuTemp = extras.cpuTemp;
             snapshot.cpuTempProvider = extras.cpuTempProvider;
         }
-        if (extras.gpuTemp) {
+        if (extras.gpuTemp && !snapshot.gpuTemp) {
             snapshot.gpuTemp = extras.gpuTemp;
             snapshot.gpuTempProvider = extras.gpuTempProvider;
         }
@@ -2739,19 +2769,21 @@ void ReadExtraSensors(MetricsSnapshot& snapshot, const ModSettings& settings) {
         !extras.gpuPowerW) {
         ReadHwInfoGadgetRegistry(extras, settings, false, true);
     }
-    if (extras.cpuClockMhz) {
+    // Gap-aware: in Auto mode, CollectMetrics runs FillExtrasFromLhm before this, so
+    // LibreHardwareMonitor is the primary source when enabled.
+    if (extras.cpuClockMhz && !snapshot.cpuClockMhz) {
         snapshot.cpuClockMhz = extras.cpuClockMhz;
         snapshot.cpuClockProvider = extras.cpuClockProvider;
     }
-    if (extras.gpuClockMhz) {
+    if (extras.gpuClockMhz && !snapshot.gpuClockMhz) {
         snapshot.gpuClockMhz = extras.gpuClockMhz;
         snapshot.gpuClockProvider = extras.gpuClockProvider;
     }
-    if (extras.cpuPowerW) {
+    if (extras.cpuPowerW && !snapshot.cpuPowerW) {
         snapshot.cpuPowerW = extras.cpuPowerW;
         snapshot.cpuPowerProvider = extras.cpuPowerProvider;
     }
-    if (extras.gpuPowerW) {
+    if (extras.gpuPowerW && !snapshot.gpuPowerW) {
         snapshot.gpuPowerW = extras.gpuPowerW;
         snapshot.gpuPowerProvider = extras.gpuPowerProvider;
     }
@@ -2774,9 +2806,19 @@ MetricsSnapshot CollectMetrics(const ModSettings& settings) {
     snapshot.cpu = ReadCpuUsage();
     ReadMemory(snapshot);
     ReadPdhMetrics(snapshot, settings);
+
+    // LibreHardwareMonitor first when its source mode is Auto (no HWiNFO-free-tier
+    // 12-hour cutoff, so it's the preferred primary), then whatever the setting
+    // selects fills any remaining gap; the same two calls run again afterward
+    // unconditionally so every *other* explicit source (HWiNFO-only, native-only, ...)
+    // still gets LHM as a plain fallback for a genuine gap, without LHM ever
+    // preempting an explicit non-Auto choice.
+    if (settings.temperatureSource == TemperatureSource::Auto) FillTempFromLhm(snapshot, settings);
+    if (settings.extraSensorsSource == ExtraSensorsSource::Auto) FillExtrasFromLhm(snapshot, settings);
     ReadTemperatures(snapshot, settings);
     ReadExtraSensors(snapshot, settings);
-    FillFromLhm(snapshot, settings);
+    FillTempFromLhm(snapshot, settings);
+    FillExtrasFromLhm(snapshot, settings);
     return snapshot;
 }
 
@@ -2787,31 +2829,58 @@ std::wstring FormatFixed(double value, int decimals) {
     return buffer;
 }
 
+// Ported from taskbar-clock-customization-v3's PadNumberWithFigureSpace: prefixes the
+// integer part with U+2007 FIGURE SPACE (defined to be digit-width in fonts that
+// support it, including the default Segoe UI Variable) until it reaches
+// minIntegerDigits, so a value's on-screen width stays close to constant as it
+// fluctuates instead of the text visibly growing/shrinking within its cell. A pure
+// string operation - works the same whether the number came from GDI text (the
+// original) or a XAML TextBlock (here).
+std::wstring PadFigureSpace(std::wstring text, int minIntegerDigits) {
+    size_t start = (!text.empty() && text[0] == L'-') ? 1 : 0;
+    size_t i = start;
+    while (i < text.size() && std::iswdigit(text[i])) i++;
+    int intDigits = static_cast<int>(i - start);
+    int pad = minIntegerDigits - intDigits;
+    if (pad > 0) text.insert(start, std::wstring(pad, L' '));
+    return text;
+}
+
 std::wstring FormatPercent(double value, int decimals) {
-    return FormatFixed(std::clamp(value, 0.0, 100.0), decimals) + L"%";
+    return PadFigureSpace(FormatFixed(std::clamp(value, 0.0, 100.0), decimals), 2) + L"%";
 }
 
 std::wstring FormatTemperature(const std::optional<double>& value) {
-    return value ? FormatFixed(*value, 0) + L"°C" : L"--°C";
+    if (!value) return L"--°C";
+    return PadFigureSpace(FormatFixed(*value, 0), 2) + L"°C";
 }
 
+// "Paired" padding, matching the original's approach for values that are naturally
+// compared side by side (e.g. CPU and GPU temperature reaching 100° together): the
+// used value pads to the *total* value's own integer-digit count, so "3.08/24.00"
+// lines up as "_3.08/24.00" instead of the used figure drifting a digit narrower.
 std::wstring FormatCapacity(double usedGb, double totalGb, bool available, int decimals) {
     if (!available || !std::isfinite(usedGb) || !std::isfinite(totalGb) ||
         totalGb <= 0.0) {
         return L"--/--G";
     }
-    return FormatFixed(usedGb, decimals) + L"/" + FormatFixed(totalGb, decimals) + L"G";
+    std::wstring totalText = FormatFixed(totalGb, decimals);
+    size_t totalIntDigits = totalText.find(L'.');
+    if (totalIntDigits == std::wstring::npos) totalIntDigits = totalText.size();
+    std::wstring usedText = PadFigureSpace(FormatFixed(usedGb, decimals),
+                                           static_cast<int>(totalIntDigits));
+    return usedText + L"/" + totalText + L"G";
 }
 
 std::wstring FormatClock(const std::optional<double>& mhz) {
     if (!mhz) return L"";
-    return *mhz >= 1000.0 ? FormatFixed(*mhz / 1000.0, 2) + L"GHz"
-                          : FormatFixed(*mhz, 0) + L"MHz";
+    return *mhz >= 1000.0 ? PadFigureSpace(FormatFixed(*mhz / 1000.0, 2), 1) + L"GHz"
+                          : PadFigureSpace(FormatFixed(*mhz, 0), 4) + L"MHz";
 }
 
 std::wstring FormatPower(const std::optional<double>& watts) {
     if (!watts) return L"";
-    return FormatFixed(*watts, *watts < 10.0 ? 1 : 0) + L"W";
+    return PadFigureSpace(FormatFixed(*watts, *watts < 10.0 ? 1 : 0), 2) + L"W";
 }
 
 std::wstring FormatClockPower(const std::optional<double>& mhz,
@@ -3088,7 +3157,7 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
                                  : std::numeric_limits<double>::infinity());
     if (settings.showBox) {
         g_widgetBorder.Background(BrushFromSetting(settings.boxColor,
-                                                    MakeColor(0x66, 0x20, 0x20, 0x20)));
+                                                    MakeColor(0xE6, 0x24, 0x24, 0x24)));
         g_widgetBorder.CornerRadius(
             CornerRadius{static_cast<double>(settings.boxCornerRadius),
                         static_cast<double>(settings.boxCornerRadius),
@@ -3459,20 +3528,20 @@ Grid CreateMemoryRow(PCWSTR label,
 
     track = XamlRectangle();
     track.Name((std::wstring(prefix) + L"Track").c_str());
-    track.Height(1.25);
+    track.Height(2.5);
     track.HorizontalAlignment(HorizontalAlignment::Left);
     track.VerticalAlignment(VerticalAlignment::Bottom);
-    track.RadiusX(0.625);
-    track.RadiusY(0.625);
+    track.RadiusX(1.25);
+    track.RadiusY(1.25);
     track.IsHitTestVisible(false);
 
     fill = XamlRectangle();
     fill.Name((std::wstring(prefix) + L"Fill").c_str());
-    fill.Height(1.25);
+    fill.Height(2.5);
     fill.HorizontalAlignment(HorizontalAlignment::Left);
     fill.VerticalAlignment(VerticalAlignment::Bottom);
-    fill.RadiusX(0.625);
-    fill.RadiusY(0.625);
+    fill.RadiusX(1.25);
+    fill.RadiusY(1.25);
     fill.IsHitTestVisible(false);
 
     labelText =
@@ -3525,18 +3594,20 @@ Grid CreateNetworkColumn() {
     g_netDot.VerticalAlignment(VerticalAlignment::Center);
     g_netDot.IsHitTestVisible(false);
 
-    g_netDownText = CreateCellText(L"NetDown", TextAlignment::Right);
-    g_netDownText.Text(L"↓--");
+    // Upload on top, download on bottom - matching the convention from the user's own
+    // taskbar-clock-customization-v3 config (TopLine carries %upload_speed%).
     g_netUpText = CreateCellText(L"NetUp", TextAlignment::Right);
     g_netUpText.Text(L"↑--");
+    g_netDownText = CreateCellText(L"NetDown", TextAlignment::Right);
+    g_netDownText.Text(L"↓--");
 
     Grid::SetColumn(g_netDot, 0);
     Grid::SetRow(g_netDot, 0);
     Grid::SetRowSpan(g_netDot, 3);
-    Grid::SetColumn(g_netDownText, 1);
-    Grid::SetRow(g_netDownText, 0);
     Grid::SetColumn(g_netUpText, 1);
-    Grid::SetRow(g_netUpText, 2);
+    Grid::SetRow(g_netUpText, 0);
+    Grid::SetColumn(g_netDownText, 1);
+    Grid::SetRow(g_netDownText, 2);
 
     column.Children().Append(g_netDot);
     column.Children().Append(g_netDownText);
@@ -3650,21 +3721,54 @@ void RemoveWidget() {
     g_vramAlert = AlertLevel::Normal;
 }
 
+// A thin vertical seam between column groups. The gradient fades to transparent at
+// both ends rather than using a flat fill, so it reads as a soft "frosted" edge instead
+// of a hard line touching the row boundaries top and bottom.
+XamlRectangle CreateColumnDivider(PCWSTR name) {
+    XamlRectangle divider;
+    divider.Name(name);
+    divider.Width(1.0);
+    divider.HorizontalAlignment(HorizontalAlignment::Center);
+    divider.VerticalAlignment(VerticalAlignment::Stretch);
+    divider.IsHitTestVisible(false);
+
+    LinearGradientBrush brush;
+    brush.StartPoint(Point{0, 0});
+    brush.EndPoint(Point{0, 1});
+    auto stops = brush.GradientStops();
+    GradientStop stopStart;
+    stopStart.Offset(0.0);
+    stopStart.Color(MakeColor(0x00, 0xFF, 0xFF, 0xFF));
+    GradientStop stopMid;
+    stopMid.Offset(0.5);
+    stopMid.Color(MakeColor(0x38, 0xFF, 0xFF, 0xFF));
+    GradientStop stopEnd;
+    stopEnd.Offset(1.0);
+    stopEnd.Color(MakeColor(0x00, 0xFF, 0xFF, 0xFF));
+    stops.Append(stopStart);
+    stops.Append(stopMid);
+    stops.Append(stopEnd);
+    divider.Fill(brush);
+    return divider;
+}
+
 Border BuildWidgetGrid() {
     Grid widget;
     widget.IsHitTestVisible(false);
     widget.VerticalAlignment(VerticalAlignment::Center);
 
+    // Column order left to right: network/status, CPU+GPU, RAM+VRAM - the network
+    // column comes first per the user's own taskbar-clock-customization-v3 layout.
+    g_netColumnDef = ColumnDefinition();
+    g_netGapColumn = ColumnDefinition();
     g_leftColumn = ColumnDefinition();
     g_gapColumn = ColumnDefinition();
     g_rightColumn = ColumnDefinition();
-    g_netGapColumn = ColumnDefinition();
-    g_netColumnDef = ColumnDefinition();
+    widget.ColumnDefinitions().Append(g_netColumnDef);
+    widget.ColumnDefinitions().Append(g_netGapColumn);
     widget.ColumnDefinitions().Append(g_leftColumn);
     widget.ColumnDefinitions().Append(g_gapColumn);
     widget.ColumnDefinitions().Append(g_rightColumn);
-    widget.ColumnDefinitions().Append(g_netGapColumn);
-    widget.ColumnDefinitions().Append(g_netColumnDef);
 
     Grid leftPanel;
     leftPanel.IsHitTestVisible(false);
@@ -3702,12 +3806,22 @@ Border BuildWidgetGrid() {
 
     Grid netColumn = CreateNetworkColumn();
 
-    Grid::SetColumn(leftPanel, 0);
-    Grid::SetColumn(rightPanel, 2);
-    Grid::SetColumn(netColumn, 4);
-    widget.Children().Append(leftPanel);
-    widget.Children().Append(rightPanel);
+    // Thin translucent dividers in the gap columns - a visual seam between sections
+    // rather than bare empty space, "frosted" via a soft vertical opacity taper at
+    // each end so it doesn't read as a hard line touching the row edges.
+    XamlRectangle dividerNet = CreateColumnDivider(L"DividerNet");
+    XamlRectangle dividerPanels = CreateColumnDivider(L"DividerPanels");
+
+    Grid::SetColumn(netColumn, 0);
+    Grid::SetColumn(dividerNet, 1);
+    Grid::SetColumn(leftPanel, 2);
+    Grid::SetColumn(dividerPanels, 3);
+    Grid::SetColumn(rightPanel, 4);
     widget.Children().Append(netColumn);
+    widget.Children().Append(dividerNet);
+    widget.Children().Append(leftPanel);
+    widget.Children().Append(dividerPanels);
+    widget.Children().Append(rightPanel);
 
     Border border;
     border.Name(kWidgetName);

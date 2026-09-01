@@ -686,3 +686,67 @@ saved as the durable memory `[[windhawk-cli-usage]]`; the essentials:
 - `DbgViewMini.exe` (bundled at `...\Windhawk\UI\resources\app\extensions\windhawk\
   files\`) is the fast companion for watching a mod's `Wh_Log` output live across a
   `mod install --file` reinstall, without the editor open.
+
+---
+
+## 11. Live feedback round two, 1.2.0 — layout matched to the user's own reference mods
+
+With 1.1.0 actually rendering, the user compared it directly against their own
+`taskbar-clock-customization-v3` config and `taskbar-fluent-media-player-fork`'s look,
+and asked for several things to be *ported from those*, not invented fresh:
+
+- **LibreHardwareMonitor made the primary source**, not just a fallback. HWiNFO's free
+  tier needs Shared Memory Support re-enabled after every 12 hours (confirmed by the
+  user's own diagnostic log line from 1.1.0's new logging - it worked exactly as
+  designed, immediately identifying HWiNFO's Shared Memory Support as off). Reordering
+  this correctly needed more care than "just call the LHM fill first": an explicit,
+  non-Automatic source selection (e.g. "HWiNFO Shared Memory only") must stay
+  exclusive - LHM should never preempt an explicit choice, only ever fill a genuine
+  gap in that case. `FillFromLhm` split into `FillTempFromLhm`/`FillExtrasFromLhm` so
+  temperature and clock/power (separate source-mode settings) can be reordered
+  independently, and the HWiNFO/native write-backs in `ReadTemperatures`/
+  `ReadExtraSensors` were made gap-aware (`&& !snapshot.field`) so they stop
+  unconditionally overwriting whatever LHM already supplied.
+- **Network column moved from the right to the left**, upload above download - matching
+  `clock-customization-v3`'s own `TopLine`/`BottomLine` convention (upload first).
+- **The background box was there in code but nearly invisible**: default was a 40%-alpha
+  near-black fill, which reads as almost nothing against an already-near-black
+  taskbar. A research agent read `taskbar-fluent-media-player-fork`'s actual background
+  code end to end and found its own default is a **90%+-opacity** solid fill (`"35 35
+  35"` at `solidOpacity: 100` when a background is enabled at all - its own out-of-box
+  default is `backgroundType: "none"`, no box, so the reference the user was comparing
+  against was itself a configured, not default, state). Matched that opacity here.
+  Also found: that mod's "Mica"/"Mica Alt" options are a **faked** solid-color brush,
+  not real system Mica material - worth knowing before ever trying to add real
+  Acrylic/Mica to this mod, since even the reference implementation didn't trust it
+  enough to use it as anything but an opt-in.
+- **Thin frosted vertical dividers** added between the network/CPU-GPU/RAM-VRAM column
+  groups - a `LinearGradientBrush`-filled 1px `Rectangle` per gap, transparent at both
+  ends so it reads as a soft seam rather than a hard line touching the row edges.
+- **Width-stability padding ported from `clock-customization-v3`**: that mod's
+  `PadNumberWithFigureSpace` (U+2007 FIGURE SPACE prefix padding, confirmed by the same
+  research agent to be pure string formatting with zero GDI dependency, so it was
+  fully portable to this mod's XAML `TextBlock`s) and its "paired padding" idiom
+  (`FormatCapacity`'s used-value now pads to the *total* value's own digit count, e.g.
+  `_3.08/24.00` instead of `3.08/24.00` drifting a digit narrower than its pair).
+  Applied to `FormatPercent`/`FormatTemperature`/`FormatCapacity`/`FormatClock`/
+  `FormatPower`. One real snag while implementing it: a ` ` character embedded
+  directly (not as an escape) in the source made the file's real bytes differ from
+  what several Read/Edit round-trips *displayed* as a plain space - wasted several
+  failed exact-match `Edit` attempts before checking the raw bytes with `od`
+  confirmed the file was already correct and no fix was needed. Worth remembering:
+  if an `Edit` with freshly-`Read` content inexplicably reports "string not found",
+  check for a non-ASCII look-alike character before assuming the file changed
+  underneath you.
+- **Memory bar thickness increased** (1.25px → 2.5px, radius scaled to match) after the
+  user reported not seeing a VRAM bar that RAM's own bar showed. No code-level
+  asymmetry between the RAM and VRAM code paths was found on a careful re-read (both
+  go through the identical `CreateMemoryRow`/`UpdateMemoryBar`) - most likely a pure
+  visibility issue (a 1.25px bar is easy to miss, especially compressed in a
+  screenshot) rather than a real bug, but **not confirmed live** - if it's still
+  missing after 1.2.0, that becomes a real bug to chase rather than a hunch to fix.
+
+Version 1.2.0. Re-verified clean on all four local scripts. **Not yet re-verified
+live** - this entire round (LHM-primary reorder, net column repositioning, box
+opacity, dividers, padding, bar thickness) was written and compile-checked but not
+yet reinstalled/reviewed against the real taskbar.

@@ -587,3 +587,102 @@ Third CodeRabbit pass (against 1.0.3, run via the WSL binary directly rather tha
 `coderabbit.ps1` wrapper — the free plan allows 3 reviews/hour, the wrapper's own 2/hour
 is a deliberately conservative local throttle, not a hard limit) came back with
 **0 findings**. Pushed as 1.0.3.
+
+**Update, same session — installed for real, via `windhawk-cli.exe` (see §10 below) —
+and a large follow-up round, 1.1.0:**
+
+- **The tray positions (14 of 25) never actually worked.** `ResolveInjectionTarget`
+  looked up `SystemTrayFrameGrid` with `FindDirectChildByName(root, ...)`, a
+  *direct*-children-only search, against `root = xamlRoot.Content()` - several levels
+  above where the tray actually sits. Confirmed via live DebugView: "InjectWidget
+  failed: position target not in the visual tree yet", repeating, on the default
+  `tray_left` position. Fixed with a new recursive `FindDescendantByName` helper,
+  applied at all three call sites (including `FindTrayElement`'s pre-26300 fallback,
+  same bug, not yet exercised on this build but real). `taskbar_*`/overlay positions
+  were unaffected - they resolve via `FindTaskbarRootGrid`, which was already recursive.
+- **Layout: 3 rows → 2.** The user wanted the network/internet-status row folded back
+  in rather than added as a third row pair. Redesigned as a third *column* instead -
+  down/up stacked over the same two-row height as CPU/GPU and RAM/VRAM, with the
+  internet-status dot as a small color-only corner badge. A same-session review then
+  caught that the dot's hover tooltip (added in the redesign) could never fire:
+  `IsHitTestVisible(false)` on an ancestor (`widget`, the top-level Grid) excludes the
+  whole subtree from hit-testing in WinRT XAML regardless of what a descendant sets on
+  itself - confirmed against documented `UIElement.IsHitTestVisible` behavior, not just
+  suspected. Removed the tooltip attempt rather than restructure the widget's
+  click-through model for it; the dot's color alone (green/red/gray) still satisfies
+  "subtly says whether you're online."
+- **HWiNFO showed nothing despite HWiNFO running.** Most likely cause: HWiNFO's own
+  **Shared Memory Support** setting is off by default and is a separate step from just
+  running HWiNFO - easy to miss. Added `LogHwInfoSmDiagnosis`, which reports (once per
+  distinct reason, gated on verbose logging) exactly which step failed: mapping not
+  found, mutex busy, view failed, header invalid, or "read N readings but none scored
+  as CPU/GPU temp/clock/power" - turning a silent `--` into an actionable log line.
+  Also added a "Getting temperature, clock and power data" readme section covering
+  both HWiNFO's Shared Memory Support checkbox and LHM's Remote Web Server toggle,
+  since both are the same class of "the tool is running but the mod still can't see it"
+  trap.
+- **LibreHardwareMonitor added as a second, independent provider** (not a replacement -
+  either covers the same six values: CPU/GPU temperature, clock, power). Ported from
+  this author's own `taskbar-clock-customization-v3` (`FetchAndParseLhmData`/
+  `FindLhmSensorValue`, read there in full by a research agent before porting): WinINet
+  HTTP fetch of `http://localhost:<port>/data.json`, a hand-rolled recursive JSON
+  parser (LHM's tree has `Text`/`Value`/`Children` per node, everything else skipped),
+  and the same group-name/sensor-name-substring tree search, on its own background
+  thread with its own poll interval. One correctness fix over the original: that
+  version uses `0.0` as a "sensor not found" sentinel, indistinguishable from a
+  genuine zero reading; this one returns `std::optional<double>` instead. Only
+  temperature/clock/power are fetched - CPU/GPU load and RAM/VRAM already have a
+  better source (native PDH counters) and pulling them from LHM too would just be a
+  second, potentially-disagreeing copy of data already in hand. In Automatic mode the
+  order is HWiNFO → LibreHardwareMonitor → native Windows fallback; explicit
+  "LibreHardwareMonitor only" options exist for both Temperature source and Clock/power
+  source.
+- **A card-style background box**, matching `taskbar-fluent-media-player-fork`'s
+  appearance instead of floating text directly on the taskbar. Required wrapping the
+  content `Grid` in a `Border` (`Grid` has no `Padding` in this XAML version - confirmed
+  the hard way once already this session, see the `ApplyWidgetGeometry` bug above from
+  the original build). `g_widget` (the content Grid, column/children logic unchanged)
+  is now `g_widgetBorder`'s (the newly positioned/injected/sized element) `Child`;
+  `AttachAnchorTracking` and `IsWidgetLive` were updated to track the Border, not the
+  inner Grid, since the Grid's parent is now always the Border, never the target panel.
+- **Per-scope graph toggles.** `showGraphs` (one setting for both) split into
+  `showCpuGraph`/`showGpuGraph`.
+- Declined as unnecessary rather than skipped: explicit text-width padding for
+  fluctuation-free layout (`clock-customization-v3`'s `PercentageFormat:
+  spacePaddingAndSymbol` equivalent). This mod's Grid uses fixed-pixel columns
+  throughout, not a free-form template string, so the specific failure mode that
+  setting exists to fix (inserting "95" where "5" was shifts every following character)
+  doesn't apply here by construction - right-aligned text inside a fixed-width column
+  doesn't move regardless of digit count. Revisit only if live testing shows otherwise.
+
+Version 1.1.0. Re-verified clean on `check-mod.ps1`/`check-settings.py`/`build-mod.ps1`
+after every change above. **Not yet re-verified live** - reinstalled via CLI once
+after the injection fix (confirmed working via DebugView) and once after the 2-row
+layout change, but not since the LHM/box/per-scope-graph round.
+
+---
+
+## 10. `windhawk-cli.exe` — a real CLI existed the whole time
+
+Not mentioned anywhere in this repo before this session, including §0/§2 above (which
+still describe the correct *type-check* loop — that part hasn't changed). Full details
+saved as the durable memory `[[windhawk-cli-usage]]`; the essentials:
+
+- `C:\Program Files\Windhawk\windhawk-cli.exe`, subcommands `mod`/`app`/`source`/`repo`/
+  `update`/`data`. Talks live to whatever Windhawk instance is actually running.
+- **Reads need no elevation** (`mod list`, `mod show`, `mod settings get`, `source
+  meta`); **writes do** (`mod install`, `enable`, `disable`, `settings set`, `remove`) -
+  confirmed via `RegCreateKeyEx ... Access is denied` from a non-admin shell. Claude
+  Code cannot self-elevate past UAC's secure desktop, so a write always means asking
+  the user to run it themselves in an elevated shell.
+- The whole install/compile/register cycle for a local mod is one command:
+  `mod install --file <path> <id>` - no separate compile step, and re-running it is
+  how you push an edit. `mod compile <id>` is a trap for that purpose: it recompiles
+  from Windhawk's **stored** copy, not the file on disk.
+- Mods installed this way appear in `mod list` as `local@<id>` - the same prefix every
+  other fork in this repo already had, meaning they were always installed by exactly
+  this mechanism (via the GUI editor's paste-and-compile, which uses the same
+  underlying path), just never through the CLI directly until now.
+- `DbgViewMini.exe` (bundled at `...\Windhawk\UI\resources\app\extensions\windhawk\
+  files\`) is the fast companion for watching a mod's `Wh_Log` output live across a
+  `mod install --file` reinstall, without the editor open.

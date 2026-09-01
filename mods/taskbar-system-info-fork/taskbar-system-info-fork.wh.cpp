@@ -1,14 +1,14 @@
 // ==WindhawkMod==
 // @id              taskbar-system-info-fork
 // @name            Taskbar System Info - Fork
-// @description     Fork of Taskbar System Info with network throughput, an internet-status dot, HWiNFO-backed clock/power readings, and real StackPanel/Grid taskbar insertion instead of an overlay.
-// @version         1.0.3
+// @description     Fork of Taskbar System Info with network throughput, an internet-status dot, HWiNFO- or LibreHardwareMonitor-backed clock/power readings, and real StackPanel/Grid taskbar insertion instead of an overlay.
+// @version         1.1.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
 // @architecture    x86-64
 // @license         GPL-3.0
-// @compilerOptions -lole32 -loleaut32 -lruntimeobject -lpdh -ldxgi -liphlpapi -lws2_32 -lpowrprof -DWIN32_LEAN_AND_MEAN
+// @compilerOptions -lole32 -loleaut32 -lruntimeobject -lpdh -ldxgi -liphlpapi -lws2_32 -lpowrprof -lwininet -DWIN32_LEAN_AND_MEAN
 // ==/WindhawkMod==
 
 // This fork carries forward the CPU/GPU/RAM/VRAM engine (PDH counters, D3DKMT adapter
@@ -50,12 +50,13 @@
 
 A compact taskbar system monitor: CPU and GPU usage/temperature with 60-second history
 graphs, RAM/VRAM capacity bars, network throughput, and an internet-status dot — inserted
-into the taskbar like a native tray item, not overlaid on top of it.
+into the taskbar like a native tray item, not overlaid on top of it. Two rows, not three:
+network and internet status sit in their own column beside RAM/VRAM rather than adding a
+row underneath.
 
 ```text
-CPU  10%  72°C  [graph]      RAM   52%  16.68/32.00G
-GPU   4%  56°C  [graph]      VRAM   9%   2.14/24.00G
-NET  ↓1.2 MB/s  ↑48 KB/s     ●  Online
+CPU  10%  72°C  [graph]      RAM   52%  16.68/32.00G     ● ↓1.2 MB/s
+GPU   4%  56°C  [graph]      VRAM   9%   2.14/24.00G       ↑48 KB/s
 ```
 
 ## Placement
@@ -81,18 +82,46 @@ proportions but nothing is hardcoded.
 - Network throughput from PDH network-interface counters, with an optional adapter-name
   filter, dynamic KB/s-MB/s scaling, and a configurable decimal count.
 - An internet-status dot from an ICMP ping against two configurable hosts, subtle by
-  design — a small colored dot plus short text, not a banner.
-- CPU/GPU temperature: HWiNFO shared memory or Gadget Registry, falling back to Windows
-  D3DKMT (GPU) and ACPI thermal zones (CPU) — exactly as in the original.
-- CPU/GPU clock and power (optional): HWiNFO shared memory first; CPU clock falls back
-  to `NtPowerInformation` when HWiNFO isn't available. GPU clock and both power
-  readings have no trustworthy native equivalent — D3DKMT exposes a `Power` field, but
-  its actual unit isn't documented anywhere, so it's left unused rather than risk
-  showing a plausible-looking wrong number — and show `--` without HWiNFO.
+  design — a small colored dot (green/red/gray), not a banner.
+- CPU/GPU temperature: HWiNFO or LibreHardwareMonitor, falling back to Windows D3DKMT
+  (GPU) and ACPI thermal zones (CPU) — exactly as in the original.
+- CPU/GPU clock and power (optional): HWiNFO or LibreHardwareMonitor first; CPU clock
+  falls back to `NtPowerInformation` when neither is available. GPU clock and both
+  power readings have no trustworthy native equivalent — D3DKMT exposes a `Power`
+  field, but its actual unit isn't documented anywhere, so it's left unused rather than
+  risk showing a plausible-looking wrong number — and show `--` without a monitor tool
+  running.
 
-HWiNFO is optional and not bundled. Shared-memory integration targets HWiNFO 7.0+; the
-free edition disables shared memory after 12 hours of continuous use, HWiNFO64 Pro does
-not. Any unavailable reading shows `--` — every other reading keeps working.
+## Getting temperature, clock and power data
+
+Every one of these needs a third-party monitor running — the free tier (usage,
+capacity, network) never does. Two are supported, and either is enough on its own:
+
+**HWiNFO** (Settings → **Temperature** source, default):
+1. Install and run [HWiNFO](https://www.hwinfo.com/) in Sensors-only or full mode.
+2. Open **Settings** (the gear icon) → enable **Shared Memory Support**. This is
+   **off by default** — HWiNFO running without it looks identical to HWiNFO not
+   running at all from this mod's side, and is the single most common reason nothing
+   shows up. Enable **Verbose logging** in this mod's Debug settings and check the
+   Windhawk log (or a tool like DebugView) if readings still don't appear after this —
+   it reports exactly which step failed.
+3. The free edition disables shared memory after 12 hours of continuous use; HWiNFO64
+   Pro has no such limit. Gadget Registry (Settings → Sensor Settings → HWiNFO Gadget →
+   **Report to Gadget**) is a separate, always-on alternative interface if you'd rather
+   not restart HWiNFO daily.
+
+**LibreHardwareMonitor** (Clock & Power settings → set **Clock/power source** or
+**Temperature source** to include it, then enable it under **LibreHardwareMonitor**):
+1. Download [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
+   (portable, no install needed) and run it.
+2. **Options → Remote Web Server → Run** — this is what actually exposes the
+   `data.json` this mod reads; LHM running without it is also invisible to the mod.
+3. Turn on **Enable LibreHardwareMonitor integration** in this mod's settings; the
+   port (default `8085`) must match LHM's web server port.
+
+Both can run at once — in **Automatic** mode this mod tries HWiNFO first, then
+LibreHardwareMonitor, then falls back to what Windows exposes natively. Any reading
+still unavailable after all of that shows `--` — every other reading keeps working.
 
 ## Compatibility
 
@@ -170,8 +199,10 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
   - historySeconds: 60
     $name: Graph history (seconds)
     $description: 'Default: 60. From 15 to 180 seconds.'
-  - showGraphs: true
-    $name: Show CPU/GPU history graphs
+  - showCpuGraph: true
+    $name: Show CPU history graph
+  - showGpuGraph: true
+    $name: Show GPU history graph
   - gpuAdapter: ""
     $name: GPU adapter filter
     $description: 'Optional partial adapter name. Empty selects the adapter with the most dedicated VRAM.'
@@ -223,13 +254,14 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
   - temperatureSource: auto
     $name: Temperature source
     $description: >-
-      Default: Automatic. Tries HWiNFO first, then Windows D3DKMT for GPU and ACPI
-      thermal zones for CPU.
+      Default: Automatic. Tries HWiNFO first, then LibreHardwareMonitor (if enabled
+      below), then Windows D3DKMT for GPU and ACPI thermal zones for CPU.
     $options:
       - auto: Automatic
       - hwinfoAuto: HWiNFO automatic
       - sharedMemory: HWiNFO Shared Memory
       - gadgetRegistry: HWiNFO Gadget Registry
+      - lhm: LibreHardwareMonitor only
       - windowsNative: Windows native (ACPI CPU + D3DKMT GPU)
       - disabled: Disabled
   - cpuTempSensor: ""
@@ -257,13 +289,17 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
   - showClockPower: true
     $name: Show CPU/GPU clock and power
     $description: >-
-      Default: true. CPU clock falls back to NtPowerInformation without HWiNFO; GPU
-      clock and both power readings need HWiNFO.
+      Default: true. CPU clock falls back to NtPowerInformation without HWiNFO or LHM;
+      GPU clock and both power readings need HWiNFO or LibreHardwareMonitor.
   - extraSensorsSource: auto
     $name: Clock/power source
+    $description: >-
+      Default: Automatic. HWiNFO first, then LibreHardwareMonitor (if enabled below),
+      then the native fallback for CPU clock only.
     $options:
-      - auto: Automatic (HWiNFO + native fallback)
+      - auto: Automatic (HWiNFO + LHM + native fallback)
       - hwinfo: HWiNFO only
+      - lhm: LibreHardwareMonitor only
       - disabled: Disabled
   - cpuClockSensor: ""
     $name: CPU clock sensor filter (HWiNFO)
@@ -274,6 +310,23 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
   - gpuPowerSensor: ""
     $name: GPU power sensor filter (HWiNFO)
   $name: Clock & Power (HWiNFO)
+
+- LibreHardwareMonitor:
+  - lhmEnabled: false
+    $name: Enable LibreHardwareMonitor integration
+    $description: >-
+      Default: false. An alternative to HWiNFO for temperature, clock and power -
+      does not need HWiNFO installed or running. Requires LibreHardwareMonitor running
+      with its web server enabled (Options > Remote Web Server > Run). Used as a
+      fallback behind HWiNFO in Automatic mode, unless "LibreHardwareMonitor only" is
+      selected above.
+  - lhmPort: 8085
+    $name: LibreHardwareMonitor web server port
+    $description: 'Default: 8085, matching LibreHardwareMonitor''s own default.'
+  - lhmUpdateInterval: 2
+    $name: LibreHardwareMonitor fetch interval (seconds)
+    $description: 'Default: 2. How often to fetch from the LHM web server, independent of the general update interval above.'
+  $name: LibreHardwareMonitor (alternative to HWiNFO)
 
 - MemoryAlerts:
   - memoryWarningPercent: 80
@@ -299,6 +352,18 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
     $name: Critical color
   - textOpacity: 96
     $name: Text opacity (%)
+  - showBox: true
+    $name: Show background box
+    $description: >-
+      Default: true. A card-style background behind the whole widget, matching this
+      author's other taskbar forks, instead of floating text directly on the taskbar.
+  - boxColor: ""
+    $name: Box background color
+    $description: '#RRGGBB or #AARRGGBB. Empty uses a theme-neutral translucent default.'
+  - boxCornerRadius: 6
+    $name: Box corner radius (px)
+  - boxPadding: 8
+    $name: Box inner padding (px)
   $name: Appearance
 
 - Debug:
@@ -318,6 +383,7 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
 #include <icmpapi.h>
 #include <pdh.h>
 #include <pdhmsg.h>
+#include <wininet.h>
 #include <windows.h>
 
 #include <algorithm>
@@ -374,9 +440,8 @@ constexpr double kExtrasWidth = 78.0;
 constexpr double kGraphLeftGap = 8.0;
 constexpr double kMemoryLabelWidth = 43.0;
 constexpr double kMemoryPercentWidth = 38.0;
-constexpr double kNetworkLabelWidth = kMemoryLabelWidth;
-constexpr double kNetworkArrowWidth = kMemoryPercentWidth;
 constexpr double kDotDiameter = 7.0;
+constexpr double kNetworkColumnWidth = 70.0;
 constexpr uint32_t kHwInfoSignature = 0x53695748;  // "HWiS"
 // HWiNFO shared-memory reading types (SDK-documented, stable across versions).
 constexpr uint32_t kHwInfoReadingTemperature = 1;
@@ -388,6 +453,7 @@ enum class TemperatureSource {
     HwInfoAuto,
     SharedMemory,
     GadgetRegistry,
+    Lhm,
     WindowsNative,
     Disabled,
 };
@@ -395,6 +461,7 @@ enum class TemperatureSource {
 enum class ExtraSensorsSource {
     Auto,
     HwInfoOnly,
+    LhmOnly,
     Disabled,
 };
 
@@ -407,6 +474,7 @@ enum class MetricProvider {
     None,
     HwInfoSharedMemory,
     HwInfoGadgetRegistry,
+    LibreHardwareMonitor,
     WindowsD3dkmt,
     WindowsThermalZones,
     WindowsPowerInformation,
@@ -424,6 +492,7 @@ struct ModSettings {
     std::wstring fontFamily;
     std::wstring textColor;
     std::wstring graphColor;
+    std::wstring boxColor;
     std::wstring warningColor;
     std::wstring criticalColor;
     std::wstring gpuAdapter;
@@ -454,7 +523,8 @@ struct ModSettings {
     int columnGap = 14;
     int updateInterval = 1;
     int historySeconds = 60;
-    bool showGraphs = true;
+    bool showCpuGraph = true;
+    bool showGpuGraph = true;
     int usageDecimals = 0;
     int capacityDecimals = 2;
     bool showNetwork = true;
@@ -463,8 +533,14 @@ struct ModSettings {
     int checkIntervalSeconds = 5;
     int timeoutMs = 2000;
     bool showClockPower = true;
+    bool lhmEnabled = false;
+    int lhmPort = 8085;
+    int lhmUpdateInterval = 2;
     int fontSize = 11;
     int textOpacity = 96;
+    bool showBox = true;
+    int boxCornerRadius = 6;
+    int boxPadding = 8;
     int cpuWarningTemp = 75;
     int cpuCriticalTemp = 85;
     int gpuWarningTemp = 80;
@@ -494,6 +570,10 @@ struct InjectionTarget {
 };
 
 [[clang::no_destroy]] Grid g_widget{nullptr};
+// The outer Border that's actually positioned/injected/sized - g_widget (the content
+// Grid) is its Child. A Border, not the Grid itself, because Grid has no Padding
+// property in this XAML version, and a card-style background needs one.
+[[clang::no_destroy]] Border g_widgetBorder{nullptr};
 [[clang::no_destroy]] Panel g_injectionParent{nullptr};
 // Tray sub-positions (tray_left, tray_before_clock, ...) all resolve to the same
 // SystemTrayFrameGrid object, so a plain "same panel" check can't tell a real
@@ -527,11 +607,9 @@ event_token g_timerToken{};
 [[clang::no_destroy]] TextBlock g_vramLabel{nullptr};
 [[clang::no_destroy]] TextBlock g_vramPercentText{nullptr};
 [[clang::no_destroy]] TextBlock g_vramCapacityText{nullptr};
-[[clang::no_destroy]] TextBlock g_netLabel{nullptr};
 [[clang::no_destroy]] TextBlock g_netDownText{nullptr};
 [[clang::no_destroy]] TextBlock g_netUpText{nullptr};
 [[clang::no_destroy]] XamlEllipse g_netDot{nullptr};
-[[clang::no_destroy]] TextBlock g_netStatusText{nullptr};
 [[clang::no_destroy]] XamlPolyline g_cpuGraph{nullptr};
 [[clang::no_destroy]] XamlPolyline g_gpuGraph{nullptr};
 [[clang::no_destroy]] XamlRectangle g_ramTrack{nullptr};
@@ -543,6 +621,11 @@ event_token g_timerToken{};
 [[clang::no_destroy]] ColumnDefinition g_rightColumn{nullptr};
 [[clang::no_destroy]] ColumnDefinition g_cpuExtrasColumn{nullptr};
 [[clang::no_destroy]] ColumnDefinition g_gpuExtrasColumn{nullptr};
+[[clang::no_destroy]] ColumnDefinition g_netGapColumn{nullptr};
+[[clang::no_destroy]] ColumnDefinition g_netColumnDef{nullptr};
+[[clang::no_destroy]] RowDefinition g_leftGapRow{nullptr};
+[[clang::no_destroy]] RowDefinition g_rightGapRow{nullptr};
+[[clang::no_destroy]] RowDefinition g_netGapRow{nullptr};
 double g_graphWidth = 96.0;
 double g_memoryBarWidth = 120.0;
 
@@ -576,7 +659,8 @@ struct MetricsSnapshot {
     bool vramAvailable = false;
     double networkRecvBytesPerSec = 0.0;
     double networkSentBytesPerSec = 0.0;
-    bool networkAvailable = false;
+    bool networkRecvAvailable = false;
+    bool networkSentAvailable = false;
     std::optional<double> cpuTemp;
     std::optional<double> gpuTemp;
     std::optional<double> cpuClockMhz;
@@ -624,6 +708,7 @@ TemperatureSource ParseTemperatureSource(const std::wstring& value) {
     if (value == L"hwinfoAuto") return TemperatureSource::HwInfoAuto;
     if (value == L"sharedMemory") return TemperatureSource::SharedMemory;
     if (value == L"gadgetRegistry") return TemperatureSource::GadgetRegistry;
+    if (value == L"lhm") return TemperatureSource::Lhm;
     if (value == L"windowsNative") return TemperatureSource::WindowsNative;
     if (value == L"disabled") return TemperatureSource::Disabled;
     return TemperatureSource::Auto;
@@ -631,6 +716,7 @@ TemperatureSource ParseTemperatureSource(const std::wstring& value) {
 
 ExtraSensorsSource ParseExtraSensorsSource(const std::wstring& value) {
     if (value == L"hwinfo") return ExtraSensorsSource::HwInfoOnly;
+    if (value == L"lhm") return ExtraSensorsSource::LhmOnly;
     if (value == L"disabled") return ExtraSensorsSource::Disabled;
     return ExtraSensorsSource::Auto;
 }
@@ -653,6 +739,7 @@ void LoadSettings() {
     settings.fontFamily = GetStringSetting(L"Appearance.fontFamily");
     settings.textColor = GetStringSetting(L"Appearance.textColor");
     settings.graphColor = GetStringSetting(L"Appearance.graphColor");
+    settings.boxColor = GetStringSetting(L"Appearance.boxColor");
     settings.warningColor = GetStringSetting(L"Appearance.warningColor");
     settings.criticalColor = GetStringSetting(L"Appearance.criticalColor");
     settings.gpuAdapter = GetStringSetting(L"Metrics.gpuAdapter");
@@ -690,7 +777,8 @@ void LoadSettings() {
         std::clamp(Wh_GetIntSetting(L"Metrics.updateInterval"), 1, 10);
     settings.historySeconds =
         std::clamp(Wh_GetIntSetting(L"Metrics.historySeconds"), 15, 180);
-    settings.showGraphs = Wh_GetIntSetting(L"Metrics.showGraphs") != 0;
+    settings.showCpuGraph = Wh_GetIntSetting(L"Metrics.showCpuGraph") != 0;
+    settings.showGpuGraph = Wh_GetIntSetting(L"Metrics.showGpuGraph") != 0;
     settings.usageDecimals = std::clamp(Wh_GetIntSetting(L"Metrics.usageDecimals"), 0, 1);
     settings.capacityDecimals =
         std::clamp(Wh_GetIntSetting(L"Metrics.capacityDecimals"), 0, 2);
@@ -704,9 +792,17 @@ void LoadSettings() {
     settings.timeoutMs =
         std::clamp(Wh_GetIntSetting(L"InternetStatus.timeoutMs"), 200, 10000);
     settings.showClockPower = Wh_GetIntSetting(L"ExtraSensors.showClockPower") != 0;
+    settings.lhmEnabled = Wh_GetIntSetting(L"LibreHardwareMonitor.lhmEnabled") != 0;
+    settings.lhmPort = std::clamp(Wh_GetIntSetting(L"LibreHardwareMonitor.lhmPort"), 1, 65535);
+    settings.lhmUpdateInterval =
+        std::clamp(Wh_GetIntSetting(L"LibreHardwareMonitor.lhmUpdateInterval"), 1, 60);
     settings.fontSize = std::clamp(Wh_GetIntSetting(L"Appearance.fontSize"), 9, 13);
     settings.textOpacity =
         std::clamp(Wh_GetIntSetting(L"Appearance.textOpacity"), 0, 100);
+    settings.showBox = Wh_GetIntSetting(L"Appearance.showBox") != 0;
+    settings.boxCornerRadius =
+        std::clamp(Wh_GetIntSetting(L"Appearance.boxCornerRadius"), 0, 20);
+    settings.boxPadding = std::clamp(Wh_GetIntSetting(L"Appearance.boxPadding"), 0, 24);
     settings.cpuWarningTemp =
         std::clamp(Wh_GetIntSetting(L"Temperature.cpuWarningTemp"), 40, 95);
     settings.cpuCriticalTemp =
@@ -727,6 +823,9 @@ void LoadSettings() {
     if (settings.position.empty()) settings.position = L"tray_left";
     if (settings.fontFamily.empty()) settings.fontFamily = L"Segoe UI Variable Text";
     if (settings.graphColor.empty()) settings.graphColor = L"#78A8FF";
+    // Semi-transparent near-black reads as a card on both light and dark taskbars,
+    // matching how taskbar-fluent-media-player-fork's default background behaves.
+    if (settings.boxColor.empty()) settings.boxColor = L"#66202020";
     if (settings.warningColor.empty()) settings.warningColor = L"#FFFFB900";
     if (settings.criticalColor.empty()) settings.criticalColor = L"#FFFF6B6B";
     if (settings.primaryHost.empty()) settings.primaryHost = L"8.8.8.8";
@@ -1073,13 +1172,68 @@ struct HwInfoExtras {
 // wanted values is still enabled - cheaper than the six separate scans a naive
 // per-metric reader would need, and the reason temperature and clock/power share this
 // function instead of each keeping its own copy of the shared-memory walk.
+// Diagnoses exactly where a shared-memory read comes up empty, logged once per distinct
+// reason (not every cycle) so a report from the user actually says something - "HWiNFO
+// unavailable" alone doesn't distinguish "not running", "running without Shared Memory
+// Support enabled" (off by default in HWiNFO, the most common cause), and "running, SM
+// on, but no sensor name matched this hardware".
+enum class HwInfoSmDiagnosis {
+    Unknown,
+    MappingNotFound,
+    MutexBusy,
+    ViewFailed,
+    HeaderInvalid,
+    NoMatchingReadings,
+    Ok,
+};
+
+void LogHwInfoSmDiagnosis(HwInfoSmDiagnosis diagnosis, bool verboseLogging, uint32_t readingCount = 0) {
+    static HwInfoSmDiagnosis lastDiagnosis = HwInfoSmDiagnosis::Unknown;
+    if (!verboseLogging || diagnosis == lastDiagnosis) return;
+    lastDiagnosis = diagnosis;
+    switch (diagnosis) {
+        case HwInfoSmDiagnosis::MappingNotFound:
+            Wh_Log(L"HWiNFO shared memory: mapping not found. HWiNFO must be running with "
+                   L"Settings > General > \"Shared Memory Support\" enabled - it is off by "
+                   L"default and this is the most common reason nothing shows up.");
+            break;
+        case HwInfoSmDiagnosis::MutexBusy:
+            Wh_Log(L"HWiNFO shared memory: mapping found but the sync mutex would not "
+                   L"signal within 50ms; will retry next cycle.");
+            break;
+        case HwInfoSmDiagnosis::ViewFailed:
+            Wh_Log(L"HWiNFO shared memory: mapping found but MapViewOfFile failed: %u",
+                   GetLastError());
+            break;
+        case HwInfoSmDiagnosis::HeaderInvalid:
+            Wh_Log(L"HWiNFO shared memory: mapped, but the header signature or sensor/"
+                   L"reading table bounds didn't validate - unexpected HWiNFO version?");
+            break;
+        case HwInfoSmDiagnosis::NoMatchingReadings:
+            Wh_Log(L"HWiNFO shared memory: read %u readings successfully, but none scored "
+                   L"as a CPU/GPU temperature, clock or power sensor for this hardware. "
+                   L"Try the sensor-name filter settings if your hardware uses unusual "
+                   L"sensor labels.",
+                   readingCount);
+            break;
+        case HwInfoSmDiagnosis::Ok:
+            Wh_Log(L"HWiNFO shared memory: reading successfully.");
+            break;
+        case HwInfoSmDiagnosis::Unknown:
+            break;
+    }
+}
+
 void ReadHwInfoSharedMemory(HwInfoExtras& out,
                             const ModSettings& settings,
                             bool wantTemperature,
                             bool wantClockPower) {
     HANDLE mapping =
         OpenFileMappingW(FILE_MAP_READ, FALSE, L"Global\\HWiNFO_SENS_SM2");
-    if (!mapping) return;
+    if (!mapping) {
+        LogHwInfoSmDiagnosis(HwInfoSmDiagnosis::MappingNotFound, settings.verboseLogging);
+        return;
+    }
 
     HANDLE mutex =
         OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, L"Global\\HWiNFO_SM2_MUTEX");
@@ -1091,6 +1245,7 @@ void ReadHwInfoSharedMemory(HwInfoExtras& out,
         } else {
             CloseHandle(mutex);
             CloseHandle(mapping);
+            LogHwInfoSmDiagnosis(HwInfoSmDiagnosis::MutexBusy, settings.verboseLogging);
             return;
         }
     }
@@ -1100,9 +1255,12 @@ void ReadHwInfoSharedMemory(HwInfoExtras& out,
         if (mutexOwned) ReleaseMutex(mutex);
         if (mutex) CloseHandle(mutex);
         CloseHandle(mapping);
+        LogHwInfoSmDiagnosis(HwInfoSmDiagnosis::ViewFailed, settings.verboseLogging);
         return;
     }
 
+    HwInfoSmDiagnosis diagnosis = HwInfoSmDiagnosis::HeaderInvalid;
+    uint32_t scannedReadings = 0;
     MEMORY_BASIC_INFORMATION memoryInfo{};
     if (VirtualQuery(view, &memoryInfo, sizeof(memoryInfo))) {
         size_t viewOffset = static_cast<const uint8_t*>(view) -
@@ -1119,6 +1277,8 @@ void ReadHwInfoSharedMemory(HwInfoExtras& out,
                             header.sensorCount, sizeof(HwInfoSensorPrefix)) &&
                 IsRangeValid(mappedSize, header.readingOffset, header.readingStride,
                             header.readingCount, sizeof(HwInfoReadingPrefix))) {
+                scannedReadings = header.readingCount;
+                diagnosis = HwInfoSmDiagnosis::NoMatchingReadings;
                 int bestCpuTemp = -1, bestGpuTemp = -1;
                 int bestCpuClock = -1, bestGpuClock = -1;
                 int bestCpuPower = -1, bestGpuPower = -1;
@@ -1204,6 +1364,10 @@ void ReadHwInfoSharedMemory(HwInfoExtras& out,
                         }
                     }
                 }
+                if (bestCpuTemp >= 0 || bestGpuTemp >= 0 || bestCpuClock >= 0 ||
+                    bestGpuClock >= 0 || bestCpuPower >= 0 || bestGpuPower >= 0) {
+                    diagnosis = HwInfoSmDiagnosis::Ok;
+                }
             }
         }
     }
@@ -1212,6 +1376,7 @@ void ReadHwInfoSharedMemory(HwInfoExtras& out,
     if (mutexOwned) ReleaseMutex(mutex);
     if (mutex) CloseHandle(mutex);
     CloseHandle(mapping);
+    LogHwInfoSmDiagnosis(diagnosis, settings.verboseLogging, scannedReadings);
 }
 
 std::optional<std::wstring> ReadRegistryString(HKEY key, const std::wstring& name) {
@@ -1344,6 +1509,373 @@ void ReadHwInfoGadgetRegistry(HwInfoExtras& out,
     }
 
     RegCloseKey(key);
+}
+
+// ---------------------------------------------------------------------------
+// LibreHardwareMonitor. An alternative to HWiNFO for CPU/GPU temperature, clock and
+// power - LHM exposes a web server (Options > Remote Web Server > Run) whose
+// /data.json is a recursive tree of {Text, Value, Children} nodes: hardware devices ->
+// sensor-type groups ("Temperatures", "Clocks", "Powers", ...) -> individual sensor
+// leaves. Fetching, parsing and the tree-search heuristics below follow the same
+// approach already proven in this author's own taskbar-clock-customization-v3 (see
+// FetchAndParseLhmData/FindLhmSensorValue there), with one correctness fix: that
+// version uses 0.0 as a "sensor not found" sentinel, which is indistinguishable from a
+// genuine 0 reading. This version returns std::optional<double> instead, so a real
+// zero doesn't wrongly fall through to the next candidate name in a fallback chain.
+// Only temperature/clock/power are fetched here - usage and RAM/VRAM already have a
+// better source (native PDH counters), so pulling them from LHM too would just be a
+// second, potentially disagreeing copy of data this mod already has.
+// ---------------------------------------------------------------------------
+
+struct LhmJsonNode {
+    std::wstring text;
+    std::wstring value;
+    std::vector<LhmJsonNode> children;
+};
+
+void SkipLhmWs(const std::wstring& text, size_t& pos) {
+    while (pos < text.size() && std::iswspace(text[pos])) pos++;
+}
+
+std::optional<std::wstring> ParseLhmJsonString(const std::wstring& text, size_t& pos) {
+    if (pos >= text.size() || text[pos] != L'"') return std::nullopt;
+    pos++;
+    std::wstring result;
+    while (pos < text.size() && text[pos] != L'"') {
+        wchar_t c = text[pos];
+        if (c == L'\\' && pos + 1 < text.size()) {
+            wchar_t next = text[pos + 1];
+            switch (next) {
+                case L'"': result += L'"'; break;
+                case L'\\': result += L'\\'; break;
+                case L'/': result += L'/'; break;
+                case L'n': result += L'\n'; break;
+                case L't': result += L'\t'; break;
+                case L'r': result += L'\r'; break;
+                default: result += next; break;
+            }
+            pos += 2;
+        } else {
+            result += c;
+            pos++;
+        }
+    }
+    if (pos >= text.size()) return std::nullopt;
+    pos++;  // closing quote
+    return result;
+}
+
+// Skips a JSON value of any type (object, array, string, number, literal) without
+// interpreting it - used for every key this mod doesn't care about (Min, Max, Type,
+// SensorId, ImageURL, ...), of which LHM's data.json has several per node.
+void SkipLhmJsonValue(const std::wstring& text, size_t& pos) {
+    SkipLhmWs(text, pos);
+    if (pos >= text.size()) return;
+    wchar_t c = text[pos];
+    if (c == L'"') {
+        ParseLhmJsonString(text, pos);
+    } else if (c == L'{' || c == L'[') {
+        wchar_t open = c, close = c == L'{' ? L'}' : L']';
+        int depth = 0;
+        bool inString = false;
+        while (pos < text.size()) {
+            wchar_t ch = text[pos];
+            if (inString) {
+                if (ch == L'\\') {
+                    pos += 2;
+                    continue;
+                }
+                if (ch == L'"') inString = false;
+            } else {
+                if (ch == L'"') inString = true;
+                else if (ch == open) depth++;
+                else if (ch == close && --depth == 0) {
+                    pos++;
+                    return;
+                }
+            }
+            pos++;
+        }
+    } else {
+        while (pos < text.size() && text[pos] != L',' && text[pos] != L'}' &&
+              text[pos] != L']') {
+            pos++;
+        }
+    }
+}
+
+std::optional<LhmJsonNode> ParseLhmJsonNode(const std::wstring& text, size_t& pos) {
+    SkipLhmWs(text, pos);
+    if (pos >= text.size() || text[pos] != L'{') return std::nullopt;
+    pos++;
+
+    LhmJsonNode node;
+    while (true) {
+        SkipLhmWs(text, pos);
+        if (pos >= text.size()) return std::nullopt;
+        if (text[pos] == L'}') {
+            pos++;
+            return node;
+        }
+        if (text[pos] == L',') {
+            pos++;
+            continue;
+        }
+        auto key = ParseLhmJsonString(text, pos);
+        if (!key) return std::nullopt;
+        SkipLhmWs(text, pos);
+        if (pos >= text.size() || text[pos] != L':') return std::nullopt;
+        pos++;
+        SkipLhmWs(text, pos);
+
+        if (*key == L"Text") {
+            auto value = ParseLhmJsonString(text, pos);
+            if (value) node.text = *value;
+        } else if (*key == L"Value") {
+            auto value = ParseLhmJsonString(text, pos);
+            if (value) node.value = *value;
+        } else if (*key == L"Children" && pos < text.size() && text[pos] == L'[') {
+            pos++;
+            while (true) {
+                SkipLhmWs(text, pos);
+                if (pos >= text.size()) return std::nullopt;
+                if (text[pos] == L']') {
+                    pos++;
+                    break;
+                }
+                if (text[pos] == L',') {
+                    pos++;
+                    continue;
+                }
+                auto child = ParseLhmJsonNode(text, pos);
+                if (!child) return std::nullopt;
+                node.children.push_back(std::move(*child));
+            }
+        } else {
+            SkipLhmJsonValue(text, pos);
+        }
+    }
+}
+
+// The leading numeric portion of an LHM value string ("45.2 °C", "1234.0 MHz") - the
+// unit suffix is discarded, matching LHM's own convention of reporting each sensor
+// type in one fixed unit (temperatures in °C, clocks in MHz, power in W).
+std::optional<double> ParseLhmValue(const std::wstring& value) {
+    std::wstring normalized = value;
+    std::replace(normalized.begin(), normalized.end(), L',', L'.');
+    wchar_t* end = nullptr;
+    double result = std::wcstod(normalized.c_str(), &end);
+    if (end == normalized.c_str() || !std::isfinite(result)) return std::nullopt;
+    return result;
+}
+
+// Depth-first search for the first sensor whose group node's Text case-insensitively
+// equals hwType (e.g. "Temperatures") and whose own Text contains sensorName as a
+// case-sensitive substring - not scoped to any particular hardware device, so it works
+// the same regardless of how LHM names the CPU/GPU node for a given build/version.
+std::optional<double> FindLhmSensorValue(const LhmJsonNode& node,
+                                         const std::wstring& hwType,
+                                         const std::wstring& sensorName) {
+    if (_wcsicmp(node.text.c_str(), hwType.c_str()) == 0) {
+        for (const auto& child : node.children) {
+            if (child.text.find(sensorName) != std::wstring::npos) {
+                if (auto value = ParseLhmValue(child.value)) return value;
+            }
+        }
+    }
+    for (const auto& child : node.children) {
+        if (auto value = FindLhmSensorValue(child, hwType, sensorName)) return value;
+    }
+    return std::nullopt;
+}
+
+std::optional<double> FindLhmSensorValueAny(
+    const LhmJsonNode& root,
+    const std::wstring& hwType,
+    std::initializer_list<const wchar_t*> candidates) {
+    for (const wchar_t* candidate : candidates) {
+        if (auto value = FindLhmSensorValue(root, hwType, candidate)) return value;
+    }
+    return std::nullopt;
+}
+
+// WinINet, matching taskbar-clock-customization-v3's GetUrlContent: a short-lived
+// INTERNET_OPEN_TYPE_PRECONFIG session, no cache/cookies/UI, read in fixed chunks into
+// a growing buffer, decoded from UTF-8 (LHM's data.json is served as UTF-8 JSON).
+std::optional<std::wstring> FetchLhmUrlContent(const std::wstring& url) {
+    HINTERNET session =
+        InternetOpenW(L"WindhawkTaskbarSystemInfoFork", INTERNET_OPEN_TYPE_PRECONFIG,
+                      nullptr, nullptr, 0);
+    if (!session) return std::nullopt;
+
+    HINTERNET request = InternetOpenUrlW(
+        session, url.c_str(), nullptr, 0,
+        INTERNET_FLAG_NO_AUTH | INTERNET_FLAG_NO_CACHE_WRITE |
+            INTERNET_FLAG_NO_COOKIES | INTERNET_FLAG_NO_UI |
+            INTERNET_FLAG_PRAGMA_NOCACHE | INTERNET_FLAG_RELOAD,
+        0);
+    if (!request) {
+        InternetCloseHandle(session);
+        return std::nullopt;
+    }
+
+    std::string body;
+    char chunk[1024];
+    DWORD bytesRead = 0;
+    while (InternetReadFile(request, chunk, sizeof(chunk), &bytesRead) && bytesRead > 0) {
+        body.append(chunk, bytesRead);
+        if (body.size() > 8 * 1024 * 1024) break;  // sanity cap, a real data.json is small
+    }
+    InternetCloseHandle(request);
+    InternetCloseHandle(session);
+    if (body.empty()) return std::nullopt;
+
+    int wideLength =
+        MultiByteToWideChar(CP_UTF8, 0, body.data(), static_cast<int>(body.size()),
+                            nullptr, 0);
+    if (wideLength <= 0) return std::nullopt;
+    std::wstring wide(wideLength, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, body.data(), static_cast<int>(body.size()),
+                        wide.data(), wideLength);
+    return wide;
+}
+
+struct LhmSnapshot {
+    std::optional<double> cpuTemp;
+    std::optional<double> gpuTemp;
+    std::optional<double> cpuClockMhz;
+    std::optional<double> gpuClockMhz;
+    std::optional<double> cpuPowerW;
+    std::optional<double> gpuPowerW;
+};
+
+LhmSnapshot FetchLhmSnapshot(int port) {
+    LhmSnapshot snapshot;
+    wchar_t url[64];
+    swprintf(url, std::size(url), L"http://localhost:%d/data.json", port);
+
+    auto content = FetchLhmUrlContent(url);
+    if (!content) return snapshot;
+
+    size_t pos = 0;
+    auto root = ParseLhmJsonNode(*content, pos);
+    if (!root) return snapshot;
+
+    if (auto value = FindLhmSensorValueAny(
+            *root, L"Temperatures",
+            {L"CPU Package", L"Core (Tctl/Tdie)", L"Core Average", L"CPU Core"})) {
+        if (auto normalized = NormalizeTemperature(*value, L"C")) snapshot.cpuTemp = normalized;
+    }
+    if (auto value =
+            FindLhmSensorValueAny(*root, L"Temperatures", {L"GPU Core", L"GPU Hot Spot"})) {
+        if (auto normalized = NormalizeTemperature(*value, L"C")) snapshot.gpuTemp = normalized;
+    }
+    if (auto value =
+            FindLhmSensorValueAny(*root, L"Clocks", {L"CPU Core #1", L"Core #1"})) {
+        if (IsPlausibleClockMhz(*value)) snapshot.cpuClockMhz = value;
+    }
+    if (auto value = FindLhmSensorValueAny(*root, L"Clocks", {L"GPU Core"})) {
+        if (IsPlausibleClockMhz(*value)) snapshot.gpuClockMhz = value;
+    }
+    if (auto value = FindLhmSensorValueAny(*root, L"Powers",
+                                           {L"CPU Package", L"Package", L"CPU Cores"})) {
+        if (IsPlausiblePowerWatts(*value)) snapshot.cpuPowerW = value;
+    }
+    if (auto value = FindLhmSensorValueAny(*root, L"Powers", {L"GPU", L"GPU Power"})) {
+        if (IsPlausiblePowerWatts(*value)) snapshot.gpuPowerW = value;
+    }
+    return snapshot;
+}
+
+std::mutex g_lhmMutex;
+LhmSnapshot g_lhmSnapshot;
+bool g_lhmDataLoaded = false;
+
+std::atomic<bool> g_stopLhmWorker{false};
+HANDLE g_lhmWorkerWakeEvent = nullptr;
+[[clang::no_destroy]] std::optional<std::thread> g_lhmWorker;
+
+void LhmWorkerProc() {
+    while (!g_stopLhmWorker) {
+        ModSettings settings = CurrentSettings();
+        if (settings.lhmEnabled) {
+            LhmSnapshot snapshot = FetchLhmSnapshot(settings.lhmPort);
+            std::lock_guard lock(g_lhmMutex);
+            g_lhmSnapshot = snapshot;
+            g_lhmDataLoaded = true;
+        }
+        DWORD waitMs =
+            static_cast<DWORD>(std::max(1, settings.lhmUpdateInterval)) * 1000;
+        if (WaitForSingleObject(g_lhmWorkerWakeEvent, waitMs) == WAIT_FAILED) break;
+    }
+}
+
+bool StartLhmWorker() {
+    if (g_lhmWorker) return true;
+    if (g_unloading) return false;
+    g_lhmWorkerWakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!g_lhmWorkerWakeEvent) return false;
+    g_stopLhmWorker = false;
+    try {
+        g_lhmWorker.emplace(LhmWorkerProc);
+    } catch (...) {
+        CloseHandle(g_lhmWorkerWakeEvent);
+        g_lhmWorkerWakeEvent = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void StopLhmWorker() {
+    g_stopLhmWorker = true;
+    if (g_lhmWorkerWakeEvent) SetEvent(g_lhmWorkerWakeEvent);
+    if (g_lhmWorker) {
+        if (g_lhmWorker->joinable()) g_lhmWorker->join();
+        g_lhmWorker.reset();
+    }
+    if (g_lhmWorkerWakeEvent) {
+        CloseHandle(g_lhmWorkerWakeEvent);
+        g_lhmWorkerWakeEvent = nullptr;
+    }
+    std::lock_guard lock(g_lhmMutex);
+    g_lhmSnapshot = {};
+    g_lhmDataLoaded = false;
+}
+
+// Fills in whatever HWiNFO (and native fallbacks) left empty - LHM never overrides an
+// already-populated value, matching "additional provider" rather than "replacement".
+void FillFromLhm(MetricsSnapshot& snapshot, const ModSettings& settings) {
+    if (!settings.lhmEnabled) return;
+    LhmSnapshot lhm;
+    {
+        std::lock_guard lock(g_lhmMutex);
+        if (!g_lhmDataLoaded) return;
+        lhm = g_lhmSnapshot;
+    }
+    if (!snapshot.cpuTemp && lhm.cpuTemp) {
+        snapshot.cpuTemp = lhm.cpuTemp;
+        snapshot.cpuTempProvider = MetricProvider::LibreHardwareMonitor;
+    }
+    if (!snapshot.gpuTemp && lhm.gpuTemp) {
+        snapshot.gpuTemp = lhm.gpuTemp;
+        snapshot.gpuTempProvider = MetricProvider::LibreHardwareMonitor;
+    }
+    if (!snapshot.cpuClockMhz && lhm.cpuClockMhz) {
+        snapshot.cpuClockMhz = lhm.cpuClockMhz;
+        snapshot.cpuClockProvider = MetricProvider::LibreHardwareMonitor;
+    }
+    if (!snapshot.gpuClockMhz && lhm.gpuClockMhz) {
+        snapshot.gpuClockMhz = lhm.gpuClockMhz;
+        snapshot.gpuClockProvider = MetricProvider::LibreHardwareMonitor;
+    }
+    if (!snapshot.cpuPowerW && lhm.cpuPowerW) {
+        snapshot.cpuPowerW = lhm.cpuPowerW;
+        snapshot.cpuPowerProvider = MetricProvider::LibreHardwareMonitor;
+    }
+    if (!snapshot.gpuPowerW && lhm.gpuPowerW) {
+        snapshot.gpuPowerW = lhm.gpuPowerW;
+        snapshot.gpuPowerProvider = MetricProvider::LibreHardwareMonitor;
+    }
 }
 
 constexpr double kGiB = 1024.0 * 1024.0 * 1024.0;
@@ -2022,7 +2554,8 @@ void ReadNetworkThroughput(MetricsSnapshot& snapshot, const ModSettings& setting
     auto sent = ReadNetworkCounterTotal(g_netSentCounter, filter);
     if (recv) snapshot.networkRecvBytesPerSec = *recv;
     if (sent) snapshot.networkSentBytesPerSec = *sent;
-    snapshot.networkAvailable = recv.has_value() || sent.has_value();
+    snapshot.networkRecvAvailable = recv.has_value();
+    snapshot.networkSentAvailable = sent.has_value();
 }
 
 void ReadPdhMetrics(MetricsSnapshot& snapshot, const ModSettings& settings) {
@@ -2145,6 +2678,9 @@ void ReadTemperatures(MetricsSnapshot& snapshot, const ModSettings& settings) {
             wantWindowsNative = true;
             break;
         case TemperatureSource::Disabled:
+        case TemperatureSource::Lhm:
+            // Lhm: leave everything unset here - CollectMetrics's FillFromLhm call
+            // supplies it exclusively, since nothing else ran.
             return;
         case TemperatureSource::Auto:
         default:
@@ -2190,7 +2726,10 @@ void ReadTemperatures(MetricsSnapshot& snapshot, const ModSettings& settings) {
 
 void ReadExtraSensors(MetricsSnapshot& snapshot, const ModSettings& settings) {
     if (!settings.showClockPower ||
-        settings.extraSensorsSource == ExtraSensorsSource::Disabled) {
+        settings.extraSensorsSource == ExtraSensorsSource::Disabled ||
+        settings.extraSensorsSource == ExtraSensorsSource::LhmOnly) {
+        // LhmOnly: leave everything unset - CollectMetrics's FillFromLhm call supplies
+        // it exclusively, since nothing else ran.
         return;
     }
 
@@ -2237,6 +2776,7 @@ MetricsSnapshot CollectMetrics(const ModSettings& settings) {
     ReadPdhMetrics(snapshot, settings);
     ReadTemperatures(snapshot, settings);
     ReadExtraSensors(snapshot, settings);
+    FillFromLhm(snapshot, settings);
     return snapshot;
 }
 
@@ -2484,11 +3024,20 @@ FrameworkElement FindDirectChildByName(FrameworkElement parent, PCWSTR name) {
     return nullptr;
 }
 
+// SystemTrayFrameGrid sits several levels below xamlRoot.Content() (content -> ... ->
+// TaskbarFrame -> RootGrid -> ... -> SystemTrayFrame -> SystemTrayFrameGrid), not as a
+// direct child of it - FindDirectChildByName against the content root never finds it.
+FrameworkElement FindDescendantByName(FrameworkElement const& root, PCWSTR name) {
+    std::wstring target = name;
+    return FindChildRecursive(
+        root, [&target](FrameworkElement child) { return child.Name() == target; });
+}
+
 FrameworkElement FindTrayElement(FrameworkElement const& trayGrid,
                                  FrameworkElement const& root,
                                  PCWSTR name) {
     auto elem = FindDirectChildByName(trayGrid, name);
-    if (!elem) elem = FindDirectChildByName(root, name);
+    if (!elem) elem = FindDescendantByName(root, name);
     return elem;
 }
 
@@ -2515,7 +3064,7 @@ void ApplyTextStyle(TextBlock text, bool label, const ModSettings& settings) {
 }
 
 void ApplyWidgetGeometry(const ModSettings& settings) {
-    if (!g_widget) return;
+    if (!g_widget || !g_widgetBorder) return;
 
     // Default (no widthMax): the same 145-170 baseline the original mod used.
     double rightWidth = 150.0;
@@ -2530,12 +3079,29 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
     g_memoryBarWidth = rightWidth - kMemoryLabelWidth - kMemoryPercentWidth;
     if (g_memoryBarWidth < 20.0) g_memoryBarWidth = 20.0;
 
-    g_widget.MinWidth(settings.widthMin);
-    g_widget.MaxWidth(settings.widthMax > 0 ? settings.widthMax
-                                            : std::numeric_limits<double>::infinity());
-    g_widget.MinHeight(settings.heightMin);
-    g_widget.MaxHeight(settings.heightMax > 0 ? settings.heightMax
-                                              : std::numeric_limits<double>::infinity());
+    g_widgetBorder.MinWidth(settings.widthMin);
+    g_widgetBorder.MaxWidth(settings.widthMax > 0 ? settings.widthMax
+                                                  : std::numeric_limits<double>::infinity());
+    g_widgetBorder.MinHeight(settings.heightMin);
+    g_widgetBorder.MaxHeight(settings.heightMax > 0
+                                 ? settings.heightMax
+                                 : std::numeric_limits<double>::infinity());
+    if (settings.showBox) {
+        g_widgetBorder.Background(BrushFromSetting(settings.boxColor,
+                                                    MakeColor(0x66, 0x20, 0x20, 0x20)));
+        g_widgetBorder.CornerRadius(
+            CornerRadius{static_cast<double>(settings.boxCornerRadius),
+                        static_cast<double>(settings.boxCornerRadius),
+                        static_cast<double>(settings.boxCornerRadius),
+                        static_cast<double>(settings.boxCornerRadius)});
+        g_widgetBorder.Padding(Thickness{
+            static_cast<double>(settings.boxPadding), static_cast<double>(settings.boxPadding) / 2,
+            static_cast<double>(settings.boxPadding), static_cast<double>(settings.boxPadding) / 2});
+    } else {
+        g_widgetBorder.ClearValue(Border::BackgroundProperty());
+        g_widgetBorder.CornerRadius(CornerRadius{0, 0, 0, 0});
+        g_widgetBorder.Padding(Thickness{0, 0, 0, 0});
+    }
 
     if (g_leftColumn) g_leftColumn.Width(GridLength{leftWidth, GridUnitType::Pixel});
     if (g_gapColumn) {
@@ -2543,14 +3109,46 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
                                      GridUnitType::Pixel});
     }
     if (g_rightColumn) g_rightColumn.Width(GridLength{rightWidth, GridUnitType::Pixel});
-
-    for (XamlPolyline graph : {g_cpuGraph, g_gpuGraph}) {
-        if (graph) {
-            graph.Width(g_graphWidth);
-            graph.Height(kGraphHeight);
-            graph.Visibility(settings.showGraphs ? Visibility::Visible
-                                                 : Visibility::Collapsed);
+    for (RowDefinition row : {g_leftGapRow, g_rightGapRow, g_netGapRow}) {
+        if (row) {
+            row.Height(GridLength{static_cast<double>(settings.rowGap), GridUnitType::Pixel});
         }
+    }
+
+    // A third column, not a third row: network + internet status live beside RAM/VRAM,
+    // spanning the same two-row height, instead of adding a third row pair.
+    bool showNetColumn = settings.showNetwork || settings.showInternetStatus;
+    double netWidth = showNetColumn ? kNetworkColumnWidth : 0.0;
+    if (g_netGapColumn) {
+        g_netGapColumn.Width(GridLength{
+            showNetColumn ? static_cast<double>(settings.columnGap) : 0.0,
+            GridUnitType::Pixel});
+    }
+    if (g_netColumnDef) g_netColumnDef.Width(GridLength{netWidth, GridUnitType::Pixel});
+    if (g_netDownText) {
+        g_netDownText.Visibility(settings.showNetwork ? Visibility::Visible
+                                                       : Visibility::Collapsed);
+    }
+    if (g_netUpText) {
+        g_netUpText.Visibility(settings.showNetwork ? Visibility::Visible
+                                                     : Visibility::Collapsed);
+    }
+    if (g_netDot) {
+        g_netDot.Visibility(settings.showInternetStatus ? Visibility::Visible
+                                                         : Visibility::Collapsed);
+    }
+
+    if (g_cpuGraph) {
+        g_cpuGraph.Width(g_graphWidth);
+        g_cpuGraph.Height(kGraphHeight);
+        g_cpuGraph.Visibility(settings.showCpuGraph ? Visibility::Visible
+                                                    : Visibility::Collapsed);
+    }
+    if (g_gpuGraph) {
+        g_gpuGraph.Width(g_graphWidth);
+        g_gpuGraph.Height(kGraphHeight);
+        g_gpuGraph.Visibility(settings.showGpuGraph ? Visibility::Visible
+                                                    : Visibility::Collapsed);
     }
     for (XamlRectangle track : {g_ramTrack, g_vramTrack}) {
         if (track) track.Width(g_memoryBarWidth);
@@ -2564,24 +3162,10 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
     for (ColumnDefinition column : {g_cpuExtrasColumn, g_gpuExtrasColumn}) {
         if (column) column.Width(GridLength{extrasWidth, GridUnitType::Pixel});
     }
-    if (auto netRow = g_netLabel ? VisualTreeHelper::GetParent(g_netLabel)
-                                        .try_as<FrameworkElement>()
-                                 : nullptr) {
-        netRow.Visibility(settings.showNetwork ? Visibility::Visible
-                                               : Visibility::Collapsed);
-        netRow.Margin(Thickness{0, static_cast<double>(settings.rowGap), 0, 0});
-    }
-    if (auto statusRow = g_netDot ? VisualTreeHelper::GetParent(g_netDot)
-                                         .try_as<FrameworkElement>()
-                                  : nullptr) {
-        statusRow.Visibility(settings.showInternetStatus ? Visibility::Visible
-                                                          : Visibility::Collapsed);
-        statusRow.Margin(Thickness{0, static_cast<double>(settings.rowGap), 0, 0});
-    }
 }
 
 void ApplyWidgetSettings() {
-    if (!g_widget) return;
+    if (!g_widget || !g_widgetBorder) return;
     ModSettings settings = CurrentSettings();
     if (g_historyInterval != settings.updateInterval ||
         g_historyWindow != settings.historySeconds) {
@@ -2592,13 +3176,13 @@ void ApplyWidgetSettings() {
     }
     ApplyWidgetGeometry(settings);
 
-    for (TextBlock label : {g_cpuLabel, g_gpuLabel, g_ramLabel, g_vramLabel, g_netLabel}) {
+    for (TextBlock label : {g_cpuLabel, g_gpuLabel, g_ramLabel, g_vramLabel}) {
         ApplyTextStyle(label, true, settings);
     }
     for (TextBlock value :
         {g_cpuUsageText, g_cpuTempText, g_cpuExtrasText, g_gpuUsageText, g_gpuTempText,
          g_gpuExtrasText, g_ramPercentText, g_ramCapacityText, g_vramPercentText,
-         g_vramCapacityText, g_netDownText, g_netUpText, g_netStatusText}) {
+         g_vramCapacityText, g_netDownText, g_netUpText}) {
         ApplyTextStyle(value, false, settings);
     }
 
@@ -2654,12 +3238,6 @@ void UpdateInternetStatusUi(const ModSettings& settings) {
                 break;
         }
         g_netDot.Fill(SolidColorBrush(dotColor));
-    }
-    if (g_netStatusText) {
-        g_netStatusText.Text(state == InternetState::Connected ? settings.connectedText
-                             : state == InternetState::Disconnected
-                                 ? settings.disconnectedText
-                                 : L"...");
     }
 }
 
@@ -2729,7 +3307,7 @@ void UpdateWidgetText() {
     if (settings.showNetwork) {
         if (g_netDownText) {
             g_netDownText.Text(
-                snapshot.networkAvailable
+                snapshot.networkRecvAvailable
                     ? L"↓" + FormatTransferSpeed(snapshot.networkRecvBytesPerSec,
                                                  settings.networkFormat,
                                                  settings.networkDecimals)
@@ -2737,7 +3315,7 @@ void UpdateWidgetText() {
         }
         if (g_netUpText) {
             g_netUpText.Text(
-                snapshot.networkAvailable
+                snapshot.networkSentAvailable
                     ? L"↑" + FormatTransferSpeed(snapshot.networkSentBytesPerSec,
                                                  settings.networkFormat,
                                                  settings.networkDecimals)
@@ -2750,10 +3328,8 @@ void UpdateWidgetText() {
         size_t historyCapacity = HistoryCapacity(settings);
         AppendHistory(g_cpuHistory, snapshot.cpu, historyCapacity);
         if (snapshot.gpuAvailable) AppendHistory(g_gpuHistory, snapshot.gpu, historyCapacity);
-        if (settings.showGraphs) {
-            UpdateSparkline(g_cpuGraph, g_cpuHistory, historyCapacity);
-            UpdateSparkline(g_gpuGraph, g_gpuHistory, historyCapacity);
-        }
+        if (settings.showCpuGraph) UpdateSparkline(g_cpuGraph, g_cpuHistory, historyCapacity);
+        if (settings.showGpuGraph) UpdateSparkline(g_gpuGraph, g_gpuHistory, historyCapacity);
         g_lastRenderedMetricsSequence = metricsSequence;
     }
     UpdateMemoryBar(g_ramFill, snapshot.ram, true, g_ramAlert, settings);
@@ -2791,12 +3367,6 @@ ColumnDefinition StarColumn() {
 RowDefinition PixelRow(double height) {
     RowDefinition row;
     row.Height(GridLength{height, GridUnitType::Pixel});
-    return row;
-}
-
-RowDefinition AutoRow() {
-    RowDefinition row;
-    row.Height(GridLength{1, GridUnitType::Auto});
     return row;
 }
 
@@ -2928,61 +3498,50 @@ Grid CreateMemoryRow(PCWSTR label,
     return row;
 }
 
-// Network row: Label | Down | Up, both value columns Star-shared so they grow or shrink
-// with the widget instead of truncating at a percentage-field width.
-Grid CreateNetworkRow() {
-    Grid row;
-    row.Name(L"NetworkRow");
-    row.IsHitTestVisible(false);
+// A third column, not a third row: down/up stacked over the same two-row height as the
+// CPU/GPU and RAM/VRAM panels, with the internet-status dot as a small color-only corner
+// badge (deliberately not hit-testable: a widget.IsHitTestVisible(false) ancestor
+// excludes its whole subtree from hit testing in WinRT XAML regardless of what a
+// descendant sets on itself, so a hoverable tooltip here would need restructuring the
+// whole widget's click-through model - not worth it for a "subtle" indicator).
+Grid CreateNetworkColumn() {
+    Grid column;
+    column.Name(L"NetworkColumn");
+    column.IsHitTestVisible(false);
+    column.VerticalAlignment(VerticalAlignment::Center);
 
-    row.ColumnDefinitions().Append(PixelColumn(kNetworkLabelWidth));
-    row.ColumnDefinitions().Append(StarColumn());
-    row.ColumnDefinitions().Append(StarColumn());
-
-    g_netLabel = CreateCellText(L"NetLabel", TextAlignment::Left);
-    g_netLabel.Text(L"NET");
-    g_netDownText = CreateCellText(L"NetDown", TextAlignment::Right);
-    g_netDownText.Text(L"↓--");
-    g_netUpText = CreateCellText(L"NetUp", TextAlignment::Right);
-    g_netUpText.Text(L"↑--");
-    g_netUpText.Margin(Thickness{6, 0, 0, 0});
-
-    Grid::SetColumn(g_netLabel, 0);
-    Grid::SetColumn(g_netDownText, 1);
-    Grid::SetColumn(g_netUpText, 2);
-    row.Children().Append(g_netLabel);
-    row.Children().Append(g_netDownText);
-    row.Children().Append(g_netUpText);
-    return row;
-}
-
-// Internet-status row: a small dot plus short text - deliberately subtle, matching the
-// requested "quietly says whether you're online" rather than a banner.
-Grid CreateInternetStatusRow() {
-    Grid row;
-    row.Name(L"InternetStatusRow");
-    row.IsHitTestVisible(false);
-
-    row.ColumnDefinitions().Append(PixelColumn(kNetworkArrowWidth));
-    row.ColumnDefinitions().Append(StarColumn());
+    g_netGapRow = PixelRow(2.0);
+    column.RowDefinitions().Append(PixelRow(kRowHeight));
+    column.RowDefinitions().Append(g_netGapRow);
+    column.RowDefinitions().Append(PixelRow(kRowHeight));
+    column.ColumnDefinitions().Append(PixelColumn(kDotDiameter + 4));
+    column.ColumnDefinitions().Append(StarColumn());
 
     g_netDot = XamlEllipse();
     g_netDot.Name(L"InternetDot");
     g_netDot.Width(kDotDiameter);
     g_netDot.Height(kDotDiameter);
-    g_netDot.HorizontalAlignment(HorizontalAlignment::Left);
+    g_netDot.HorizontalAlignment(HorizontalAlignment::Center);
     g_netDot.VerticalAlignment(VerticalAlignment::Center);
     g_netDot.IsHitTestVisible(false);
 
-    g_netStatusText = CreateCellText(L"InternetStatusText", TextAlignment::Left);
-    g_netStatusText.Text(L"...");
-    g_netStatusText.Margin(Thickness{4, 0, 0, 0});
+    g_netDownText = CreateCellText(L"NetDown", TextAlignment::Right);
+    g_netDownText.Text(L"↓--");
+    g_netUpText = CreateCellText(L"NetUp", TextAlignment::Right);
+    g_netUpText.Text(L"↑--");
 
     Grid::SetColumn(g_netDot, 0);
-    Grid::SetColumn(g_netStatusText, 1);
-    row.Children().Append(g_netDot);
-    row.Children().Append(g_netStatusText);
-    return row;
+    Grid::SetRow(g_netDot, 0);
+    Grid::SetRowSpan(g_netDot, 3);
+    Grid::SetColumn(g_netDownText, 1);
+    Grid::SetRow(g_netDownText, 0);
+    Grid::SetColumn(g_netUpText, 1);
+    Grid::SetRow(g_netUpText, 2);
+
+    column.Children().Append(g_netDot);
+    column.Children().Append(g_netDownText);
+    column.Children().Append(g_netUpText);
+    return column;
 }
 
 // Undoes AttachAnchorTracking: revokes the LayoutUpdated subscription and restores the
@@ -3044,6 +3603,7 @@ void RemoveWidget() {
     }
 
     g_widget = nullptr;
+    g_widgetBorder = nullptr;
     g_injectionParent = nullptr;
     g_lastInjectedPosition.clear();
     g_widgetColumn = -1;
@@ -3062,11 +3622,9 @@ void RemoveWidget() {
     g_vramLabel = nullptr;
     g_vramPercentText = nullptr;
     g_vramCapacityText = nullptr;
-    g_netLabel = nullptr;
     g_netDownText = nullptr;
     g_netUpText = nullptr;
     g_netDot = nullptr;
-    g_netStatusText = nullptr;
     g_cpuGraph = nullptr;
     g_gpuGraph = nullptr;
     g_ramTrack = nullptr;
@@ -3078,6 +3636,11 @@ void RemoveWidget() {
     g_rightColumn = nullptr;
     g_cpuExtrasColumn = nullptr;
     g_gpuExtrasColumn = nullptr;
+    g_netGapColumn = nullptr;
+    g_netColumnDef = nullptr;
+    g_leftGapRow = nullptr;
+    g_rightGapRow = nullptr;
+    g_netGapRow = nullptr;
     g_cpuHistory.clear();
     g_gpuHistory.clear();
     g_lastRenderedMetricsSequence = 0;
@@ -3087,25 +3650,28 @@ void RemoveWidget() {
     g_vramAlert = AlertLevel::Normal;
 }
 
-Grid BuildWidgetGrid() {
+Border BuildWidgetGrid() {
     Grid widget;
-    widget.Name(kWidgetName);
     widget.IsHitTestVisible(false);
     widget.VerticalAlignment(VerticalAlignment::Center);
 
     g_leftColumn = ColumnDefinition();
     g_gapColumn = ColumnDefinition();
     g_rightColumn = ColumnDefinition();
+    g_netGapColumn = ColumnDefinition();
+    g_netColumnDef = ColumnDefinition();
     widget.ColumnDefinitions().Append(g_leftColumn);
     widget.ColumnDefinitions().Append(g_gapColumn);
     widget.ColumnDefinitions().Append(g_rightColumn);
+    widget.ColumnDefinitions().Append(g_netGapColumn);
+    widget.ColumnDefinitions().Append(g_netColumnDef);
 
     Grid leftPanel;
     leftPanel.IsHitTestVisible(false);
+    g_leftGapRow = PixelRow(2.0);
     leftPanel.RowDefinitions().Append(PixelRow(kRowHeight));
-    leftPanel.RowDefinitions().Append(AutoRow());
+    leftPanel.RowDefinitions().Append(g_leftGapRow);
     leftPanel.RowDefinitions().Append(PixelRow(kRowHeight));
-    leftPanel.RowDefinitions().Append(AutoRow());
 
     Grid cpuRow = CreateComputeRow(L"CPU", L"Cpu", g_cpuLabel, g_cpuUsageText,
                                    g_cpuTempText, g_cpuExtrasText, g_cpuGraph,
@@ -3113,38 +3679,44 @@ Grid BuildWidgetGrid() {
     Grid gpuRow = CreateComputeRow(L"GPU", L"Gpu", g_gpuLabel, g_gpuUsageText,
                                    g_gpuTempText, g_gpuExtrasText, g_gpuGraph,
                                    g_gpuExtrasColumn);
-    Grid networkRow = CreateNetworkRow();
     Grid::SetRow(cpuRow, 0);
     Grid::SetRow(gpuRow, 2);
-    Grid::SetRow(networkRow, 3);
     leftPanel.Children().Append(cpuRow);
     leftPanel.Children().Append(gpuRow);
-    leftPanel.Children().Append(networkRow);
 
     Grid rightPanel;
     rightPanel.IsHitTestVisible(false);
+    g_rightGapRow = PixelRow(2.0);
     rightPanel.RowDefinitions().Append(PixelRow(kRowHeight));
-    rightPanel.RowDefinitions().Append(AutoRow());
+    rightPanel.RowDefinitions().Append(g_rightGapRow);
     rightPanel.RowDefinitions().Append(PixelRow(kRowHeight));
-    rightPanel.RowDefinitions().Append(AutoRow());
 
     Grid ramRow = CreateMemoryRow(L"RAM", L"Ram", g_ramLabel, g_ramPercentText,
                                   g_ramCapacityText, g_ramTrack, g_ramFill);
     Grid vramRow = CreateMemoryRow(L"VRAM", L"Vram", g_vramLabel, g_vramPercentText,
                                    g_vramCapacityText, g_vramTrack, g_vramFill);
-    Grid statusRow = CreateInternetStatusRow();
     Grid::SetRow(ramRow, 0);
     Grid::SetRow(vramRow, 2);
-    Grid::SetRow(statusRow, 3);
     rightPanel.Children().Append(ramRow);
     rightPanel.Children().Append(vramRow);
-    rightPanel.Children().Append(statusRow);
+
+    Grid netColumn = CreateNetworkColumn();
 
     Grid::SetColumn(leftPanel, 0);
     Grid::SetColumn(rightPanel, 2);
+    Grid::SetColumn(netColumn, 4);
     widget.Children().Append(leftPanel);
     widget.Children().Append(rightPanel);
-    return widget;
+    widget.Children().Append(netColumn);
+
+    Border border;
+    border.Name(kWidgetName);
+    border.IsHitTestVisible(false);
+    border.VerticalAlignment(VerticalAlignment::Center);
+    border.Child(widget);
+    g_widget = widget;
+    g_widgetBorder = border;
+    return border;
 }
 
 // ---------------------------------------------------------------------------
@@ -3248,7 +3820,7 @@ FrameworkElement FindNthElementByClassName(FrameworkElement const& parent,
 InjectionTarget ResolveInjectionTarget(FrameworkElement const& root,
                                        const std::wstring& position) {
     if (!IsOverlayPosition(position) && !IsAnchoredPosition(position)) {
-        auto trayFrame = FindDirectChildByName(root, L"SystemTrayFrameGrid");
+        auto trayFrame = FindDescendantByName(root, L"SystemTrayFrameGrid");
         auto trayPanel = trayFrame ? trayFrame.try_as<Panel>() : nullptr;
         if (!trayPanel) return {};
 
@@ -3323,7 +3895,7 @@ InjectionTarget ResolveInjectionTarget(FrameworkElement const& root,
     }
 
     // Taskbar frame not realised yet - fall back to the tray so the widget still appears.
-    auto trayFrame = FindDirectChildByName(root, L"SystemTrayFrameGrid");
+    auto trayFrame = FindDescendantByName(root, L"SystemTrayFrameGrid");
     if (auto trayPanel = trayFrame ? trayFrame.try_as<Panel>() : nullptr) {
         InjectionTarget target;
         target.panel = trayPanel;
@@ -3388,10 +3960,10 @@ void AttachAnchorTracking(Panel const& parent,
 
     g_layoutUpdatedToken = parent.LayoutUpdated(
         [leftMargin, rightMargin](IInspectable const&, IInspectable const&) {
-            if (g_unloading || !g_widget || !g_trackedElement) return;
+            if (g_unloading || !g_widgetBorder || !g_trackedElement) return;
             try {
-                bool visible = g_widget.Visibility() == Visibility::Visible;
-                double width = visible ? g_widget.ActualWidth() : 0.0;
+                bool visible = g_widgetBorder.Visibility() == Visibility::Visible;
+                double width = visible ? g_widgetBorder.ActualWidth() : 0.0;
                 double gap = visible ? width + leftMargin + rightMargin : 0.0;
 
                 auto margin = g_hasTrackedOriginalMargin ? g_trackedOriginalMargin
@@ -3413,9 +3985,9 @@ void AttachAnchorTracking(Panel const& parent,
                 double left = g_trackAnchorOnLeft
                                  ? point.X - gap + leftMargin
                                  : point.X + g_trackedElement.ActualWidth() + leftMargin;
-                auto widgetMargin = g_widget.Margin();
+                auto widgetMargin = g_widgetBorder.Margin();
                 if (std::abs(widgetMargin.Left - left) > 1.0) {
-                    g_widget.Margin(Thickness{left, 0, 0, 0});
+                    g_widgetBorder.Margin(Thickness{left, 0, 0, 0});
                 }
             } catch (...) {
                 g_trackedElement = nullptr;
@@ -3755,13 +4327,12 @@ bool InjectWidget(HWND taskbarWindow) {
         // sitting there from an injection that never got torn down.
         RemoveWidgetFromPanel(target.panel);
 
-        Grid widget = BuildWidgetGrid();
+        Border widget = BuildWidgetGrid();
         // Revoke any LayoutUpdated subscription and restore any pushed-aside anchor
         // margin from the *previous* injection before adopting the new target - a
         // stale handler left running here would fire against the new state below.
         DetachAnchorTracking();
 
-        g_widget = widget;
         g_injectionParent = target.panel;
 
         bool overlay = IsOverlayPosition(position);
@@ -3813,7 +4384,7 @@ bool InjectWidget(HWND taskbarWindow) {
             } else if (position == L"taskbar_right_edge") {
                 widget.HorizontalAlignment(HorizontalAlignment::Right);
                 double right = rightMargin;
-                if (auto trayFrame = FindDirectChildByName(root, L"SystemTrayFrameGrid")) {
+                if (auto trayFrame = FindDescendantByName(root, L"SystemTrayFrameGrid")) {
                     right += trayFrame.ActualWidth() + 4;
                 }
                 widget.Margin(Thickness{static_cast<double>(leftMargin), 0, right, 0});
@@ -3851,10 +4422,12 @@ bool InjectWidget(HWND taskbarWindow) {
 }
 
 bool IsWidgetLive(FrameworkElement const& root, const std::wstring& position) {
-    if (!g_widget || !g_injectionParent) return false;
+    if (!g_widgetBorder || !g_injectionParent) return false;
     if (position != g_lastInjectedPosition) return false;
     try {
-        if (!VisualTreeHelper::GetParent(g_widget)) return false;
+        // g_widget's parent is always g_widgetBorder now, so that check would be
+        // vacuous - g_widgetBorder's parent is the actual target panel.
+        if (!VisualTreeHelper::GetParent(g_widgetBorder)) return false;
         InjectionTarget current = ResolveInjectionTarget(root, position);
         return current.panel && current.panel == g_injectionParent;
     } catch (...) {
@@ -3917,6 +4490,7 @@ PCWSTR MetricProviderName(MetricProvider provider) {
     switch (provider) {
         case MetricProvider::HwInfoSharedMemory: return L"HWiNFO Shared Memory";
         case MetricProvider::HwInfoGadgetRegistry: return L"HWiNFO Gadget Registry";
+        case MetricProvider::LibreHardwareMonitor: return L"LibreHardwareMonitor";
         case MetricProvider::WindowsD3dkmt: return L"Windows D3DKMT";
         case MetricProvider::WindowsThermalZones: return L"Windows thermal zones";
         case MetricProvider::WindowsPowerInformation: return L"NtPowerInformation";
@@ -4344,6 +4918,7 @@ BOOL Wh_ModInit() {
     }
 
     StartInternetWorker();
+    StartLhmWorker();
     return TRUE;
 }
 
@@ -4369,6 +4944,7 @@ void Wh_ModBeforeUninit() {
     StopWatchdogThread();
     StopMetricsWorker();
     StopInternetWorker();
+    StopLhmWorker();
 
     g_uiTornDown = TearDownTaskbarUi();
     if (!g_uiTornDown) Wh_Log(L"Initial taskbar UI teardown failed; will retry");
@@ -4381,5 +4957,6 @@ void Wh_ModUninit() {
     }
     StopMetricsWorker();
     StopInternetWorker();
+    StopLhmWorker();
     CloseMetricSources();
 }

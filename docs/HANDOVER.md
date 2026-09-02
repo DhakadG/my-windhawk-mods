@@ -152,6 +152,7 @@ offered but not yet opened. **Check for replies before doing more work on the fo
 | taskbar-system-info-fork | 1.0.0 | Yevhenii Starychenko | **New — see §9. Verified by script only, not yet installed.** |
 | mac-magnifying-cursor | 1.5.0 | Jaali | Working; suggestion filed as [#5051](https://github.com/ramensoftware/windhawk-mods/issues/5051) |
 | bt-battery-monitor-fork | 1.0.1 | BlackPaw | **Skeleton only — see §6** |
+| tray-hover-expand-plus | 2.3.0 | wygodad | **New.** Installed and driven on 26340. Hover any configured tray icon, not just the chevron. See §15. |
 
 `@author` is `lost_husky` on all of them, with the original author credited in a blockquote
 at the top of each fork's readme. Windhawk has one `@author` field, so origin lives in the
@@ -898,3 +899,62 @@ behind it stays — the panel shows the graph's *extent*, the fill distinguishes
 from the area beneath it. `UpdateSparkline` now populates both from one pass.
 
 Version 1.5.0, all scripts clean. **Not yet verified live.**
+
+## 15. NEW — tray-hover-expand-plus 2.3.0
+
+Fork of wygodad's `tray-hover-expand`. The original opens the hidden-icons chevron flyout on
+hover. This adds the same for **any configured tray icon** (EarTrumpet, the volume button →
+Quick Settings), plus a forgiving cursor path from icon to popup. New mod id, chevron
+settings kept byte-for-byte so its behaviour is unchanged.
+
+**Three things the live tray taught us that no amount of reasoning would have.** All three
+came from `scripts/probes/probe-tray-uia.cpp` and `probe-tray-tree.cpp` against 26340.9233.
+
+1. **A notification icon's UIA bounding rectangle is wrong.** `NotifyItemIcon` reports
+   `(3016,2100 824x60)` — 824px wide, spanning the clock, volume, battery and the media
+   player. `ElementFromPoint` proves the real hit region ends at x≈3060. Hit-testing the
+   reported rectangle fires the wrong item across half the taskbar. Fixed by clipping each
+   candidate at the left edge of the next candidate **on the same row**.
+2. **A tray icon's popup class cannot be predicted.** EarTrumpet's is
+   `HwndWrapper[EarTrumpet.exe;;<guid>]` with a **fresh GUID every time the app starts**. So
+   popup detection has to be discovery, not configuration: menu (`#32768`) → foreground
+   change → newly visible top-level window, with the shell, full-monitor windows, tooltips
+   and anything under 48x32 rejected.
+3. **Quick Settings is not one button.** Network, Volume and Battery are three separate tray
+   elements. Network and Battery share `SystemTray.AccentButton` + `SystemTrayIcon`, so a
+   class+aid rule matches two elements and is correctly refused as ambiguous. Volume is
+   `SystemTray.OmniButtonCenter`, unique, which is what the shipped example matches on.
+
+**Four bugs found only by running it, each visible in a DbgView log.**
+
+- **`ClampCandidates` was row-blind (2.2.0).** With the flyout open its icons are a *grid
+  above* the taskbar. Row-blind clipping cut the chevron from 40px to 8px and inverted the
+  flyout icons' rectangles (`50x-217`). Invalid rect → refresh fails → element dropped →
+  re-find every 250ms, each walk now 47 elements → Explorer hammered → `Invoke` blocking
+  ~2s → close/reopen loop with a 2.3s period. One bug, all four symptoms.
+- **No close hysteresis (2.2.0).** Closing is a toggle, so a toggle landing after the popup
+  has already gone re-opens it. Now the mod must observe the popup actually gone before it
+  may close again.
+- **Stale timestamp across `DoInvoke` (2.3.0).** `openedAt` was stamped with the tick's
+  `now`, captured *before* the cross-process invoke. A slow invoke spent the whole discovery
+  window: logged as `no popup appeared within 1200ms` **61ms** after the open. Re-read the
+  clock after every invoke.
+- **Chevron re-invoked before its flyout appeared (2.3.0).** It has no discovery state, so
+  between invoking and the flyout showing it still looks closed; the cursor leaving the
+  chevron re-arms the hover and the next tick toggles it shut. Logged as four consecutive
+  `OPEN` lines with no `CLOSE`. Fixed with a 1s re-open guard.
+
+**Two popups can overlap.** Quick Settings `(3360,0 480x2095)` sits over EarTrumpet's flyout
+`(3375,924 450x1157)`. A rectangle test alone held EarTrumpet open 7.5s while the user worked
+in Quick Settings. Inside the rectangle the window under the cursor decides — but only a
+window from a **different process** counts, because a XAML flyout hosts its own content in
+sibling top-level windows and treating those as occlusion closes the flyout you just opened.
+
+**Testing.** `scripts/probes/probe-travel-grace.cpp` includes the mod with the Windhawk API
+stubbed and asserts the real `ShouldClose` / `ClampCandidates` against the measured
+geometry — 24 checks covering travel, overshoot, fast flicks, menus, occlusion and the
+flyout-grid regression. `probe-resolve.cpp` runs the real matcher against the live taskbar.
+Both are the fastest way to re-verify after a Windows update.
+
+**Verified:** all four scripts clean, links on x86 / x86-64 / arm64, 24/24 probe checks,
+installed and driven live.

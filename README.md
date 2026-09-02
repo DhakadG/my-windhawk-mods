@@ -38,6 +38,7 @@ the top of each mod's readme.
 | [mac-magnifying-cursor](mods/mac-magnifying-cursor/) | 1.5.0 | [Jaali](https://github.com/alivca) | Shake-to-magnify cursor. |
 | [bt-battery-monitor-fork](mods/bt-battery-monitor-fork/) | 1.1.1 | — | Bluetooth battery levels. |
 | [spicetify-guardian](mods/spicetify-guardian/) | 1.1.0 | — | Keeps a Spicetify install from being undone by a Spotify update. |
+| [tray-hover-expand-plus](mods/tray-hover-expand-plus/) | 2.3.0 | [wygodad](https://github.com/wygodad) | Hidden-icons chevron on hover, plus any configurable tray icon opening its own popup, with a forgiving icon → popup cursor path. |
 
 Only `win-x-hotcorners` is in the public gallery. The rest are personal builds and forks,
 installed from source.

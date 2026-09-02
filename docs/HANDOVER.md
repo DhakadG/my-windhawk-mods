@@ -861,3 +861,40 @@ Version 1.4.0, all scripts clean. **Not yet verified live.**
 **Lesson worth keeping:** when a research pass hands back a caveat about *why* a
 technique might not work, treat it as a requirement, not a footnote. The whole 1.2.0 →
 1.4.0 detour was one unread sentence.
+
+---
+
+## 14. 1.5.0 — content-sized columns and a filled graph area
+
+Two asks, both about polish rather than correctness.
+
+**Dead gaps between label and value.** 1.4.0 gave every cell a fixed pixel width sized
+for the widest string it could *ever* hold ("100.0%"), so a typical "21%" left ~20px of
+empty column. The fix was structural rather than a re-tune of the constants: each panel's
+two rows used to be two separate `Grid`s stacked in a parent, which is why the widths had
+to be hard-coded — two independent Grids with `Auto` columns would size independently and
+the rows would not line up. **Both rows now live in one Grid**, so `Auto` columns become
+usable: a column measures the wider of the CPU and GPU value, both rows are aligned
+because they are literally the same columns, and nothing reserves space it isn't using.
+`CreateComputeRow`/`CreateMemoryRow` became `AddComputeRow`/`AddMemoryRow` writing into
+the shared panel.
+
+This deleted a lot: nine cell-width constants, `ScaledPixelColumn`, the whole
+`g_scaledColumns` registry and the font-size scale factor that existed only to rescale
+those fixed widths (`Auto` follows the glyphs for free), `StarColumn`, `g_memoryBarWidth`,
+and the extras-column sizing loop (an `Auto` column collapses on its own when its cell is
+`Collapsed`). Net ~90 lines removed. The gutter is now one setting, `cellGap`, applied as
+a left margin on the cells that follow another — previously the gutter was slack hidden
+inside each cell's width, which is exactly why it was uneven.
+
+One consequence worth knowing: the capacity bar can no longer be sized from a predicted
+panel width. The track now stretches the row and `UpdateMemoryBar` reads
+`track.ActualWidth()`, which is correct whatever the Auto columns settle on. It reads 0
+before the first layout pass, so the bar is empty for at most one tick after injection.
+
+**Graph area fill.** A `Polygon` behind each `Polyline`, built from the same points plus
+two baseline corners to close the shape (`graphAreaOpacity`, default 16%). The flat panel
+behind it stays — the panel shows the graph's *extent*, the fill distinguishes the line
+from the area beneath it. `UpdateSparkline` now populates both from one pass.
+
+Version 1.5.0, all scripts clean. **Not yet verified live.**

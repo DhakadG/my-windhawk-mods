@@ -2,7 +2,7 @@
 // @id              taskbar-system-info-fork
 // @name            Taskbar System Info - Fork
 // @description     Fork of Taskbar System Info with network throughput, an internet-status dot, HWiNFO- or LibreHardwareMonitor-backed clock/power readings, and real StackPanel/Grid taskbar insertion instead of an overlay.
-// @version         1.4.0
+// @version         1.5.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -75,7 +75,8 @@ anyone who prefers that instead.
 A card-style background box appears **on hover** by default (or always, or never —
 **Background box**), matching how this author's other taskbar forks behave. Thin
 frosted dividers separate the three column groups, and each history graph sits on a
-faint panel so its extent and baseline stay visible when the trace is flat.
+faint panel, with the region under the trace tinted so the line reads against the area
+it covers instead of as a bare squiggle (*Graph area fill opacity*).
 
 ### Why the columns don't shift
 
@@ -92,9 +93,16 @@ Three things together, all configurable:
    `30.0%`, so the digit count never changes either. Leading zeros by default; blank
    figure-spaces and no padding are the alternatives.
 
-Every cell is a fixed pixel width sized to its widest possible string plus a uniform
-gutter, and the panels are the exact sum of their cells, so the widget is as narrow as
-its content allows. Font size, row/column gap, graph width, bar thickness, box padding,
+### Spacing
+
+Columns size themselves to their content rather than reserving room for the widest
+string a cell could ever hold, so there is no dead gap between a label and its value.
+Both rows of a section share one set of columns, so a column is as wide as the wider of
+the two values and the rows stay aligned — a column only changes width when a value
+genuinely needs more room, and with padding on (above) it never needs to. The gutter
+between values is one number, *Gap between values*, applied uniformly.
+
+Font size, row/column gap, gap between values, graph width, bar thickness, box padding,
 corner radius, opacities, colours and per-graph visibility are all settings.
 
 ## Readings
@@ -224,6 +232,11 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
     $name: Column gap between sections (px)
   - graphWidth: 56
     $name: History graph width (px)
+  - cellGap: 8
+    $name: Gap between values (px)
+    $description: >-
+      Default: 8. Columns size themselves to their content, so this single number is
+      the whole of the horizontal spacing between values.
   - barHeight: 3
     $name: RAM/VRAM bar thickness (px)
   $name: Sizing & Spacing
@@ -434,6 +447,11 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
       are visible even when the trace is flat. 0 disables it.
   - graphOpacity: 85
     $name: Graph line opacity (%)
+  - graphAreaOpacity: 16
+    $name: Graph area fill opacity (%)
+    $description: >-
+      Default: 16. Tints the region under the trace so the line reads against the area
+      it covers rather than as a bare squiggle. 0 disables it.
   - showDividers: true
     $name: Show dividers between sections
   - boxMode: hover
@@ -518,6 +536,7 @@ using namespace winrt::Windows::UI::Xaml::Media;
 using XamlPolyline = winrt::Windows::UI::Xaml::Shapes::Polyline;
 using XamlRectangle = winrt::Windows::UI::Xaml::Shapes::Rectangle;
 using XamlEllipse = winrt::Windows::UI::Xaml::Shapes::Ellipse;
+using XamlPolygon = winrt::Windows::UI::Xaml::Shapes::Polygon;
 
 namespace {
 
@@ -534,22 +553,8 @@ constexpr wchar_t kWidgetName[] = L"WindhawkTaskbarSystemInfoFork";
 constexpr double kRowHeight = 17.0;
 constexpr double kTextLineHeight = 13.0;
 constexpr double kGraphHeight = 11.0;
-// Sized for the widest string each cell can hold, in a monospaced 11px face (~6.05px
-// per character), plus a uniform ~6px gutter. Every cell therefore has the same visual
-// spacing rather than each one carrying whatever slack it happened to be given.
-//   label "VRAM" 24 | usage "100.0%" 36 | temp "100°C" 30
-//   extras "4.52GHz 100W" 73 | capacity "24.97/31.78G" 73 | net "353.56 KB/s" 67
-constexpr double kMetricLabelWidth = 26.0;
-constexpr double kMetricUsageWidth = 42.0;
-constexpr double kMetricTempWidth = 36.0;
-constexpr double kExtrasWidth = 80.0;
 constexpr double kGraphLeftGap = 6.0;
-constexpr double kMemoryLabelWidth = 32.0;
-constexpr double kMemoryPercentWidth = 42.0;
-constexpr double kMemoryCapacityWidth = 80.0;
 constexpr double kDotDiameter = 7.0;
-constexpr double kNetArrowWidth = 10.0;
-constexpr double kNetValueWidth = 72.0;
 constexpr uint32_t kHwInfoSignature = 0x53695748;  // "HWiS"
 // HWiNFO shared-memory reading types (SDK-documented, stable across versions).
 constexpr uint32_t kHwInfoReadingTemperature = 1;
@@ -643,6 +648,7 @@ struct ModSettings {
     int rowGap = 2;
     int columnGap = 14;
     int graphWidth = 56;
+    int cellGap = 8;
     int barHeight = 3;
     int updateInterval = 1;
     int historySeconds = 60;
@@ -666,6 +672,7 @@ struct ModSettings {
     bool tabularFigures = true;
     int graphBackgroundOpacity = 10;
     int graphOpacity = 85;
+    int graphAreaOpacity = 16;
     bool showDividers = true;
     BoxMode boxMode = BoxMode::Hover;
     int boxCornerRadius = 6;
@@ -751,15 +758,6 @@ event_token g_timerToken{};
 [[clang::no_destroy]] XamlRectangle g_dividerNet{nullptr};
 [[clang::no_destroy]] XamlRectangle g_dividerPanels{nullptr};
 
-// Fixed-width cells are calibrated for the 11px default font; every one of them is
-// registered here at build time so a font-size change rescales the whole grid in one
-// pass. A settings change does not rebuild the widget, so the definitions have to stay
-// reachable rather than being sized once at construction.
-struct ScaledColumn {
-    ColumnDefinition column{nullptr};
-    double baseWidth = 0.0;
-};
-[[clang::no_destroy]] std::vector<ScaledColumn> g_scaledColumns;
 [[clang::no_destroy]] XamlRectangle g_ramTrack{nullptr};
 [[clang::no_destroy]] XamlRectangle g_ramFill{nullptr};
 [[clang::no_destroy]] XamlRectangle g_vramTrack{nullptr};
@@ -767,15 +765,14 @@ struct ScaledColumn {
 [[clang::no_destroy]] ColumnDefinition g_leftColumn{nullptr};
 [[clang::no_destroy]] ColumnDefinition g_gapColumn{nullptr};
 [[clang::no_destroy]] ColumnDefinition g_rightColumn{nullptr};
-[[clang::no_destroy]] ColumnDefinition g_cpuExtrasColumn{nullptr};
-[[clang::no_destroy]] ColumnDefinition g_gpuExtrasColumn{nullptr};
+[[clang::no_destroy]] XamlPolygon g_cpuGraphArea{nullptr};
+[[clang::no_destroy]] XamlPolygon g_gpuGraphArea{nullptr};
 [[clang::no_destroy]] ColumnDefinition g_netGapColumn{nullptr};
 [[clang::no_destroy]] ColumnDefinition g_netColumnDef{nullptr};
 [[clang::no_destroy]] RowDefinition g_leftGapRow{nullptr};
 [[clang::no_destroy]] RowDefinition g_rightGapRow{nullptr};
 [[clang::no_destroy]] RowDefinition g_netGapRow{nullptr};
 double g_graphWidth = 96.0;
-double g_memoryBarWidth = 120.0;
 
 std::deque<double> g_cpuHistory;
 std::deque<double> g_gpuHistory;
@@ -938,6 +935,7 @@ void LoadSettings() {
     settings.rowGap = std::clamp(Wh_GetIntSetting(L"Sizing.rowGap"), 0, 40);
     settings.columnGap = std::clamp(Wh_GetIntSetting(L"Sizing.columnGap"), 0, 100);
     settings.graphWidth = std::clamp(Wh_GetIntSetting(L"Sizing.graphWidth"), 20, 400);
+    settings.cellGap = std::clamp(Wh_GetIntSetting(L"Sizing.cellGap"), 0, 40);
     settings.barHeight = std::clamp(Wh_GetIntSetting(L"Sizing.barHeight"), 1, 6);
     settings.updateInterval =
         std::clamp(Wh_GetIntSetting(L"Metrics.updateInterval"), 1, 10);
@@ -974,6 +972,8 @@ void LoadSettings() {
         std::clamp(Wh_GetIntSetting(L"Appearance.graphBackgroundOpacity"), 0, 100);
     settings.graphOpacity =
         std::clamp(Wh_GetIntSetting(L"Appearance.graphOpacity"), 0, 100);
+    settings.graphAreaOpacity =
+        std::clamp(Wh_GetIntSetting(L"Appearance.graphAreaOpacity"), 0, 100);
     settings.showDividers = Wh_GetIntSetting(L"Appearance.showDividers") != 0;
     settings.boxMode = ParseBoxMode(GetStringSetting(L"Appearance.boxMode"));
     settings.boxCornerRadius =
@@ -3192,13 +3192,23 @@ void AppendHistory(std::deque<double>& history, double value, size_t capacity) {
     while (history.size() > capacity) history.pop_front();
 }
 
-void UpdateSparkline(XamlPolyline graph, const std::deque<double>& history, size_t capacity) {
+// Builds the trace and, from the same points, the closed region beneath it. The fill
+// is what separates "the line" from "the area under the line" - without it a sparkline
+// on a panel reads as a stray squiggle rather than a level.
+void UpdateSparkline(XamlPolyline graph,
+                     XamlPolygon area,
+                     const std::deque<double>& history,
+                     size_t capacity) {
     if (!graph) return;
 
-    auto points = graph.Points();
-    points.Clear();
-    if (history.size() < 2 || capacity < 2 || g_graphWidth <= 1.0) {
+    auto hide = [&] {
         graph.Visibility(Visibility::Collapsed);
+        if (area) area.Visibility(Visibility::Collapsed);
+    };
+    graph.Points().Clear();
+    if (area) area.Points().Clear();
+    if (history.size() < 2 || capacity < 2 || g_graphWidth <= 1.0) {
+        hide();
         return;
     }
 
@@ -3206,23 +3216,38 @@ void UpdateSparkline(XamlPolyline graph, const std::deque<double>& history, size
     double usableHeight = kGraphHeight - verticalPadding * 2.0;
     double step = g_graphWidth / static_cast<double>(capacity - 1);
     double firstX = g_graphWidth - step * static_cast<double>(history.size() - 1);
+    double lastX = firstX;
     for (size_t i = 0; i < history.size(); i++) {
         double x = firstX + step * static_cast<double>(i);
         double y = verticalPadding + (100.0 - std::clamp(history[i], 0.0, 100.0)) /
                                          100.0 * usableHeight;
-        points.Append(Point{static_cast<float>(x), static_cast<float>(y)});
+        Point p{static_cast<float>(x), static_cast<float>(y)};
+        graph.Points().Append(p);
+        if (area) area.Points().Append(p);
+        lastX = x;
+    }
+    if (area) {
+        // Drop to the baseline at both ends to close the shape under the trace.
+        area.Points().Append(
+            Point{static_cast<float>(lastX), static_cast<float>(kGraphHeight)});
+        area.Points().Append(
+            Point{static_cast<float>(firstX), static_cast<float>(kGraphHeight)});
+        area.Visibility(Visibility::Visible);
     }
     graph.Visibility(Visibility::Visible);
 }
 
 void UpdateMemoryBar(XamlRectangle fill,
+                     XamlRectangle track,
                      double percent,
                      bool available,
                      AlertLevel alert,
                      const ModSettings& settings) {
     if (!fill) return;
-    fill.Width(available ? g_memoryBarWidth * std::clamp(percent, 0.0, 100.0) / 100.0
-                         : 0.0);
+    // The track stretches across the whole row, so whatever width the Auto columns
+    // settled on this pass is already measured on it - no need to predict the panel.
+    double full = track ? track.ActualWidth() : 0.0;
+    fill.Width(available ? full * std::clamp(percent, 0.0, 100.0) / 100.0 : 0.0);
     fill.Fill(AlertBrush(alert, settings));
 }
 
@@ -3331,21 +3356,11 @@ void ApplyBoxBackground(const ModSettings& settings) {
 void ApplyWidgetGeometry(const ModSettings& settings) {
     if (!g_widget || !g_widgetBorder) return;
 
-    // Widths are the sum of what each column actually needs, not a ratio of some
-    // overall figure - every cell is a fixed pixel width holding padded, fixed-shape
-    // text, so deriving the panel from its parts leaves no slack anywhere and keeps
-    // the widget as narrow as its content allows. Cells scale with the font size,
-    // since the constants are calibrated for the 11px default.
-    double scale = static_cast<double>(settings.fontSize) / 11.0;
-    double extrasWidth = settings.showClockPower ? kExtrasWidth * scale : 0.0;
+    // No predicted widths any more: every cell column is Auto, so each one measures
+    // its own content and the panel is exactly the sum of what is actually on screen.
+    // Font size needs no scaling factor either - Auto follows the glyphs.
     bool anyGraph = settings.showCpuGraph || settings.showGpuGraph;
     g_graphWidth = anyGraph ? static_cast<double>(settings.graphWidth) : 0.0;
-    double leftWidth = (kMetricLabelWidth + kMetricUsageWidth + kMetricTempWidth) * scale +
-                       extrasWidth + (anyGraph ? kGraphLeftGap + g_graphWidth : 0.0);
-    double rightWidth =
-        (kMemoryLabelWidth + kMemoryPercentWidth + kMemoryCapacityWidth) * scale;
-    // The capacity bar underlines the whole RAM/VRAM row rather than a sub-range of it.
-    g_memoryBarWidth = rightWidth;
 
     g_widgetBorder.MinWidth(settings.widthMin);
     g_widgetBorder.MaxWidth(settings.widthMax > 0 ? settings.widthMax
@@ -3369,16 +3384,19 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
 
     ApplyBoxBackground(settings);
 
-    if (g_leftColumn) g_leftColumn.Width(GridLength{leftWidth, GridUnitType::Pixel});
     if (g_gapColumn) {
         g_gapColumn.Width(GridLength{static_cast<double>(settings.columnGap),
                                      GridUnitType::Pixel});
     }
-    if (g_rightColumn) g_rightColumn.Width(GridLength{rightWidth, GridUnitType::Pixel});
-    for (const ScaledColumn& sc : g_scaledColumns) {
-        if (sc.column) {
-            sc.column.Width(GridLength{sc.baseWidth * scale, GridUnitType::Pixel});
-        }
+    // Auto columns sit flush against each other, so the gutter is an explicit margin on
+    // the cells that follow another one. This is the whole of the horizontal spacing:
+    // one number, applied uniformly, instead of slack hidden in per-cell widths.
+    double cellGap = static_cast<double>(settings.cellGap);
+    for (TextBlock cell : {g_cpuUsageText, g_cpuTempText, g_cpuExtrasText,
+                           g_gpuUsageText, g_gpuTempText, g_gpuExtrasText,
+                           g_ramPercentText, g_ramCapacityText, g_vramPercentText,
+                           g_vramCapacityText, g_netUpText, g_netDownText}) {
+        if (cell) cell.Margin(Thickness{cellGap, 0, 0, 0});
     }
     for (RowDefinition row : {g_leftGapRow, g_rightGapRow, g_netGapRow}) {
         if (row) {
@@ -3387,14 +3405,11 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
     }
 
     bool showNetColumn = settings.showNetwork || settings.showInternetStatus;
-    double netWidth =
-        showNetColumn ? kDotDiameter + 4 + (kNetArrowWidth + kNetValueWidth) * scale : 0.0;
     if (g_netGapColumn) {
         g_netGapColumn.Width(GridLength{
             showNetColumn ? static_cast<double>(settings.columnGap) : 0.0,
             GridUnitType::Pixel});
     }
-    if (g_netColumnDef) g_netColumnDef.Width(GridLength{netWidth, GridUnitType::Pixel});
     if (g_netDownText) {
         g_netDownText.Visibility(settings.showNetwork ? Visibility::Visible
                                                        : Visibility::Collapsed);
@@ -3433,9 +3448,6 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
         bar.RadiusX(barH / 2);
         bar.RadiusY(barH / 2);
     }
-    for (XamlRectangle track : {g_ramTrack, g_vramTrack}) {
-        if (track) track.Width(g_memoryBarWidth);
-    }
     for (XamlRectangle background : {g_cpuGraphBackground, g_gpuGraphBackground}) {
         if (!background) continue;
         background.Width(g_graphWidth);
@@ -3444,14 +3456,16 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
                                   ? Visibility::Visible
                                   : Visibility::Collapsed);
     }
+    for (XamlPolygon area : {g_cpuGraphArea, g_gpuGraphArea}) {
+        if (!area) continue;
+        area.Width(g_graphWidth);
+        area.Height(kGraphHeight);
+    }
     for (TextBlock extras : {g_cpuExtrasText, g_gpuExtrasText}) {
         if (extras) {
             extras.Visibility(settings.showClockPower ? Visibility::Visible
                                                        : Visibility::Collapsed);
         }
-    }
-    for (ColumnDefinition column : {g_cpuExtrasColumn, g_gpuExtrasColumn}) {
-        if (column) column.Width(GridLength{extrasWidth, GridUnitType::Pixel});
     }
 }
 
@@ -3495,6 +3509,12 @@ void ApplyWidgetSettings() {
             background.Opacity(settings.graphBackgroundOpacity / 100.0);
         }
     }
+    for (XamlPolygon area : {g_cpuGraphArea, g_gpuGraphArea}) {
+        if (area) {
+            area.Fill(graphBrush);
+            area.Opacity(settings.graphAreaOpacity / 100.0);
+        }
+    }
     for (XamlRectangle divider : {g_dividerNet, g_dividerPanels}) {
         if (divider) {
             divider.Visibility(settings.showDividers ? Visibility::Visible
@@ -3518,8 +3538,8 @@ void ApplyWidgetSettings() {
     size_t capacity = HistoryCapacity(settings);
     while (g_cpuHistory.size() > capacity) g_cpuHistory.pop_front();
     while (g_gpuHistory.size() > capacity) g_gpuHistory.pop_front();
-    UpdateSparkline(g_cpuGraph, g_cpuHistory, capacity);
-    UpdateSparkline(g_gpuGraph, g_gpuHistory, capacity);
+    UpdateSparkline(g_cpuGraph, g_cpuGraphArea, g_cpuHistory, capacity);
+    UpdateSparkline(g_gpuGraph, g_gpuGraphArea, g_gpuHistory, capacity);
 
     if (g_timer) g_timer.Interval(std::chrono::seconds(settings.updateInterval));
 }
@@ -3637,12 +3657,16 @@ void UpdateWidgetText() {
         size_t historyCapacity = HistoryCapacity(settings);
         AppendHistory(g_cpuHistory, snapshot.cpu, historyCapacity);
         if (snapshot.gpuAvailable) AppendHistory(g_gpuHistory, snapshot.gpu, historyCapacity);
-        if (settings.showCpuGraph) UpdateSparkline(g_cpuGraph, g_cpuHistory, historyCapacity);
-        if (settings.showGpuGraph) UpdateSparkline(g_gpuGraph, g_gpuHistory, historyCapacity);
+        if (settings.showCpuGraph) {
+            UpdateSparkline(g_cpuGraph, g_cpuGraphArea, g_cpuHistory, historyCapacity);
+        }
+        if (settings.showGpuGraph) {
+            UpdateSparkline(g_gpuGraph, g_gpuGraphArea, g_gpuHistory, historyCapacity);
+        }
         g_lastRenderedMetricsSequence = metricsSequence;
     }
-    UpdateMemoryBar(g_ramFill, snapshot.ram, true, g_ramAlert, settings);
-    UpdateMemoryBar(g_vramFill, snapshot.vram, snapshot.vramAvailable, g_vramAlert, settings);
+    UpdateMemoryBar(g_ramFill, g_ramTrack, snapshot.ram, true, g_ramAlert, settings);
+    UpdateMemoryBar(g_vramFill, g_vramTrack, snapshot.vram, snapshot.vramAvailable, g_vramAlert, settings);
 }
 
 void EnsureTimer() {
@@ -3667,21 +3691,15 @@ ColumnDefinition PixelColumn(double width) {
     return column;
 }
 
-ColumnDefinition StarColumn() {
-    ColumnDefinition column;
-    column.Width(GridLength{1, GridUnitType::Star});
-    return column;
-}
-
 RowDefinition PixelRow(double height) {
     RowDefinition row;
     row.Height(GridLength{height, GridUnitType::Pixel});
     return row;
 }
 
-ColumnDefinition ScaledPixelColumn(double baseWidth) {
-    ColumnDefinition column = PixelColumn(baseWidth);
-    g_scaledColumns.push_back({column, baseWidth});
+ColumnDefinition AutoColumn() {
+    ColumnDefinition column;
+    column.Width(GridLength{0, GridUnitType::Auto});
     return column;
 }
 
@@ -3689,7 +3707,6 @@ TextBlock CreateCellText(PCWSTR name, TextAlignment alignment) {
     TextBlock text;
     text.Name(name);
     text.HorizontalAlignment(HorizontalAlignment::Stretch);
-    text.VerticalAlignment(VerticalAlignment::Center);
     text.TextAlignment(alignment);
     text.TextWrapping(TextWrapping::NoWrap);
     text.TextTrimming(TextTrimming::None);
@@ -3697,108 +3714,92 @@ TextBlock CreateCellText(PCWSTR name, TextAlignment alignment) {
     return text;
 }
 
-// CPU/GPU row: Label | Usage% | Temp | Clock·Power (optional) | history graph (flex).
-Grid CreateComputeRow(PCWSTR label,
-                      PCWSTR prefix,
-                      TextBlock& labelText,
-                      TextBlock& usageText,
-                      TextBlock& temperatureText,
-                      TextBlock& extrasText,
-                      XamlPolyline& graph,
-                      XamlRectangle& graphBackground,
-                      ColumnDefinition& extrasColumn) {
-    Grid row;
-    row.Height(kRowHeight);
-    row.IsHitTestVisible(false);
-
-    row.ColumnDefinitions().Append(ScaledPixelColumn(kMetricLabelWidth));
-    row.ColumnDefinitions().Append(ScaledPixelColumn(kMetricUsageWidth));
-    row.ColumnDefinitions().Append(ScaledPixelColumn(kMetricTempWidth));
-    extrasColumn = PixelColumn(kExtrasWidth);
-    row.ColumnDefinitions().Append(extrasColumn);
-    row.ColumnDefinitions().Append(StarColumn());
-
+// Both compute rows are placed into one shared Grid rather than each getting its own.
+// That is what lets the columns be Auto: they size to the widest value across CPU and
+// GPU together, so a cell is only ever as wide as its content actually needs, and the
+// two rows stay aligned because they are literally the same columns. Fixed worst-case
+// widths were what left the dead gap between "CPU" and its percentage.
+void AddComputeRow(Grid panel,
+                   int row,
+                   PCWSTR label,
+                   PCWSTR prefix,
+                   TextBlock& labelText,
+                   TextBlock& usageText,
+                   TextBlock& temperatureText,
+                   TextBlock& extrasText,
+                   XamlPolyline& graph,
+                   XamlPolygon& graphArea,
+                   XamlRectangle& graphBackground) {
     labelText = CreateCellText((std::wstring(prefix) + L"Label").c_str(),
                                TextAlignment::Left);
     labelText.Text(label);
-
     usageText = CreateCellText((std::wstring(prefix) + L"Usage").c_str(),
                                TextAlignment::Right);
     usageText.Text(L"--%");
-
     temperatureText = CreateCellText((std::wstring(prefix) + L"Temperature").c_str(),
                                      TextAlignment::Right);
-    temperatureText.Text(L"--°C");
-
+    temperatureText.Text(L"--\u00B0C");
     extrasText = CreateCellText((std::wstring(prefix) + L"Extras").c_str(),
                                 TextAlignment::Right);
     extrasText.Text(L"--");
-    extrasText.Margin(Thickness{4, 0, 0, 0});
 
-    // A faint panel behind the trace so the graph's extent and baseline stay legible
-    // even when the line is flat against the bottom.
+    // Faint panel marking the graph's extent, the filled region under the trace, then
+    // the trace itself - painted in that order so each sits on top of the last.
     graphBackground = XamlRectangle();
     graphBackground.Name((std::wstring(prefix) + L"GraphBg").c_str());
-    graphBackground.HorizontalAlignment(HorizontalAlignment::Left);
-    graphBackground.VerticalAlignment(VerticalAlignment::Top);
-    graphBackground.Margin(Thickness{kGraphLeftGap, 1, 0, 0});
     graphBackground.RadiusX(2);
     graphBackground.RadiusY(2);
-    graphBackground.IsHitTestVisible(false);
-
+    graphArea = XamlPolygon();
+    graphArea.Name((std::wstring(prefix) + L"GraphArea").c_str());
     graph = XamlPolyline();
     graph.Name((std::wstring(prefix) + L"History").c_str());
-    graph.HorizontalAlignment(HorizontalAlignment::Left);
-    graph.VerticalAlignment(VerticalAlignment::Top);
-    graph.Margin(Thickness{kGraphLeftGap, 1, 0, 0});
-    graph.Stretch(Stretch::None);
-    graph.IsHitTestVisible(false);
+    for (Shapes::Shape shape : {graphBackground.as<Shapes::Shape>(),
+                                graphArea.as<Shapes::Shape>(),
+                                graph.as<Shapes::Shape>()}) {
+        shape.HorizontalAlignment(HorizontalAlignment::Left);
+        shape.VerticalAlignment(VerticalAlignment::Top);
+        shape.Margin(Thickness{kGraphLeftGap, 1, 0, 0});
+        shape.Stretch(Stretch::None);
+        shape.IsHitTestVisible(false);
+        Grid::SetRow(shape, row);
+        Grid::SetColumn(shape, 4);
+        panel.Children().Append(shape);
+    }
 
-    Grid::SetColumn(labelText, 0);
-    Grid::SetColumn(usageText, 1);
-    Grid::SetColumn(temperatureText, 2);
-    Grid::SetColumn(extrasText, 3);
-    Grid::SetColumn(graphBackground, 4);
-    Grid::SetColumn(graph, 4);
-    row.Children().Append(labelText);
-    row.Children().Append(usageText);
-    row.Children().Append(temperatureText);
-    row.Children().Append(extrasText);
-    row.Children().Append(graphBackground);
-    row.Children().Append(graph);
-    return row;
+    TextBlock cells[] = {labelText, usageText, temperatureText, extrasText};
+    for (int i = 0; i < 4; i++) {
+        Grid::SetRow(cells[i], row);
+        Grid::SetColumn(cells[i], i);
+        panel.Children().Append(cells[i]);
+    }
 }
 
-// RAM/VRAM row: Label | Percent | Capacity, with a thin capacity bar spanning under all
-// three - unchanged from the base mod's shape.
-Grid CreateMemoryRow(PCWSTR label,
-                     PCWSTR prefix,
-                     TextBlock& labelText,
-                     TextBlock& percentText,
-                     TextBlock& capacityText,
-                     XamlRectangle& track,
-                     XamlRectangle& fill) {
-    Grid row;
-    row.Height(kRowHeight);
-    row.IsHitTestVisible(false);
-
-    row.ColumnDefinitions().Append(ScaledPixelColumn(kMemoryLabelWidth));
-    row.ColumnDefinitions().Append(ScaledPixelColumn(kMemoryPercentWidth));
-    row.ColumnDefinitions().Append(StarColumn());
-
-    // Bottom-aligned in the strip below the text band, never overlapping the glyphs.
-    // Height and radius are set from settings in ApplyWidgetGeometry.
+// RAM/VRAM row into the shared memory panel, same Auto-column reasoning as above. The
+// capacity bar stretches the full row width; its fill is sized from the track's
+// measured width at update time, since Auto columns decide that only after layout.
+void AddMemoryRow(Grid panel,
+                  int row,
+                  PCWSTR label,
+                  PCWSTR prefix,
+                  TextBlock& labelText,
+                  TextBlock& percentText,
+                  TextBlock& capacityText,
+                  XamlRectangle& track,
+                  XamlRectangle& fill) {
     track = XamlRectangle();
     track.Name((std::wstring(prefix) + L"Track").c_str());
-    track.HorizontalAlignment(HorizontalAlignment::Left);
-    track.VerticalAlignment(VerticalAlignment::Bottom);
-    track.IsHitTestVisible(false);
-
+    track.HorizontalAlignment(HorizontalAlignment::Stretch);
     fill = XamlRectangle();
     fill.Name((std::wstring(prefix) + L"Fill").c_str());
     fill.HorizontalAlignment(HorizontalAlignment::Left);
-    fill.VerticalAlignment(VerticalAlignment::Bottom);
-    fill.IsHitTestVisible(false);
+    for (XamlRectangle bar : {track, fill}) {
+        bar.VerticalAlignment(VerticalAlignment::Bottom);
+        bar.IsHitTestVisible(false);
+        Grid::SetRow(bar, row);
+        Grid::SetColumn(bar, 0);
+        Grid::SetColumnSpan(bar, 3);
+        panel.Children().Append(bar);
+    }
 
     labelText =
         CreateCellText((std::wstring(prefix) + L"Label").c_str(), TextAlignment::Left);
@@ -3810,17 +3811,12 @@ Grid CreateMemoryRow(PCWSTR label,
                                   TextAlignment::Right);
     capacityText.Text(L"--/--G");
 
-    Grid::SetColumnSpan(track, 3);
-    Grid::SetColumnSpan(fill, 3);
-    Grid::SetColumn(labelText, 0);
-    Grid::SetColumn(percentText, 1);
-    Grid::SetColumn(capacityText, 2);
-    row.Children().Append(track);
-    row.Children().Append(fill);
-    row.Children().Append(labelText);
-    row.Children().Append(percentText);
-    row.Children().Append(capacityText);
-    return row;
+    TextBlock cells[] = {labelText, percentText, capacityText};
+    for (int i = 0; i < 3; i++) {
+        Grid::SetRow(cells[i], row);
+        Grid::SetColumn(cells[i], i);
+        panel.Children().Append(cells[i]);
+    }
 }
 
 // A column, not a third row: up/down stacked over the same two-row height as the
@@ -3839,8 +3835,8 @@ Grid CreateNetworkColumn() {
     // arrows from drifting as the number beside them changes width, and provides the
     // arrow-to-value gap without padding either string.
     column.ColumnDefinitions().Append(PixelColumn(kDotDiameter + 4));
-    column.ColumnDefinitions().Append(ScaledPixelColumn(kNetArrowWidth));
-    column.ColumnDefinitions().Append(StarColumn());
+    column.ColumnDefinitions().Append(AutoColumn());
+    column.ColumnDefinitions().Append(AutoColumn());
 
     g_netDot = XamlEllipse();
     g_netDot.Name(L"InternetDot");
@@ -4000,14 +3996,13 @@ void RemoveWidget() {
     g_leftColumn = nullptr;
     g_gapColumn = nullptr;
     g_rightColumn = nullptr;
-    g_cpuExtrasColumn = nullptr;
-    g_gpuExtrasColumn = nullptr;
+    g_cpuGraphArea = nullptr;
+    g_gpuGraphArea = nullptr;
     g_netGapColumn = nullptr;
     g_netColumnDef = nullptr;
     g_leftGapRow = nullptr;
     g_rightGapRow = nullptr;
     g_netGapRow = nullptr;
-    g_scaledColumns.clear();
     g_cpuHistory.clear();
     g_gpuHistory.clear();
     g_lastRenderedMetricsSequence = 0;
@@ -4049,19 +4044,17 @@ XamlRectangle CreateColumnDivider(PCWSTR name) {
 }
 
 Border BuildWidgetGrid() {
-    g_scaledColumns.clear();
-
     Grid widget;
     widget.IsHitTestVisible(false);
     widget.VerticalAlignment(VerticalAlignment::Center);
 
     // Column order left to right: network/status, CPU+GPU, RAM+VRAM - the network
     // column comes first per the user's own taskbar-clock-customization-v3 layout.
-    g_netColumnDef = ColumnDefinition();
+    g_netColumnDef = AutoColumn();
     g_netGapColumn = ColumnDefinition();
-    g_leftColumn = ColumnDefinition();
+    g_leftColumn = AutoColumn();
     g_gapColumn = ColumnDefinition();
-    g_rightColumn = ColumnDefinition();
+    g_rightColumn = AutoColumn();
     widget.ColumnDefinitions().Append(g_netColumnDef);
     widget.ColumnDefinitions().Append(g_netGapColumn);
     widget.ColumnDefinitions().Append(g_leftColumn);
@@ -4074,17 +4067,13 @@ Border BuildWidgetGrid() {
     leftPanel.RowDefinitions().Append(PixelRow(kRowHeight));
     leftPanel.RowDefinitions().Append(g_leftGapRow);
     leftPanel.RowDefinitions().Append(PixelRow(kRowHeight));
-
-    Grid cpuRow = CreateComputeRow(L"CPU", L"Cpu", g_cpuLabel, g_cpuUsageText,
-                                   g_cpuTempText, g_cpuExtrasText, g_cpuGraph,
-                                   g_cpuGraphBackground, g_cpuExtrasColumn);
-    Grid gpuRow = CreateComputeRow(L"GPU", L"Gpu", g_gpuLabel, g_gpuUsageText,
-                                   g_gpuTempText, g_gpuExtrasText, g_gpuGraph,
-                                   g_gpuGraphBackground, g_gpuExtrasColumn);
-    Grid::SetRow(cpuRow, 0);
-    Grid::SetRow(gpuRow, 2);
-    leftPanel.Children().Append(cpuRow);
-    leftPanel.Children().Append(gpuRow);
+    for (int i = 0; i < 5; i++) leftPanel.ColumnDefinitions().Append(AutoColumn());
+    AddComputeRow(leftPanel, 0, L"CPU", L"Cpu", g_cpuLabel, g_cpuUsageText,
+                  g_cpuTempText, g_cpuExtrasText, g_cpuGraph, g_cpuGraphArea,
+                  g_cpuGraphBackground);
+    AddComputeRow(leftPanel, 2, L"GPU", L"Gpu", g_gpuLabel, g_gpuUsageText,
+                  g_gpuTempText, g_gpuExtrasText, g_gpuGraph, g_gpuGraphArea,
+                  g_gpuGraphBackground);
 
     Grid rightPanel;
     rightPanel.IsHitTestVisible(false);
@@ -4092,15 +4081,11 @@ Border BuildWidgetGrid() {
     rightPanel.RowDefinitions().Append(PixelRow(kRowHeight));
     rightPanel.RowDefinitions().Append(g_rightGapRow);
     rightPanel.RowDefinitions().Append(PixelRow(kRowHeight));
-
-    Grid ramRow = CreateMemoryRow(L"RAM", L"Ram", g_ramLabel, g_ramPercentText,
-                                  g_ramCapacityText, g_ramTrack, g_ramFill);
-    Grid vramRow = CreateMemoryRow(L"VRAM", L"Vram", g_vramLabel, g_vramPercentText,
-                                   g_vramCapacityText, g_vramTrack, g_vramFill);
-    Grid::SetRow(ramRow, 0);
-    Grid::SetRow(vramRow, 2);
-    rightPanel.Children().Append(ramRow);
-    rightPanel.Children().Append(vramRow);
+    for (int i = 0; i < 3; i++) rightPanel.ColumnDefinitions().Append(AutoColumn());
+    AddMemoryRow(rightPanel, 0, L"RAM", L"Ram", g_ramLabel, g_ramPercentText,
+                 g_ramCapacityText, g_ramTrack, g_ramFill);
+    AddMemoryRow(rightPanel, 2, L"VRAM", L"Vram", g_vramLabel, g_vramPercentText,
+                 g_vramCapacityText, g_vramTrack, g_vramFill);
 
     Grid netColumn = CreateNetworkColumn();
 

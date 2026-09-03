@@ -2,7 +2,7 @@
 // @id              taskbar-system-info-fork
 // @name            Taskbar System Info - Fork
 // @description     Fork of Taskbar System Info with network throughput, an internet-status dot, HWiNFO- or LibreHardwareMonitor-backed clock/power readings, and real StackPanel/Grid taskbar insertion instead of an overlay.
-// @version         1.5.0
+// @version         1.6.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -92,6 +92,21 @@ Three things together, all configurable:
 3. **Padding to a constant digit count** (*Number padding*) — `030.0%` rather than
    `30.0%`, so the digit count never changes either. Leading zeros by default; blank
    figure-spaces and no padding are the alternatives.
+
+### Hiding readings
+
+Every reading has its own switch under **Visible Fields** — usage, temperature,
+frequency, power and the history graph for CPU and GPU separately; percentage,
+used/total and the capacity bar for RAM and VRAM separately. Each row also has a master
+switch.
+
+Hiding is not cosmetic. Because columns size to their content, a hidden field closes its
+gap rather than leaving a hole, and a row with nothing left in it gives up its height
+and its gap entirely — so does a whole section, along with the divider beside it. Turn
+off the GPU row and VRAM together and the mod stops enumerating the adapter and drops
+the `GPU Engine` and `GPU Adapter Memory` performance counters, which is what actually
+makes it stop monitoring the GPU rather than just hiding the numbers. The same applies
+to temperature and clock/power sensors: nothing visible needs them, nothing reads them.
 
 ### Spacing
 
@@ -248,10 +263,6 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
   - historySeconds: 60
     $name: Graph history (seconds)
     $description: 'Default: 60. From 15 to 180 seconds.'
-  - showCpuGraph: true
-    $name: Show CPU history graph
-  - showGpuGraph: true
-    $name: Show GPU history graph
   - gpuAdapter: ""
     $name: GPU adapter filter
     $description: 'Optional partial adapter name. Empty selects the adapter with the most dedicated VRAM.'
@@ -273,6 +284,59 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
       - none: 'None (7.8%)'
   $name: Metrics
 
+- Display:
+  - showCpuRow: true
+    $name: CPU row
+    $description: >-
+      Master switch for the CPU line. Off hides the whole row and stops reading
+      anything only it needed.
+  - showCpuUsage: true
+    $name: "CPU: usage"
+  - showCpuTemp: true
+    $name: "CPU: temperature"
+  - showCpuClock: true
+    $name: "CPU: frequency"
+  - showCpuPower: true
+    $name: "CPU: power"
+  - showCpuGraph: true
+    $name: "CPU: history graph"
+  - showGpuRow: true
+    $name: GPU row
+    $description: >-
+      Master switch for the GPU line. Off with VRAM also off stops the GPU performance
+      counters entirely - the way to turn GPU monitoring off altogether.
+  - showGpuUsage: true
+    $name: "GPU: usage"
+  - showGpuTemp: true
+    $name: "GPU: temperature"
+  - showGpuClock: true
+    $name: "GPU: frequency"
+  - showGpuPower: true
+    $name: "GPU: power"
+  - showGpuGraph: true
+    $name: "GPU: history graph"
+  - showRamRow: true
+    $name: RAM row
+  - showRamPercent: true
+    $name: "RAM: percentage"
+  - showRamCapacity: true
+    $name: "RAM: used/total"
+  - showRamBar: true
+    $name: "RAM: capacity bar"
+  - showVramRow: true
+    $name: VRAM row
+  - showVramPercent: true
+    $name: "VRAM: percentage"
+  - showVramCapacity: true
+    $name: "VRAM: used/total"
+  - showVramBar: true
+    $name: "VRAM: capacity bar"
+  $name: Visible Fields
+  $description: >-
+    Every reading can be hidden on its own. Columns size to what is left, so hiding a
+    field closes its gap rather than leaving a hole, and a row whose fields are all
+    hidden takes no vertical space at all.
+
 - Network:
   - showNetwork: true
     $name: Show network throughput
@@ -293,7 +357,18 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
 
 - InternetStatus:
   - showInternetStatus: true
-    $name: Show internet-status dot
+    $name: Show internet-status indicator
+  - netDotShape: circle
+    $name: Indicator shape
+    $options:
+      - circle: Circle
+      - rounded: Rounded square
+      - square: Square
+      - bar: Vertical bar
+  - netDotMarginLeft: 0
+    $name: Indicator gap on the left (px)
+  - netDotMarginRight: 4
+    $name: Indicator gap on the right (px)
   - primaryHost: 8.8.8.8
     $name: Primary check host
   - secondaryHost: 1.1.1.1
@@ -345,11 +420,6 @@ Yevhenii Starychenko. Released under GPL-3.0, as required by that license.
   $name: Temperature
 
 - ExtraSensors:
-  - showClockPower: true
-    $name: Show CPU/GPU clock and power
-    $description: >-
-      Default: true. CPU clock falls back to NtPowerInformation without HWiNFO or LHM;
-      GPU clock and both power readings need HWiNFO or LibreHardwareMonitor.
   - extraSensorsSource: auto
     $name: Clock/power source
     $description: >-
@@ -535,7 +605,6 @@ using namespace winrt::Windows::UI::Xaml::Controls;
 using namespace winrt::Windows::UI::Xaml::Media;
 using XamlPolyline = winrt::Windows::UI::Xaml::Shapes::Polyline;
 using XamlRectangle = winrt::Windows::UI::Xaml::Shapes::Rectangle;
-using XamlEllipse = winrt::Windows::UI::Xaml::Shapes::Ellipse;
 using XamlPolygon = winrt::Windows::UI::Xaml::Shapes::Polygon;
 
 namespace {
@@ -554,7 +623,7 @@ constexpr double kRowHeight = 17.0;
 constexpr double kTextLineHeight = 13.0;
 constexpr double kGraphHeight = 11.0;
 constexpr double kGraphLeftGap = 6.0;
-constexpr double kDotDiameter = 7.0;
+constexpr double kDotSize = 7.0;
 constexpr uint32_t kHwInfoSignature = 0x53695748;  // "HWiS"
 // HWiNFO shared-memory reading types (SDK-documented, stable across versions).
 constexpr uint32_t kHwInfoReadingTemperature = 1;
@@ -597,6 +666,13 @@ enum class BoxMode {
     Hover,
     Always,
     None,
+};
+
+enum class DotShape {
+    Circle,
+    Rounded,
+    Square,
+    Bar,
 };
 
 enum class NumberPadding {
@@ -652,17 +728,37 @@ struct ModSettings {
     int barHeight = 3;
     int updateInterval = 1;
     int historySeconds = 60;
+    bool showCpuRow = true;
+    bool showCpuUsage = true;
+    bool showCpuTemp = true;
+    bool showCpuClock = true;
+    bool showCpuPower = true;
     bool showCpuGraph = true;
+    bool showGpuRow = true;
+    bool showGpuUsage = true;
+    bool showGpuTemp = true;
+    bool showGpuClock = true;
+    bool showGpuPower = true;
     bool showGpuGraph = true;
+    bool showRamRow = true;
+    bool showRamPercent = true;
+    bool showRamCapacity = true;
+    bool showRamBar = true;
+    bool showVramRow = true;
+    bool showVramPercent = true;
+    bool showVramCapacity = true;
+    bool showVramBar = true;
     int usageDecimals = 0;
     int capacityDecimals = 2;
     NumberPadding numberPadding = NumberPadding::Zero;
     bool showNetwork = true;
     int networkDecimals = -1;
     bool showInternetStatus = true;
+    DotShape netDotShape = DotShape::Circle;
+    int netDotMarginLeft = 0;
+    int netDotMarginRight = 4;
     int checkIntervalSeconds = 5;
     int timeoutMs = 2000;
-    bool showClockPower = true;
     bool lhmEnabled = false;
     int lhmPort = 8085;
     int lhmUpdateInterval = 2;
@@ -685,6 +781,37 @@ struct ModSettings {
     int memoryCriticalPercent = 90;
     bool verboseLogging = false;
 };
+
+// One place deciding what is on screen, so the readers and the layout can never
+// disagree about whether something is needed. A row is present only if at least one of
+// its own fields is - otherwise it would reserve a row's height to show nothing.
+bool CpuRowVisible(const ModSettings& s) {
+    return s.showCpuRow && (s.showCpuUsage || s.showCpuTemp || s.showCpuClock ||
+                            s.showCpuPower || s.showCpuGraph);
+}
+bool GpuRowVisible(const ModSettings& s) {
+    return s.showGpuRow && (s.showGpuUsage || s.showGpuTemp || s.showGpuClock ||
+                            s.showGpuPower || s.showGpuGraph);
+}
+bool RamRowVisible(const ModSettings& s) {
+    return s.showRamRow && (s.showRamPercent || s.showRamCapacity || s.showRamBar);
+}
+bool VramRowVisible(const ModSettings& s) {
+    return s.showVramRow && (s.showVramPercent || s.showVramCapacity || s.showVramBar);
+}
+// GPU usage feeds both the number and the graph, so either one keeps the counter alive.
+bool WantGpuUsage(const ModSettings& s) {
+    return s.showGpuRow && (s.showGpuUsage || s.showGpuGraph);
+}
+bool WantCpuClockPower(const ModSettings& s) {
+    return s.showCpuRow && (s.showCpuClock || s.showCpuPower);
+}
+bool WantGpuClockPower(const ModSettings& s) {
+    return s.showGpuRow && (s.showGpuClock || s.showGpuPower);
+}
+bool WantAnyTemperature(const ModSettings& s) {
+    return (s.showCpuRow && s.showCpuTemp) || (s.showGpuRow && s.showGpuTemp);
+}
 
 ModSettings g_settings;
 std::mutex g_settingsMutex;
@@ -735,11 +862,13 @@ event_token g_timerToken{};
 [[clang::no_destroy]] TextBlock g_cpuLabel{nullptr};
 [[clang::no_destroy]] TextBlock g_cpuUsageText{nullptr};
 [[clang::no_destroy]] TextBlock g_cpuTempText{nullptr};
-[[clang::no_destroy]] TextBlock g_cpuExtrasText{nullptr};
+[[clang::no_destroy]] TextBlock g_cpuClockText{nullptr};
+[[clang::no_destroy]] TextBlock g_cpuPowerText{nullptr};
 [[clang::no_destroy]] TextBlock g_gpuLabel{nullptr};
 [[clang::no_destroy]] TextBlock g_gpuUsageText{nullptr};
 [[clang::no_destroy]] TextBlock g_gpuTempText{nullptr};
-[[clang::no_destroy]] TextBlock g_gpuExtrasText{nullptr};
+[[clang::no_destroy]] TextBlock g_gpuClockText{nullptr};
+[[clang::no_destroy]] TextBlock g_gpuPowerText{nullptr};
 [[clang::no_destroy]] TextBlock g_ramLabel{nullptr};
 [[clang::no_destroy]] TextBlock g_ramPercentText{nullptr};
 [[clang::no_destroy]] TextBlock g_ramCapacityText{nullptr};
@@ -750,7 +879,7 @@ event_token g_timerToken{};
 [[clang::no_destroy]] TextBlock g_netUpText{nullptr};
 [[clang::no_destroy]] TextBlock g_netDownArrow{nullptr};
 [[clang::no_destroy]] TextBlock g_netUpArrow{nullptr};
-[[clang::no_destroy]] XamlEllipse g_netDot{nullptr};
+[[clang::no_destroy]] XamlRectangle g_netDot{nullptr};
 [[clang::no_destroy]] XamlPolyline g_cpuGraph{nullptr};
 [[clang::no_destroy]] XamlPolyline g_gpuGraph{nullptr};
 [[clang::no_destroy]] XamlRectangle g_cpuGraphBackground{nullptr};
@@ -770,6 +899,13 @@ event_token g_timerToken{};
 [[clang::no_destroy]] ColumnDefinition g_netGapColumn{nullptr};
 [[clang::no_destroy]] ColumnDefinition g_netColumnDef{nullptr};
 [[clang::no_destroy]] RowDefinition g_leftGapRow{nullptr};
+[[clang::no_destroy]] RowDefinition g_cpuRowDef{nullptr};
+[[clang::no_destroy]] RowDefinition g_gpuRowDef{nullptr};
+[[clang::no_destroy]] RowDefinition g_ramRowDef{nullptr};
+[[clang::no_destroy]] RowDefinition g_vramRowDef{nullptr};
+[[clang::no_destroy]] Grid g_leftPanel{nullptr};
+[[clang::no_destroy]] Grid g_rightPanel{nullptr};
+[[clang::no_destroy]] Grid g_netColumn{nullptr};
 [[clang::no_destroy]] RowDefinition g_rightGapRow{nullptr};
 [[clang::no_destroy]] RowDefinition g_netGapRow{nullptr};
 double g_graphWidth = 96.0;
@@ -871,6 +1007,13 @@ ThermalZoneAggregation ParseThermalZoneAggregation(const std::wstring& value) {
                                 : ThermalZoneAggregation::Average;
 }
 
+DotShape ParseDotShape(const std::wstring& value) {
+    if (value == L"rounded") return DotShape::Rounded;
+    if (value == L"square") return DotShape::Square;
+    if (value == L"bar") return DotShape::Bar;
+    return DotShape::Circle;
+}
+
 NumberPadding ParseNumberPadding(const std::wstring& value) {
     if (value == L"space") return NumberPadding::Space;
     if (value == L"none") return NumberPadding::None;
@@ -941,8 +1084,26 @@ void LoadSettings() {
         std::clamp(Wh_GetIntSetting(L"Metrics.updateInterval"), 1, 10);
     settings.historySeconds =
         std::clamp(Wh_GetIntSetting(L"Metrics.historySeconds"), 15, 180);
-    settings.showCpuGraph = Wh_GetIntSetting(L"Metrics.showCpuGraph") != 0;
-    settings.showGpuGraph = Wh_GetIntSetting(L"Metrics.showGpuGraph") != 0;
+    settings.showCpuRow = Wh_GetIntSetting(L"Display.showCpuRow") != 0;
+    settings.showCpuUsage = Wh_GetIntSetting(L"Display.showCpuUsage") != 0;
+    settings.showCpuTemp = Wh_GetIntSetting(L"Display.showCpuTemp") != 0;
+    settings.showCpuClock = Wh_GetIntSetting(L"Display.showCpuClock") != 0;
+    settings.showCpuPower = Wh_GetIntSetting(L"Display.showCpuPower") != 0;
+    settings.showCpuGraph = Wh_GetIntSetting(L"Display.showCpuGraph") != 0;
+    settings.showGpuRow = Wh_GetIntSetting(L"Display.showGpuRow") != 0;
+    settings.showGpuUsage = Wh_GetIntSetting(L"Display.showGpuUsage") != 0;
+    settings.showGpuTemp = Wh_GetIntSetting(L"Display.showGpuTemp") != 0;
+    settings.showGpuClock = Wh_GetIntSetting(L"Display.showGpuClock") != 0;
+    settings.showGpuPower = Wh_GetIntSetting(L"Display.showGpuPower") != 0;
+    settings.showGpuGraph = Wh_GetIntSetting(L"Display.showGpuGraph") != 0;
+    settings.showRamRow = Wh_GetIntSetting(L"Display.showRamRow") != 0;
+    settings.showRamPercent = Wh_GetIntSetting(L"Display.showRamPercent") != 0;
+    settings.showRamCapacity = Wh_GetIntSetting(L"Display.showRamCapacity") != 0;
+    settings.showRamBar = Wh_GetIntSetting(L"Display.showRamBar") != 0;
+    settings.showVramRow = Wh_GetIntSetting(L"Display.showVramRow") != 0;
+    settings.showVramPercent = Wh_GetIntSetting(L"Display.showVramPercent") != 0;
+    settings.showVramCapacity = Wh_GetIntSetting(L"Display.showVramCapacity") != 0;
+    settings.showVramBar = Wh_GetIntSetting(L"Display.showVramBar") != 0;
     settings.usageDecimals = std::clamp(Wh_GetIntSetting(L"Metrics.usageDecimals"), 0, 1);
     settings.capacityDecimals =
         std::clamp(Wh_GetIntSetting(L"Metrics.capacityDecimals"), 0, 2);
@@ -953,11 +1114,15 @@ void LoadSettings() {
         std::clamp(Wh_GetIntSetting(L"Network.networkDecimals"), -1, 2);
     settings.showInternetStatus =
         Wh_GetIntSetting(L"InternetStatus.showInternetStatus") != 0;
+    settings.netDotShape = ParseDotShape(GetStringSetting(L"InternetStatus.netDotShape"));
+    settings.netDotMarginLeft =
+        std::clamp(Wh_GetIntSetting(L"InternetStatus.netDotMarginLeft"), 0, 40);
+    settings.netDotMarginRight =
+        std::clamp(Wh_GetIntSetting(L"InternetStatus.netDotMarginRight"), 0, 40);
     settings.checkIntervalSeconds =
         std::clamp(Wh_GetIntSetting(L"InternetStatus.checkIntervalSeconds"), 2, 120);
     settings.timeoutMs =
         std::clamp(Wh_GetIntSetting(L"InternetStatus.timeoutMs"), 200, 10000);
-    settings.showClockPower = Wh_GetIntSetting(L"ExtraSensors.showClockPower") != 0;
     settings.lhmEnabled = Wh_GetIntSetting(L"LibreHardwareMonitor.lhmEnabled") != 0;
     settings.lhmPort = std::clamp(Wh_GetIntSetting(L"LibreHardwareMonitor.lhmPort"), 1, 65535);
     settings.lhmUpdateInterval =
@@ -2486,6 +2651,21 @@ void EnsurePdhQuery(const ModSettings& settings) {
         PdhRemoveCounter(g_thermalZoneCounter);
         g_thermalZoneCounter = nullptr;
     }
+    // Same idiom as the thermal-zone and network counters below: drop what nothing on
+    // screen needs. The GPU Engine counter is a wildcard over every engine instance on
+    // the machine, so leaving it registered is most of what "GPU row off" should stop.
+    bool gpuRequired = WantGpuUsage(settings);
+    bool vramRequired = VramRowVisible(settings);
+    if (!gpuRequired && g_gpuCounter) {
+        PdhRemoveCounter(g_gpuCounter);
+        g_gpuCounter = nullptr;
+    }
+    if (!vramRequired && (g_vramCounter || g_sharedVramCounter)) {
+        if (g_vramCounter) PdhRemoveCounter(g_vramCounter);
+        if (g_sharedVramCounter) PdhRemoveCounter(g_sharedVramCounter);
+        g_vramCounter = nullptr;
+        g_sharedVramCounter = nullptr;
+    }
     bool networkRequired = settings.showNetwork;
     if (!networkRequired && (g_netRecvCounter || g_netSentCounter)) {
         if (g_netRecvCounter) PdhRemoveCounter(g_netRecvCounter);
@@ -2503,7 +2683,8 @@ void EnsurePdhQuery(const ModSettings& settings) {
             return;
         }
         queryCreated = true;
-    } else if (g_gpuCounter && g_vramCounter && g_sharedVramCounter &&
+    } else if ((!gpuRequired || g_gpuCounter) &&
+              (!vramRequired || (g_vramCounter && g_sharedVramCounter)) &&
               (!thermalZonesRequired || g_thermalZoneCounter) &&
               (!networkRequired || (g_netRecvCounter && g_netSentCounter))) {
         return;
@@ -2512,13 +2693,18 @@ void EnsurePdhQuery(const ModSettings& settings) {
     if (!queryCreated && now < g_nextPdhCounterRetry) return;
 
     bool counterAdded = false;
-    counterAdded |= AddPdhCounter(g_gpuCounter, L"\\GPU Engine(*)\\Utilization Percentage",
-                                  L"GPU usage");
-    counterAdded |= AddPdhCounter(
-        g_vramCounter, L"\\GPU Adapter Memory(*)\\Dedicated Usage", L"VRAM usage");
-    counterAdded |= AddPdhCounter(g_sharedVramCounter,
-                                  L"\\GPU Adapter Memory(*)\\Shared Usage",
-                                  L"shared GPU-memory usage");
+    if (gpuRequired) {
+        counterAdded |= AddPdhCounter(g_gpuCounter,
+                                      L"\\GPU Engine(*)\\Utilization Percentage",
+                                      L"GPU usage");
+    }
+    if (vramRequired) {
+        counterAdded |= AddPdhCounter(
+            g_vramCounter, L"\\GPU Adapter Memory(*)\\Dedicated Usage", L"VRAM usage");
+        counterAdded |= AddPdhCounter(g_sharedVramCounter,
+                                      L"\\GPU Adapter Memory(*)\\Shared Usage",
+                                      L"shared GPU-memory usage");
+    }
     if (thermalZonesRequired) {
         counterAdded |= AddPdhCounter(g_thermalZoneCounter,
                                       L"\\Thermal Zone Information(*)\\Temperature",
@@ -2746,16 +2932,23 @@ void ReadPdhMetrics(MetricsSnapshot& snapshot, const ModSettings& settings) {
         return;
     }
 
-    auto adapter = GetGpuAdapterInfo(settings.gpuAdapter);
+    // Nothing on screen needs the GPU? Then don't enumerate the adapter or touch its
+    // counters at all - this is what "turn GPU monitoring off" has to actually mean.
+    bool wantGpu = WantGpuUsage(settings);
+    bool wantVram = VramRowVisible(settings);
+    std::optional<GpuAdapterInfo> adapter;
+    if (wantGpu || wantVram) adapter = GetGpuAdapterInfo(settings.gpuAdapter);
     PDH_STATUS gpuReadStatus = ERROR_SUCCESS;
-    auto gpuUsage = ReadGpuUsage(adapter, gpuReadStatus);
-    if (gpuUsage) {
-        snapshot.gpu = *gpuUsage;
-        snapshot.gpuAvailable = true;
+    if (wantGpu) {
+        auto gpuUsage = ReadGpuUsage(adapter, gpuReadStatus);
+        if (gpuUsage) {
+            snapshot.gpu = *gpuUsage;
+            snapshot.gpuAvailable = true;
+        }
     }
     uint64_t vramTotalBytes = 0;
     PDH_HCOUNTER vramCounter = nullptr;
-    if (adapter) {
+    if (wantVram && adapter) {
         if (adapter->dedicatedVideoMemory > 0) {
             vramTotalBytes = adapter->dedicatedVideoMemory;
             vramCounter = g_vramCounter;
@@ -2779,8 +2972,9 @@ void ReadPdhMetrics(MetricsSnapshot& snapshot, const ModSettings& settings) {
 
     ReadNetworkThroughput(snapshot, settings);
 
-    bool hardReadFailure = (g_gpuCounter && IsHardPdhArrayFailure(gpuReadStatus)) ||
-                          (vramCounter && IsHardPdhArrayFailure(vramReadStatus));
+    bool hardReadFailure =
+        (wantGpu && g_gpuCounter && IsHardPdhArrayFailure(gpuReadStatus)) ||
+        (vramCounter && IsHardPdhArrayFailure(vramReadStatus));
     bool adapterMismatch = adapter && vramReadStatus == ERROR_SUCCESS &&
                           vramCounterHasData && !vramAvailable;
     bool adapterIdentityChanged =
@@ -2845,6 +3039,8 @@ void ReadMemory(MetricsSnapshot& snapshot) {
 }
 
 void ReadTemperatures(MetricsSnapshot& snapshot, const ModSettings& settings) {
+    if (!WantAnyTemperature(settings)) return;
+
     bool wantHwInfo = false, wantWindowsNative = false;
     switch (settings.temperatureSource) {
         case TemperatureSource::SharedMemory:
@@ -2906,7 +3102,7 @@ void ReadTemperatures(MetricsSnapshot& snapshot, const ModSettings& settings) {
 }
 
 void ReadExtraSensors(MetricsSnapshot& snapshot, const ModSettings& settings) {
-    if (!settings.showClockPower ||
+    if ((!WantCpuClockPower(settings) && !WantGpuClockPower(settings)) ||
         settings.extraSensorsSource == ExtraSensorsSource::Disabled ||
         settings.extraSensorsSource == ExtraSensorsSource::LhmOnly) {
         // LhmOnly: leave everything unset - CollectMetrics's FillFromLhm call supplies
@@ -3040,13 +3236,6 @@ std::wstring FormatClock(const std::optional<double>& mhz, NumberPadding pad) {
 std::wstring FormatPower(const std::optional<double>& watts, NumberPadding pad) {
     if (!watts) return L"---";
     return PadNumber(FormatFixed(*watts, 0), 2, pad) + L"W";
-}
-
-// Fixed-width on both halves and a constant separator, so the cell never reflows.
-std::wstring FormatClockPower(const std::optional<double>& mhz,
-                              const std::optional<double>& watts,
-                              NumberPadding pad) {
-    return FormatClock(mhz, pad) + L" " + FormatPower(watts, pad);
 }
 
 // Mirrors taskbar-clock-customization-v3's dynamic KB/s-MB/s formatter: -1 decimals
@@ -3359,7 +3548,13 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
     // No predicted widths any more: every cell column is Auto, so each one measures
     // its own content and the panel is exactly the sum of what is actually on screen.
     // Font size needs no scaling factor either - Auto follows the glyphs.
-    bool anyGraph = settings.showCpuGraph || settings.showGpuGraph;
+    bool cpuRow = CpuRowVisible(settings);
+    bool gpuRow = GpuRowVisible(settings);
+    bool ramRow = RamRowVisible(settings);
+    bool vramRow = VramRowVisible(settings);
+    bool cpuGraph = cpuRow && settings.showCpuGraph;
+    bool gpuGraph = gpuRow && settings.showGpuGraph;
+    bool anyGraph = cpuGraph || gpuGraph;
     g_graphWidth = anyGraph ? static_cast<double>(settings.graphWidth) : 0.0;
 
     g_widgetBorder.MinWidth(settings.widthMin);
@@ -3385,30 +3580,108 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
     ApplyBoxBackground(settings);
 
     if (g_gapColumn) {
-        g_gapColumn.Width(GridLength{static_cast<double>(settings.columnGap),
-                                     GridUnitType::Pixel});
+        g_gapColumn.Width(GridLength{
+            (RamRowVisible(settings) || VramRowVisible(settings)) &&
+                    (CpuRowVisible(settings) || GpuRowVisible(settings))
+                ? static_cast<double>(settings.columnGap)
+                : 0.0,
+            GridUnitType::Pixel});
     }
     // Auto columns sit flush against each other, so the gutter is an explicit margin on
     // the cells that follow another one. This is the whole of the horizontal spacing:
     // one number, applied uniformly, instead of slack hidden in per-cell widths.
     double cellGap = static_cast<double>(settings.cellGap);
-    for (TextBlock cell : {g_cpuUsageText, g_cpuTempText, g_cpuExtrasText,
-                           g_gpuUsageText, g_gpuTempText, g_gpuExtrasText,
-                           g_ramPercentText, g_ramCapacityText, g_vramPercentText,
-                           g_vramCapacityText, g_netUpText, g_netDownText}) {
+    for (TextBlock cell : {g_cpuUsageText, g_cpuTempText, g_cpuClockText,
+                           g_cpuPowerText, g_gpuUsageText, g_gpuTempText,
+                           g_gpuClockText, g_gpuPowerText, g_ramPercentText,
+                           g_ramCapacityText, g_vramPercentText, g_vramCapacityText,
+                           g_netUpText, g_netDownText}) {
         if (cell) cell.Margin(Thickness{cellGap, 0, 0, 0});
     }
-    for (RowDefinition row : {g_leftGapRow, g_rightGapRow, g_netGapRow}) {
-        if (row) {
-            row.Height(GridLength{static_cast<double>(settings.rowGap), GridUnitType::Pixel});
-        }
+
+    auto vis = [](bool on) { return on ? Visibility::Visible : Visibility::Collapsed; };
+
+    // Per-field visibility. Auto columns mean a hidden cell's column collapses to
+    // nothing on its own, so hiding a field closes its gap instead of leaving a hole.
+    if (g_cpuUsageText) g_cpuUsageText.Visibility(vis(cpuRow && settings.showCpuUsage));
+    if (g_cpuTempText) g_cpuTempText.Visibility(vis(cpuRow && settings.showCpuTemp));
+    if (g_cpuClockText) g_cpuClockText.Visibility(vis(cpuRow && settings.showCpuClock));
+    if (g_cpuPowerText) g_cpuPowerText.Visibility(vis(cpuRow && settings.showCpuPower));
+    if (g_cpuLabel) g_cpuLabel.Visibility(vis(cpuRow));
+    if (g_gpuUsageText) g_gpuUsageText.Visibility(vis(gpuRow && settings.showGpuUsage));
+    if (g_gpuTempText) g_gpuTempText.Visibility(vis(gpuRow && settings.showGpuTemp));
+    if (g_gpuClockText) g_gpuClockText.Visibility(vis(gpuRow && settings.showGpuClock));
+    if (g_gpuPowerText) g_gpuPowerText.Visibility(vis(gpuRow && settings.showGpuPower));
+    if (g_gpuLabel) g_gpuLabel.Visibility(vis(gpuRow));
+    if (g_ramLabel) g_ramLabel.Visibility(vis(ramRow));
+    if (g_ramPercentText) {
+        g_ramPercentText.Visibility(vis(ramRow && settings.showRamPercent));
+    }
+    if (g_ramCapacityText) {
+        g_ramCapacityText.Visibility(vis(ramRow && settings.showRamCapacity));
+    }
+    if (g_vramLabel) g_vramLabel.Visibility(vis(vramRow));
+    if (g_vramPercentText) {
+        g_vramPercentText.Visibility(vis(vramRow && settings.showVramPercent));
+    }
+    if (g_vramCapacityText) {
+        g_vramCapacityText.Visibility(vis(vramRow && settings.showVramCapacity));
+    }
+    for (XamlRectangle bar : {g_ramTrack, g_ramFill}) {
+        if (bar) bar.Visibility(vis(ramRow && settings.showRamBar));
+    }
+    for (XamlRectangle bar : {g_vramTrack, g_vramFill}) {
+        if (bar) bar.Visibility(vis(vramRow && settings.showVramBar));
+    }
+
+    // An empty row must give up its height too, or it leaves a blank band behind. The
+    // gap row only earns its height when there are two rows to separate.
+    if (g_cpuRowDef) {
+        g_cpuRowDef.Height(GridLength{cpuRow ? kRowHeight : 0.0, GridUnitType::Pixel});
+    }
+    if (g_gpuRowDef) {
+        g_gpuRowDef.Height(GridLength{gpuRow ? kRowHeight : 0.0, GridUnitType::Pixel});
+    }
+    if (g_ramRowDef) {
+        g_ramRowDef.Height(GridLength{ramRow ? kRowHeight : 0.0, GridUnitType::Pixel});
+    }
+    if (g_vramRowDef) {
+        g_vramRowDef.Height(GridLength{vramRow ? kRowHeight : 0.0, GridUnitType::Pixel});
+    }
+    double rowGap = static_cast<double>(settings.rowGap);
+    if (g_leftGapRow) {
+        g_leftGapRow.Height(
+            GridLength{cpuRow && gpuRow ? rowGap : 0.0, GridUnitType::Pixel});
+    }
+    if (g_rightGapRow) {
+        g_rightGapRow.Height(
+            GridLength{ramRow && vramRow ? rowGap : 0.0, GridUnitType::Pixel});
+    }
+    if (g_netGapRow) {
+        g_netGapRow.Height(GridLength{rowGap, GridUnitType::Pixel});
     }
 
     bool showNetColumn = settings.showNetwork || settings.showInternetStatus;
+    bool leftVisible = cpuRow || gpuRow;
+    bool rightVisible = ramRow || vramRow;
+    if (g_leftPanel) g_leftPanel.Visibility(vis(leftVisible));
+    if (g_rightPanel) g_rightPanel.Visibility(vis(rightVisible));
+    if (g_netColumn) g_netColumn.Visibility(vis(showNetColumn));
+
+    // A seam only makes sense with something on both sides of it, so a section that is
+    // switched off takes its divider and its gap with it rather than leaving a stray
+    // line at the edge.
+    bool netSeam = showNetColumn && (leftVisible || rightVisible);
+    bool panelSeam = leftVisible && rightVisible;
+    double columnGap = static_cast<double>(settings.columnGap);
     if (g_netGapColumn) {
-        g_netGapColumn.Width(GridLength{
-            showNetColumn ? static_cast<double>(settings.columnGap) : 0.0,
-            GridUnitType::Pixel});
+        g_netGapColumn.Width(GridLength{netSeam ? columnGap : 0.0, GridUnitType::Pixel});
+    }
+    if (g_dividerNet) {
+        g_dividerNet.Visibility(vis(settings.showDividers && netSeam));
+    }
+    if (g_dividerPanels) {
+        g_dividerPanels.Visibility(vis(settings.showDividers && panelSeam));
     }
     if (g_netDownText) {
         g_netDownText.Visibility(settings.showNetwork ? Visibility::Visible
@@ -3425,21 +3698,44 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
         }
     }
     if (g_netDot) {
-        g_netDot.Visibility(settings.showInternetStatus ? Visibility::Visible
-                                                         : Visibility::Collapsed);
+        g_netDot.Visibility(vis(settings.showInternetStatus));
+        // One Rectangle covers every shape: a full corner radius reads as a circle, a
+        // small one as a rounded square, none as a square, and a narrow tall box as a
+        // bar. Cheaper than swapping the element out per shape.
+        double w = kDotSize, h = kDotSize, radius = kDotSize / 2;
+        switch (settings.netDotShape) {
+            case DotShape::Rounded:
+                radius = 2.0;
+                break;
+            case DotShape::Square:
+                radius = 0.0;
+                break;
+            case DotShape::Bar:
+                w = 3.0;
+                h = kDotSize * 1.7;
+                radius = 1.5;
+                break;
+            case DotShape::Circle:
+            default:
+                break;
+        }
+        g_netDot.Width(w);
+        g_netDot.Height(h);
+        g_netDot.RadiusX(radius);
+        g_netDot.RadiusY(radius);
+        g_netDot.Margin(Thickness{static_cast<double>(settings.netDotMarginLeft), 0,
+                                  static_cast<double>(settings.netDotMarginRight), 0});
     }
 
     if (g_cpuGraph) {
         g_cpuGraph.Width(g_graphWidth);
         g_cpuGraph.Height(kGraphHeight);
-        g_cpuGraph.Visibility(settings.showCpuGraph ? Visibility::Visible
-                                                    : Visibility::Collapsed);
+        g_cpuGraph.Visibility(vis(cpuGraph));
     }
     if (g_gpuGraph) {
         g_gpuGraph.Width(g_graphWidth);
         g_gpuGraph.Height(kGraphHeight);
-        g_gpuGraph.Visibility(settings.showGpuGraph ? Visibility::Visible
-                                                    : Visibility::Collapsed);
+        g_gpuGraph.Visibility(vis(gpuGraph));
     }
     double barH = static_cast<double>(settings.barHeight);
     for (XamlRectangle bar : {g_ramTrack, g_vramTrack, g_ramFill, g_vramFill}) {
@@ -3448,24 +3744,20 @@ void ApplyWidgetGeometry(const ModSettings& settings) {
         bar.RadiusX(barH / 2);
         bar.RadiusY(barH / 2);
     }
+    bool showBg = settings.graphBackgroundOpacity > 0;
+    if (g_cpuGraphBackground) g_cpuGraphBackground.Visibility(vis(cpuGraph && showBg));
+    if (g_gpuGraphBackground) g_gpuGraphBackground.Visibility(vis(gpuGraph && showBg));
     for (XamlRectangle background : {g_cpuGraphBackground, g_gpuGraphBackground}) {
         if (!background) continue;
         background.Width(g_graphWidth);
         background.Height(kGraphHeight);
-        background.Visibility(anyGraph && settings.graphBackgroundOpacity > 0
-                                  ? Visibility::Visible
-                                  : Visibility::Collapsed);
     }
+    if (g_cpuGraphArea) g_cpuGraphArea.Visibility(vis(cpuGraph));
+    if (g_gpuGraphArea) g_gpuGraphArea.Visibility(vis(gpuGraph));
     for (XamlPolygon area : {g_cpuGraphArea, g_gpuGraphArea}) {
         if (!area) continue;
         area.Width(g_graphWidth);
         area.Height(kGraphHeight);
-    }
-    for (TextBlock extras : {g_cpuExtrasText, g_gpuExtrasText}) {
-        if (extras) {
-            extras.Visibility(settings.showClockPower ? Visibility::Visible
-                                                       : Visibility::Collapsed);
-        }
     }
 }
 
@@ -3485,8 +3777,9 @@ void ApplyWidgetSettings() {
         ApplyTextStyle(label, true, settings);
     }
     for (TextBlock value :
-        {g_cpuUsageText, g_cpuTempText, g_cpuExtrasText, g_gpuUsageText, g_gpuTempText,
-         g_gpuExtrasText, g_ramPercentText, g_ramCapacityText, g_vramPercentText,
+        {g_cpuUsageText, g_cpuTempText, g_cpuClockText, g_cpuPowerText,
+         g_gpuUsageText, g_gpuTempText, g_gpuClockText, g_gpuPowerText,
+         g_ramPercentText, g_ramCapacityText, g_vramPercentText,
          g_vramCapacityText, g_netDownText, g_netUpText, g_netDownArrow,
          g_netUpArrow}) {
         ApplyTextStyle(value, false, settings);
@@ -3513,12 +3806,6 @@ void ApplyWidgetSettings() {
         if (area) {
             area.Fill(graphBrush);
             area.Opacity(settings.graphAreaOpacity / 100.0);
-        }
-    }
-    for (XamlRectangle divider : {g_dividerNet, g_dividerPanels}) {
-        if (divider) {
-            divider.Visibility(settings.showDividers ? Visibility::Visible
-                                                     : Visibility::Collapsed);
         }
     }
     for (XamlRectangle track : {g_ramTrack, g_vramTrack}) {
@@ -3597,10 +3884,8 @@ void UpdateWidgetText() {
         g_cpuTempText.Text(FormatTemperature(snapshot.cpuTemp, pad));
         SetTextForeground(g_cpuTempText, g_cpuTemperatureAlert, settings);
     }
-    if (g_cpuExtrasText) {
-        g_cpuExtrasText.Text(
-            FormatClockPower(snapshot.cpuClockMhz, snapshot.cpuPowerW, pad));
-    }
+    if (g_cpuClockText) g_cpuClockText.Text(FormatClock(snapshot.cpuClockMhz, pad));
+    if (g_cpuPowerText) g_cpuPowerText.Text(FormatPower(snapshot.cpuPowerW, pad));
     if (g_gpuUsageText) {
         g_gpuUsageText.Text(snapshot.gpuAvailable
                                ? FormatPercent(snapshot.gpu, settings.usageDecimals, pad)
@@ -3610,10 +3895,8 @@ void UpdateWidgetText() {
         g_gpuTempText.Text(FormatTemperature(snapshot.gpuTemp, pad));
         SetTextForeground(g_gpuTempText, g_gpuTemperatureAlert, settings);
     }
-    if (g_gpuExtrasText) {
-        g_gpuExtrasText.Text(
-            FormatClockPower(snapshot.gpuClockMhz, snapshot.gpuPowerW, pad));
-    }
+    if (g_gpuClockText) g_gpuClockText.Text(FormatClock(snapshot.gpuClockMhz, pad));
+    if (g_gpuPowerText) g_gpuPowerText.Text(FormatPower(snapshot.gpuPowerW, pad));
     if (g_ramPercentText) {
         g_ramPercentText.Text(FormatPercent(snapshot.ram, settings.usageDecimals, pad));
         SetTextForeground(g_ramPercentText, g_ramAlert, settings);
@@ -3657,10 +3940,10 @@ void UpdateWidgetText() {
         size_t historyCapacity = HistoryCapacity(settings);
         AppendHistory(g_cpuHistory, snapshot.cpu, historyCapacity);
         if (snapshot.gpuAvailable) AppendHistory(g_gpuHistory, snapshot.gpu, historyCapacity);
-        if (settings.showCpuGraph) {
+        if (CpuRowVisible(settings) && settings.showCpuGraph) {
             UpdateSparkline(g_cpuGraph, g_cpuGraphArea, g_cpuHistory, historyCapacity);
         }
-        if (settings.showGpuGraph) {
+        if (GpuRowVisible(settings) && settings.showGpuGraph) {
             UpdateSparkline(g_gpuGraph, g_gpuGraphArea, g_gpuHistory, historyCapacity);
         }
         g_lastRenderedMetricsSequence = metricsSequence;
@@ -3683,12 +3966,6 @@ void EnsureTimer() {
         }
     });
     g_timer.Start();
-}
-
-ColumnDefinition PixelColumn(double width) {
-    ColumnDefinition column;
-    column.Width(GridLength{width, GridUnitType::Pixel});
-    return column;
 }
 
 RowDefinition PixelRow(double height) {
@@ -3726,7 +4003,8 @@ void AddComputeRow(Grid panel,
                    TextBlock& labelText,
                    TextBlock& usageText,
                    TextBlock& temperatureText,
-                   TextBlock& extrasText,
+                   TextBlock& clockText,
+                   TextBlock& powerText,
                    XamlPolyline& graph,
                    XamlPolygon& graphArea,
                    XamlRectangle& graphBackground) {
@@ -3739,9 +4017,12 @@ void AddComputeRow(Grid panel,
     temperatureText = CreateCellText((std::wstring(prefix) + L"Temperature").c_str(),
                                      TextAlignment::Right);
     temperatureText.Text(L"--\u00B0C");
-    extrasText = CreateCellText((std::wstring(prefix) + L"Extras").c_str(),
-                                TextAlignment::Right);
-    extrasText.Text(L"--");
+    clockText = CreateCellText((std::wstring(prefix) + L"Clock").c_str(),
+                               TextAlignment::Right);
+    clockText.Text(L"--");
+    powerText = CreateCellText((std::wstring(prefix) + L"Power").c_str(),
+                               TextAlignment::Right);
+    powerText.Text(L"--");
 
     // Faint panel marking the graph's extent, the filled region under the trace, then
     // the trace itself - painted in that order so each sits on top of the last.
@@ -3762,12 +4043,12 @@ void AddComputeRow(Grid panel,
         shape.Stretch(Stretch::None);
         shape.IsHitTestVisible(false);
         Grid::SetRow(shape, row);
-        Grid::SetColumn(shape, 4);
+        Grid::SetColumn(shape, 5);
         panel.Children().Append(shape);
     }
 
-    TextBlock cells[] = {labelText, usageText, temperatureText, extrasText};
-    for (int i = 0; i < 4; i++) {
+    TextBlock cells[] = {labelText, usageText, temperatureText, clockText, powerText};
+    for (int i = 0; i < 5; i++) {
         Grid::SetRow(cells[i], row);
         Grid::SetColumn(cells[i], i);
         panel.Children().Append(cells[i]);
@@ -3834,14 +4115,12 @@ Grid CreateNetworkColumn() {
     // Arrow in its own fixed column rather than glued onto the value string: keeps the
     // arrows from drifting as the number beside them changes width, and provides the
     // arrow-to-value gap without padding either string.
-    column.ColumnDefinitions().Append(PixelColumn(kDotDiameter + 4));
+    column.ColumnDefinitions().Append(AutoColumn());
     column.ColumnDefinitions().Append(AutoColumn());
     column.ColumnDefinitions().Append(AutoColumn());
 
-    g_netDot = XamlEllipse();
+    g_netDot = XamlRectangle();
     g_netDot.Name(L"InternetDot");
-    g_netDot.Width(kDotDiameter);
-    g_netDot.Height(kDotDiameter);
     g_netDot.HorizontalAlignment(HorizontalAlignment::Center);
     g_netDot.VerticalAlignment(VerticalAlignment::Center);
     g_netDot.IsHitTestVisible(false);
@@ -3967,11 +4246,13 @@ void RemoveWidget() {
     g_cpuLabel = nullptr;
     g_cpuUsageText = nullptr;
     g_cpuTempText = nullptr;
-    g_cpuExtrasText = nullptr;
+    g_cpuClockText = nullptr;
+    g_cpuPowerText = nullptr;
     g_gpuLabel = nullptr;
     g_gpuUsageText = nullptr;
     g_gpuTempText = nullptr;
-    g_gpuExtrasText = nullptr;
+    g_gpuClockText = nullptr;
+    g_gpuPowerText = nullptr;
     g_ramLabel = nullptr;
     g_ramPercentText = nullptr;
     g_ramCapacityText = nullptr;
@@ -4003,6 +4284,13 @@ void RemoveWidget() {
     g_leftGapRow = nullptr;
     g_rightGapRow = nullptr;
     g_netGapRow = nullptr;
+    g_cpuRowDef = nullptr;
+    g_gpuRowDef = nullptr;
+    g_ramRowDef = nullptr;
+    g_vramRowDef = nullptr;
+    g_leftPanel = nullptr;
+    g_rightPanel = nullptr;
+    g_netColumn = nullptr;
     g_cpuHistory.clear();
     g_gpuHistory.clear();
     g_lastRenderedMetricsSequence = 0;
@@ -4064,23 +4352,27 @@ Border BuildWidgetGrid() {
     Grid leftPanel;
     leftPanel.IsHitTestVisible(false);
     g_leftGapRow = PixelRow(2.0);
-    leftPanel.RowDefinitions().Append(PixelRow(kRowHeight));
+    g_cpuRowDef = PixelRow(kRowHeight);
+    g_gpuRowDef = PixelRow(kRowHeight);
+    leftPanel.RowDefinitions().Append(g_cpuRowDef);
     leftPanel.RowDefinitions().Append(g_leftGapRow);
-    leftPanel.RowDefinitions().Append(PixelRow(kRowHeight));
-    for (int i = 0; i < 5; i++) leftPanel.ColumnDefinitions().Append(AutoColumn());
+    leftPanel.RowDefinitions().Append(g_gpuRowDef);
+    for (int i = 0; i < 6; i++) leftPanel.ColumnDefinitions().Append(AutoColumn());
     AddComputeRow(leftPanel, 0, L"CPU", L"Cpu", g_cpuLabel, g_cpuUsageText,
-                  g_cpuTempText, g_cpuExtrasText, g_cpuGraph, g_cpuGraphArea,
-                  g_cpuGraphBackground);
+                  g_cpuTempText, g_cpuClockText, g_cpuPowerText, g_cpuGraph,
+                  g_cpuGraphArea, g_cpuGraphBackground);
     AddComputeRow(leftPanel, 2, L"GPU", L"Gpu", g_gpuLabel, g_gpuUsageText,
-                  g_gpuTempText, g_gpuExtrasText, g_gpuGraph, g_gpuGraphArea,
-                  g_gpuGraphBackground);
+                  g_gpuTempText, g_gpuClockText, g_gpuPowerText, g_gpuGraph,
+                  g_gpuGraphArea, g_gpuGraphBackground);
 
     Grid rightPanel;
     rightPanel.IsHitTestVisible(false);
     g_rightGapRow = PixelRow(2.0);
-    rightPanel.RowDefinitions().Append(PixelRow(kRowHeight));
+    g_ramRowDef = PixelRow(kRowHeight);
+    g_vramRowDef = PixelRow(kRowHeight);
+    rightPanel.RowDefinitions().Append(g_ramRowDef);
     rightPanel.RowDefinitions().Append(g_rightGapRow);
-    rightPanel.RowDefinitions().Append(PixelRow(kRowHeight));
+    rightPanel.RowDefinitions().Append(g_vramRowDef);
     for (int i = 0; i < 3; i++) rightPanel.ColumnDefinitions().Append(AutoColumn());
     AddMemoryRow(rightPanel, 0, L"RAM", L"Ram", g_ramLabel, g_ramPercentText,
                  g_ramCapacityText, g_ramTrack, g_ramFill);
@@ -4088,6 +4380,9 @@ Border BuildWidgetGrid() {
                  g_vramCapacityText, g_vramTrack, g_vramFill);
 
     Grid netColumn = CreateNetworkColumn();
+    g_leftPanel = leftPanel;
+    g_rightPanel = rightPanel;
+    g_netColumn = netColumn;
 
     // Thin translucent dividers in the gap columns - a visual seam between sections
     // rather than bare empty space, "frosted" via a soft vertical opacity taper at

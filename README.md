@@ -34,7 +34,7 @@ the top of each mod's readme.
 | [taskbar-ai-quota-fork](mods/taskbar-ai-quota-fork/) | 0.12.0 | [Cleroth](https://github.com/Cleroth) | AI quota bars. Fixed for the 26300 StackPanel tray. |
 | [taskbar-clock-customization-v3](mods/taskbar-clock-customization-v3/) | 3.1.71 | [m417z](https://github.com/m417z) | Clock with sensors, weather and network throughput. |
 | [taskbar-fluent-media-player-fork](mods/taskbar-fluent-media-player-fork/) | 1.6.1 | [Salyts](https://github.com/Salyts) | Fluent media player. Fixed for the 26300 StackPanel tray. |
-| [taskbar-system-info-fork](mods/taskbar-system-info-fork/) | 1.5.0 | [Yevhenii Starychenko](https://github.com/starychenko) | CPU/GPU/RAM/VRAM monitor with network throughput, an internet-status dot, HWiNFO or LibreHardwareMonitor sensors, and a card-style background. Real tray/taskbar insertion instead of the original's overlay. |
+| [taskbar-system-info-fork](mods/taskbar-system-info-fork/) | 1.6.0 | [Yevhenii Starychenko](https://github.com/starychenko) | CPU/GPU/RAM/VRAM monitor with network throughput, an internet-status dot, HWiNFO or LibreHardwareMonitor sensors, and a card-style background. Real tray/taskbar insertion instead of the original's overlay. |
 | [mac-magnifying-cursor](mods/mac-magnifying-cursor/) | 1.5.0 | [Jaali](https://github.com/alivca) | Shake-to-magnify cursor. |
 | [bt-battery-monitor-fork](mods/bt-battery-monitor-fork/) | 1.1.1 | — | Bluetooth battery levels. |
 | [spicetify-guardian](mods/spicetify-guardian/) | 1.1.0 | — | Keeps a Spicetify install from being undone by a Spotify update. |

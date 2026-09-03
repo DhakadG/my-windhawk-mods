@@ -958,3 +958,44 @@ Both are the fastest way to re-verify after a Windows update.
 
 **Verified:** all four scripts clean, links on x86 / x86-64 / arm64, 24/24 probe checks,
 installed and driven live.
+
+---
+
+## 15. 1.6.0 — per-field visibility, and what "off" has to mean
+
+Every reading now has its own switch under a new `Display` group: usage / temperature /
+frequency / power / graph per CPU and GPU, percentage / used-total / bar per RAM and
+VRAM, plus a master switch per row. `showClockPower` and the two `Metrics.show*Graph`
+keys were absorbed into it.
+
+**The layout half was nearly free, because 1.5.0 had already made the columns Auto.** A
+hidden cell's column collapses on its own, so a hidden field closes its gap instead of
+leaving a hole. What did need writing:
+
+- **Clock and power were one TextBlock** (`FormatClockPower`), so they could not be
+  toggled apart. Split into two cells with their own columns; `FormatClockPower` is gone
+  and the two existing `FormatClock`/`FormatPower` are called directly.
+- **Rows do not collapse themselves.** A `RowDefinition` keeps its pixel height however
+  many children are hidden, so an empty row leaves a blank band. The row definitions are
+  now globals (`g_cpuRowDef` etc.) set to 0 when the row has nothing in it, and each
+  panel's gap row only earns its height when it has two rows to separate.
+- **Seams need something on both sides.** A divider and its gap column are hidden unless
+  both neighbouring sections are visible, otherwise switching off a section leaves a
+  stray line at the widget's edge.
+
+**The other half is that "off" has to stop the work, not just the pixels.** With the GPU
+row and VRAM both off, the mod no longer enumerates the adapter via D3DKMT and
+`EnsurePdhQuery` removes the `GPU Engine(*)` and `GPU Adapter Memory(*)` counters —
+`GPU Engine(*)` is a wildcard over every engine instance on the machine, so leaving it
+registered would have been most of the cost. This follows the idiom already in that
+function for the thermal-zone and network counters rather than inventing a new one.
+`ReadTemperatures` and `ReadExtraSensors` return immediately when nothing visible needs
+them. A single set of predicates (`CpuRowVisible`, `WantGpuUsage`, …) feeds both the
+readers and the layout, so the two cannot disagree about whether something is needed.
+
+Also: the status indicator became a `Rectangle` instead of an `Ellipse` — one element
+covers circle / rounded square / square / vertical bar by varying the corner radius and
+box, which is cheaper than swapping elements per shape — with left and right gap
+settings driving its column, now Auto.
+
+Version 1.6.0, all scripts clean. **Not yet verified live.**

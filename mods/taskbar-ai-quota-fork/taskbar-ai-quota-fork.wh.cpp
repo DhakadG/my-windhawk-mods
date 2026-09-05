@@ -2,7 +2,7 @@
 // @id              taskbar-ai-quota-fork
 // @name            Taskbar AI Quota Bars - Fork
 // @description     Shows configurable AI agent/LLM subscription quota bars for Anthropic, OpenAI, and Google Antigravity on the Windows 11 taskbar
-// @version         1.6.1
+// @version         1.6.2
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -6537,7 +6537,7 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                     double rightLimit = barLength - padDip -
                                         (percentOnRight ? leadWidth + gapDip : 0);
                     double room = px - padDip - (percentOnLeft ? padDip + leadWidth + gapDip : 0);
-                    double onFillLeft = std::min(px, rightLimit) - trailWidth;
+                    double onFillLeft = std::min((double)px, rightLimit) - trailWidth;
                     double leftLimit = padDip + (percentOnLeft ? leadWidth + gapDip : 0);
 
                     if (room >= trailWidth && onFillLeft >= leftLimit) {

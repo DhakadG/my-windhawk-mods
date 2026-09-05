@@ -1399,7 +1399,9 @@ namespace BTBatGui {
         int currentThreshold = ReadIntStorage(L"warningThreshold", 30);
         int threshVals[] = {0, 10, 20, 30, 40, 50};
         s.warningThresholdIdx = 3; // default 30
-        for (int i = 0; i < kRowCount; i++) {
+        // kRowCount counts device rows (8), not threshold steps (6) - looping to kRowCount
+        // read two entries past the end of threshVals.
+        for (int i = 0; i < (int)ARRAYSIZE(threshVals); i++) {
             if (currentThreshold == threshVals[i]) { s.warningThresholdIdx = i; break; }
         }
 
@@ -1462,7 +1464,7 @@ namespace BTBatGui {
             static const WCHAR* kThreshLabels[] = {
                 L"0%", L"10%", L"20%", L"30%", L"40%", L"50%"
             };
-            for (int i = 0; i < kRowCount; i++)
+            for (int i = 0; i < (int)ARRAYSIZE(kThreshLabels); i++)
                 SendMessageW(s->hThresholdCombo, CB_ADDSTRING, 0, (LPARAM)kThreshLabels[i]);
             SendMessageW(s->hThresholdCombo, CB_SETCURSEL, s->warningThresholdIdx, 0);
             DarkCombo(s->hThresholdCombo);
@@ -1629,7 +1631,7 @@ namespace BTBatGui {
             if (!s) return 0;
             int id = LOWORD(wParam);
 
-            if (id >= 200 && id < 206 && HIWORD(wParam) == CBN_SELCHANGE) {
+            if (id >= 200 && id < 200 + kRowCount && HIWORD(wParam) == CBN_SELCHANGE) {
                 int slot = id - 200;
                 int sel = (int)SendMessageW(s->rows[slot].hIconCombo, CB_GETCURSEL, 0, 0);
                 if (sel >= 0 && sel < kIconCount) s->rows[slot].iconKey = kIconKeys[sel];
@@ -1643,7 +1645,7 @@ namespace BTBatGui {
                            Sc(kIconX + kIconSz + 2, s->dpi), y + Sc(20 + kIconSz + 2, s->dpi)};
                 InvalidateRect(hWnd, &ir, TRUE);
 
-            } else if (id >= 300 && id < 306) {
+            } else if (id >= 300 && id < 300 + kRowCount) {
                 int slot = id - 300;
                 WCHAR path[MAX_PATH] = {};
                 lstrcpynW(path, s->rows[slot].customPath, MAX_PATH);
@@ -2006,10 +2008,18 @@ void WhTool_ModUninit() {
     if (g_shutdownEvent)
         SetEvent(g_shutdownEvent);
 
-    // Step 2: Join scanner thread (no longer uses events)
+    // Step 2: Join scanner thread. It waits on g_shutdownEvent/g_rescanEvent, so if it has
+    // not exited we must not close those in step 5 - same leak-rather-than-race rule the
+    // tray and GUI threads below already follow.
+    bool scannerExited = true;
     if (g_scannerThread) {
-        WaitForSingleObject(g_scannerThread, 3000);
-        CloseHandle(g_scannerThread);
+        DWORD wr = WaitForSingleObject(g_scannerThread, 3000);
+        if (wr == WAIT_TIMEOUT) {
+            scannerExited = false;
+            Wh_Log(L"scanner thread did not exit within 3 s — leaking handle and events");
+        } else {
+            CloseHandle(g_scannerThread);
+        }
         g_scannerThread = NULL;
     }
 
@@ -2029,9 +2039,12 @@ void WhTool_ModUninit() {
         g_trayThread = NULL;
     }
 
-    // Step 5: Now safe to close events (no threads reference them)
-    if (g_shutdownEvent) { CloseHandle(g_shutdownEvent); g_shutdownEvent = NULL; }
-    if (g_rescanEvent) { CloseHandle(g_rescanEvent); g_rescanEvent = NULL; }
+    // Step 5: Now safe to close events - unless the scanner is still running, in which case
+    // closing them out from under its wait is exactly the crash we are avoiding.
+    if (scannerExited) {
+        if (g_shutdownEvent) { CloseHandle(g_shutdownEvent); g_shutdownEvent = NULL; }
+        if (g_rescanEvent) { CloseHandle(g_rescanEvent); g_rescanEvent = NULL; }
+    }
 
     // Step 6: Unregister device notifications
     if (g_hNotifyHid) { UnregisterDeviceNotification(g_hNotifyHid); g_hNotifyHid = nullptr; }

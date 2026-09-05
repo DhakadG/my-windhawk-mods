@@ -1086,6 +1086,9 @@ HANDLE g_netStatusThread;
 HANDLE g_netStatusStopEvent;
 std::atomic<bool> g_netStatusConnected{false};
 std::atomic<bool> g_netStatusLoaded{false};
+// Written by NetStatusThread, read by the clock format path. Both sides take this: an
+// unsynchronised wcscpy_s into the buffer could be observed half-written by a formatter.
+std::mutex g_netStatusMutex;
 FormattedString<FORMATTED_BUFFER_SIZE> g_netStatusFormatted;
 
 HANDLE g_webContentUpdateThread;
@@ -2390,6 +2393,7 @@ DWORD WINAPI NetStatusThread(LPVOID lpParam)
 
         // Update formatted string
         {
+            std::lock_guard<std::mutex> lock(g_netStatusMutex);
             g_netStatusFormatted.formatIndex = g_formatIndex;
             wcscpy_s(g_netStatusFormatted.buffer,
                      connected ? connectedText : disconnectedText);
@@ -2447,7 +2451,10 @@ void NetStatusThreadUninit()
 
     g_netStatusLoaded = false;
     g_netStatusConnected = false;
-    g_netStatusFormatted = {};
+    {
+        std::lock_guard<std::mutex> lock(g_netStatusMutex);
+        g_netStatusFormatted = {};
+    }
 }
 
 // ============================================================================
@@ -5173,7 +5180,12 @@ PCWSTR GetNetStatusFormatted()
 {
     if (!g_netStatusLoaded)
         return L"";
-    return g_netStatusFormatted.buffer;
+    // Returning the shared buffer directly would hand the caller a pointer the writer can
+    // rewrite mid-use, so hand back a per-thread snapshot taken under the lock instead.
+    static thread_local wchar_t snapshot[FORMATTED_BUFFER_SIZE];
+    std::lock_guard<std::mutex> lock(g_netStatusMutex);
+    wcscpy_s(snapshot, g_netStatusFormatted.buffer);
+    return snapshot;
 }
 
 PCWSTR GetGpuFormatted()

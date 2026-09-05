@@ -9150,10 +9150,15 @@ static void RemovePlayerGrid() {
         }
         g_hasTrackedElementOriginalMargin = false;
         g_trackPosition = L"";
+        // FORK: the tray is a StackPanel on Windows 11 26H2, where this Grid cast is null and
+        // the cleanup below silently did nothing - leaving our element parented to a tray we
+        // no longer track. Clean up through the Panel base; the Grid cast is only needed for
+        // the column bookkeeping, which does not apply to a StackPanel.
+        Panel targetPanel = g_injectionParent.try_as<Panel>();
         auto targetGrid = g_injectionParent.try_as<Grid>();
         int playerCol = -1;
-        RemoveAnchorDebugOverlays(targetGrid);
-        playerCol = RemovePlayerGridChildren(targetGrid);
+        RemoveAnchorDebugOverlays(targetPanel);
+        playerCol = RemovePlayerGridChildren(targetPanel);
         bool isTrackingPosition = (g_settings.position == L"taskbar_left_edge" ||
                                 g_settings.position == L"taskbar_center_edge" ||
                                 g_settings.position == L"taskbar_right_edge" ||
@@ -9165,7 +9170,8 @@ static void RemovePlayerGrid() {
                                 g_settings.position == L"taskbar_after_taskview_right" ||
                                 g_settings.position == L"taskbar_after_widgets_left" ||
                                 g_settings.position == L"taskbar_after_widgets_right");
-        if (!isTrackingPosition && playerCol >= 0 && playerCol < (int)targetGrid.ColumnDefinitions().Size()) {
+        if (!isTrackingPosition && targetGrid && playerCol >= 0 &&
+            playerCol < (int)targetGrid.ColumnDefinitions().Size()) {
             for (uint32_t i = 0; i < targetGrid.Children().Size(); ++i) {
                 auto child = targetGrid.Children().GetAt(i).try_as<FrameworkElement>();
                 if (child) {

@@ -2,7 +2,7 @@
 // @id              taskbar-ai-quota-fork
 // @name            Taskbar AI Quota Bars - Fork
 // @description     Shows configurable AI agent/LLM subscription quota bars for Anthropic, OpenAI, and Google Antigravity on the Windows 11 taskbar
-// @version         1.5.0
+// @version         1.6.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -260,6 +260,10 @@ enum class PercentTextPlacement {
     InsideBar,
     BeforeBar,
     AfterBar,
+    // Fork addition, countdown only: ride the filled portion's edge rather than the bar's.
+    // The countdown then sits on the fill (where it is readable) and slides with it, and
+    // steps outside the fill only once the fill is too short to hold it.
+    FollowFill,
 };
 
 // Fork addition: typography weight, shared by the percentage, the countdown and the labels.
@@ -353,7 +357,10 @@ struct Settings {
     // Fork additions: typography. Placing the percentage outside the bar is the
     // guaranteed-readable option - nothing is ever drawn under it.
     PercentTextPlacement percentTextPlacement = PercentTextPlacement::InsideBar;
-    PercentTextPlacement resetTextPlacement = PercentTextPlacement::InsideBar;
+    PercentTextPlacement resetTextPlacement = PercentTextPlacement::FollowFill;
+    // Only show a countdown once the reset is this close. A 5h window is always inside it,
+    // while a weekly one stays quiet until the last day. 0 = always show.
+    int resetTextWithinHours = 24;
     TextWeight percentFontWeight = TextWeight::SemiBold;
     TextWeight resetFontWeight = TextWeight::Medium;
     TextWeight labelFontWeight = TextWeight::Normal;
@@ -5538,9 +5545,12 @@ static Grid BuildQuotaGrid(QuotaUiInstance& state) {
                 refs.percentOutside[w] = percentOutside;
 
                 // Same treatment for the countdown, in its own column on the chosen side.
+                // FollowFill stays inside the bar - it tracks the fill edge - so it does not
+                // reserve an outside column.
                 bool resetColumn =
-                    s.resetTextPlacement != PercentTextPlacement::InsideBar && !verticalBars &&
-                    s.showResetText;
+                    (s.resetTextPlacement == PercentTextPlacement::BeforeBar ||
+                     s.resetTextPlacement == PercentTextPlacement::AfterBar) &&
+                    !verticalBars && s.showResetText;
                 bool resetOutside = resetColumn && BarWindowsInclude(s.resetTextWindows, w);
                 bool resetBefore =
                     resetColumn && s.resetTextPlacement == PercentTextPlacement::BeforeBar;
@@ -5627,8 +5637,13 @@ static Grid BuildQuotaGrid(QuotaUiInstance& state) {
                                                                : TextAlignment::Left);
                     outsidePercent.HorizontalAlignment(percentBefore ? HorizontalAlignment::Right
                                                                      : HorizontalAlignment::Left);
-                    outsidePercent.Margin(percentBefore ? Thickness{0, -1, 4, 0}
-                                                        : Thickness{4, -1, 0, 0});
+                    // The reset strip sits above the bar in the same row, so centring on the
+                    // row would float the text above the bar's centre line. Push it down by
+                    // the strip's height to sit on the bar itself.
+                    double stripOffset = rb.showResetBar && !rb.vertical
+                                             ? rb.resetThickness + resetBarGap : 0;
+                    outsidePercent.Margin(percentBefore ? Thickness{0, stripOffset - 1, 4, 0}
+                                                        : Thickness{4, stripOffset - 1, 0, 0});
                     swprintf(name, ARRAYSIZE(name), L"AiQuota_Percent_%d_%d", (int)i, w);
                     outsidePercent.Name(name);
                     Grid::SetColumn(outsidePercent,
@@ -5653,8 +5668,10 @@ static Grid BuildQuotaGrid(QuotaUiInstance& state) {
                                                            : TextAlignment::Left);
                     outsideReset.HorizontalAlignment(resetBefore ? HorizontalAlignment::Right
                                                                  : HorizontalAlignment::Left);
-                    outsideReset.Margin(resetBefore ? Thickness{0, -1, 4, 0}
-                                                    : Thickness{4, -1, 0, 0});
+                    double resetStripOffset = rb.showResetBar && !rb.vertical
+                                                  ? rb.resetThickness + resetBarGap : 0;
+                    outsideReset.Margin(resetBefore ? Thickness{0, resetStripOffset - 1, 4, 0}
+                                                    : Thickness{4, resetStripOffset - 1, 0, 0});
                     Grid::SetColumn(outsideReset, resetColumnIndex);
                     refs.resetTexts[w] = outsideReset;
                     barItem.Children().Append(outsideReset);
@@ -6450,7 +6467,13 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                 }
                 std::wstring resetText;
                 if (ui.resetTexts[w] && !stale) {
-                    resetText = FormatCountdownCompact(wu.resetUnixMs);
+                    // A weekly window spends most of its life days away, where a countdown is
+                    // noise. Show one only once the reset is close enough to act on; a 5h
+                    // window is always inside that horizon, so it always shows.
+                    bool nearEnough =
+                        s.resetTextWithinHours <= 0 || wu.resetUnixMs == 0 ||
+                        wu.resetUnixMs <= now + (ULONGLONG)s.resetTextWithinHours * 3600000ULL;
+                    if (nearEnough) resetText = FormatCountdownCompact(wu.resetUnixMs);
                 }
 
                 double padDip = rb.textPadding * physicalPixelDip;
@@ -6480,6 +6503,32 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                     leadWidth + trailWidth + 2 * padDip + gapDip > barLength) {
                     resetText.clear();
                     trailWidth = 0;
+                }
+
+                // Fork addition: FollowFill rides the filled portion instead of the bar.
+                //
+                // Sitting at the bar's trailing end means that as usage drains the countdown
+                // is left stranded on the bare track, where the on-fill colour is wrong and
+                // the grey reads badly. Instead: tuck it just inside the fill's right edge,
+                // where there is a solid colour behind it, and let it slide as the fill moves.
+                // Once the fill is too short to hold it, step just past the fill edge onto the
+                // track - still never straddling the boundary, which is the unreadable case.
+                bool followFill = !verticalBars && !ui.resetOutside[w] && ui.resetTexts[w] &&
+                                  s.resetTextPlacement == PercentTextPlacement::FollowFill;
+                bool followFillOnFill = false;
+                double followFillLeft = 0;
+                if (followFill && !resetText.empty()) {
+                    double room = px - padDip * 2 - (leadWidth > 0 ? leadWidth + gapDip : 0);
+                    if (room >= trailWidth) {
+                        // Fits inside the fill: hug its right edge.
+                        followFillOnFill = true;
+                        followFillLeft = px - padDip - trailWidth;
+                    } else {
+                        // Park it just past the fill edge, clamped inside the bar.
+                        followFillLeft = std::clamp(px + gapDip, padDip,
+                                                    std::max(padDip,
+                                                             barLength - padDip - trailWidth));
+                    }
                 }
 
                 double leadShift = 0;
@@ -6551,6 +6600,7 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                         (barLength - leadWidth) / 2 :
                         barLength - padDip - leadShift - leadWidth;
                 double appliedResetLeft =
+                    followFill ? followFillLeft :
                     resetLeadsBar ? padDip + trailShift
                                   : barLength - padDip - trailShift - trailWidth;
 
@@ -6658,17 +6708,24 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                 // The in-bar countdown at the trailing end ("4h 52m"). The pace timer already
                 // ticks once a minute, so it stays honest between polls with no extra calls.
                 if (ui.resetTexts[w]) {
-                    int trailShiftPx = (int)std::lround(trailShift);
+                    // FollowFill positions from the left edge of the bar, so it is applied as
+                    // an absolute offset rather than an inset from whichever end.
+                    int trailShiftPx = (int)std::lround(followFill ? followFillLeft : trailShift);
                     if (trailShiftPx != ap.resetShift[w]) {
-                        // A leading countdown shifts right, a trailing one shifts left.
-                        bool resetLeftAligned = ui.resetTexts[w].HorizontalAlignment() ==
-                                                HorizontalAlignment::Left;
+                        bool resetLeftAligned =
+                            followFill || ui.resetTexts[w].HorizontalAlignment() ==
+                                              HorizontalAlignment::Left;
                         for (TextBlock const& block : {ui.resetTexts[w], ui.resetTextsInverted[w],
                                                        ui.resetTextsHalo[w]}) {
                             if (!block) continue;
+                            if (followFill) {
+                                block.HorizontalAlignment(HorizontalAlignment::Left);
+                                block.TextAlignment(TextAlignment::Left);
+                            }
                             if (auto translation = block.RenderTransform()
                                                        .try_as<TranslateTransform>()) {
-                                translation.X(resetLeftAligned ? padDip + trailShift
+                                translation.X(followFill ? followFillLeft :
+                                              resetLeftAligned ? padDip + trailShift
                                                                : -(padDip + trailShift));
                             }
                         }
@@ -7630,13 +7687,20 @@ static void NormalizeSettings(Settings* s) {
     if (s->resetBarMode < ResetBarMode::Elapsed || s->resetBarMode > ResetBarMode::Remaining) {
         s->resetBarMode = ResetBarMode::Elapsed;
     }
-    auto clampPlacement = [](PercentTextPlacement value) {
+    auto clampPlacement = [](PercentTextPlacement value, PercentTextPlacement fallback) {
         return value < PercentTextPlacement::InsideBar ||
-                       value > PercentTextPlacement::AfterBar
-                   ? PercentTextPlacement::InsideBar : value;
+                       value > PercentTextPlacement::FollowFill
+                   ? fallback : value;
     };
-    s->percentTextPlacement = clampPlacement(s->percentTextPlacement);
-    s->resetTextPlacement = clampPlacement(s->resetTextPlacement);
+    // FollowFill is countdown-only; the percentage has no meaningful "ride the fill" mode.
+    if (s->percentTextPlacement == PercentTextPlacement::FollowFill) {
+        s->percentTextPlacement = PercentTextPlacement::InsideBar;
+    }
+    s->percentTextPlacement =
+        clampPlacement(s->percentTextPlacement, PercentTextPlacement::InsideBar);
+    s->resetTextPlacement =
+        clampPlacement(s->resetTextPlacement, PercentTextPlacement::FollowFill);
+    s->resetTextWithinHours = std::clamp(s->resetTextWithinHours, 0, 24 * 14);
     auto clampWeight = [](TextWeight value, TextWeight fallback) {
         return value < TextWeight::Normal || value > TextWeight::ExtraBold ? fallback : value;
     };
@@ -7740,8 +7804,10 @@ static std::wstring SerializeSettings(const Settings& s) {
                   s.percentTextWindows == BarWindows::Primary ? L"primary" : L"both");
         auto placementName = [](PercentTextPlacement placement) -> PCWSTR {
             return placement == PercentTextPlacement::BeforeBar ? L"before" :
-                   placement == PercentTextPlacement::AfterBar ? L"after" : L"inside";
+                   placement == PercentTextPlacement::AfterBar ? L"after" :
+                   placement == PercentTextPlacement::FollowFill ? L"followfill" : L"inside";
         };
+        setNumber(L"resetTextWithinHours", s.resetTextWithinHours);
         setString(L"percentTextPlacement", placementName(s.percentTextPlacement));
         setString(L"resetTextPlacement", placementName(s.resetTextPlacement));
         auto weightName = [](TextWeight weight) -> PCWSTR {
@@ -7881,14 +7947,18 @@ static bool DeserializeSettings(const std::wstring& json, Settings* out) {
         s.showResetText = getBoolDefault(L"showResetText", true);
         s.resetTextWindows = getBarWindows(L"resetTextWindows", BarWindows::Primary);
         s.percentTextWindows = getBarWindows(L"percentTextWindows", BarWindows::Both);
-        auto getPlacement = [&](PCWSTR name) {
+        auto getPlacement = [&](PCWSTR name, PercentTextPlacement defaultValue) {
             std::wstring value = GetStr(root, name);
             return value == L"before" ? PercentTextPlacement::BeforeBar :
-                   value == L"after" ? PercentTextPlacement::AfterBar
-                                     : PercentTextPlacement::InsideBar;
+                   value == L"after" ? PercentTextPlacement::AfterBar :
+                   value == L"followfill" ? PercentTextPlacement::FollowFill :
+                   value == L"inside" ? PercentTextPlacement::InsideBar : defaultValue;
         };
-        s.percentTextPlacement = getPlacement(L"percentTextPlacement");
-        s.resetTextPlacement = getPlacement(L"resetTextPlacement");
+        s.percentTextPlacement =
+            getPlacement(L"percentTextPlacement", PercentTextPlacement::InsideBar);
+        s.resetTextPlacement =
+            getPlacement(L"resetTextPlacement", PercentTextPlacement::FollowFill);
+        s.resetTextWithinHours = (int)GetNum(root, L"resetTextWithinHours", 24);
         auto getWeight = [&](PCWSTR name, TextWeight defaultValue) {
             std::wstring value = GetStr(root, name);
             if (value == L"normal") return TextWeight::Normal;
@@ -8370,6 +8440,7 @@ enum SettingsControlId {
     // Fork additions: typography.
     kPercentTextPlacement,
     kResetTextPlacement,
+    kResetTextWithinHours,
     kPercentFontWeight,
     kResetFontWeight,
     kLabelFontWeight,
@@ -9471,6 +9542,7 @@ static void RefreshSettingsControls(SettingsWindowState& state) {
                         (int)s.percentTextPlacement, 0);
     SendDlgItemMessageW(state.hWnd, kResetTextPlacement, CB_SETCURSEL,
                         (int)s.resetTextPlacement, 0);
+    SetControlInt(state, kResetTextWithinHours, s.resetTextWithinHours);
     SendDlgItemMessageW(state.hWnd, kPercentFontWeight, CB_SETCURSEL,
                         (int)s.percentFontWeight, 0);
     SendDlgItemMessageW(state.hWnd, kResetFontWeight, CB_SETCURSEL,
@@ -9581,12 +9653,13 @@ static void CommitScalarSettings(SettingsWindowState& state, bool refreshControl
     s.percentTextWindows = getBarWindowsControl(kPercentTextWindows, s.percentTextWindows);
     auto getPlacementControl = [&](int id, PercentTextPlacement fallback) {
         int selection = (int)SendDlgItemMessageW(state.hWnd, id, CB_GETCURSEL, 0, 0);
-        return selection >= 0 && selection <= (int)PercentTextPlacement::AfterBar ?
+        return selection >= 0 && selection <= (int)PercentTextPlacement::FollowFill ?
                    (PercentTextPlacement)selection : fallback;
     };
     s.percentTextPlacement =
         getPlacementControl(kPercentTextPlacement, s.percentTextPlacement);
     s.resetTextPlacement = getPlacementControl(kResetTextPlacement, s.resetTextPlacement);
+    s.resetTextWithinHours = getBoundedInt(kResetTextWithinHours, s.resetTextWithinHours);
     auto getWeightControl = [&](int id, TextWeight fallback) {
         int selection = (int)SendDlgItemMessageW(state.hWnd, id, CB_GETCURSEL, 0, 0);
         return selection >= 0 && selection <= (int)TextWeight::ExtraBold ? (TextWeight)selection
@@ -9978,7 +10051,12 @@ static LRESULT CALLBACK AccountEditorWndProc(HWND hWnd, UINT message,
         case WM_CTLCOLORSTATIC:
         case WM_CTLCOLORBTN:
             if (state && state->dark) {
-                SetTextColor(reinterpret_cast<HDC>(wParam), RGB(235, 235, 235));
+                // A disabled label would otherwise fall back to the system grey, which is
+                // chosen for a light dialog and is close to unreadable on this dark one.
+                // Dim enough to still read as disabled, light enough to actually read.
+                bool controlEnabled = IsWindowEnabled(reinterpret_cast<HWND>(lParam)) != FALSE;
+                SetTextColor(reinterpret_cast<HDC>(wParam),
+                             controlEnabled ? RGB(235, 235, 235) : RGB(150, 150, 150));
                 SetBkColor(reinterpret_cast<HDC>(wParam), RGB(32, 32, 32));
                 return reinterpret_cast<LRESULT>(state->backgroundBrush);
             }
@@ -10499,6 +10577,7 @@ static void ResetCurrentSettingsPage(SettingsWindowState& state) {
         settings.percentTextWindows = defaults.percentTextWindows;
         settings.percentTextPlacement = defaults.percentTextPlacement;
         settings.resetTextPlacement = defaults.resetTextPlacement;
+        settings.resetTextWithinHours = defaults.resetTextWithinHours;
         settings.percentFontWeight = defaults.percentFontWeight;
         settings.resetFontWeight = defaults.resetFontWeight;
         settings.labelFontWeight = defaults.labelFontWeight;
@@ -10661,8 +10740,11 @@ static LRESULT CALLBACK SettingsWindowProc(HWND hWnd, UINT message,
                 *state, 2, L"Countdown placement", L"COMBOBOX",
                 CBS_DROPDOWNLIST, 0, kResetTextPlacement);
             AddComboItems(resetTextPlacement,
-                          {L"Inside the bar", L"Left of the bar (always readable)",
-                           L"Right of the bar (always readable)"});
+                          {L"Inside, at the bar end", L"Left of the bar (always readable)",
+                           L"Right of the bar (always readable)",
+                           L"Follow the fill (recommended)"});
+            AddNumericRow(*state, 2, L"Countdown only within (hours, 0 = always)",
+                          kResetTextWithinHours, 0, 336, true);
             AddSettingsCheck(*state, 2, L"Show quota pace ticks", kShowPaceTicks);
             HWND paceTickStyle = AddSettingsRow(*state, 2, L"Pace tick style", L"COMBOBOX",
                                                 CBS_DROPDOWNLIST, 0, kPaceTickStyle);
@@ -11117,7 +11199,12 @@ static LRESULT CALLBACK SettingsWindowProc(HWND hWnd, UINT message,
         case WM_CTLCOLORSTATIC:
         case WM_CTLCOLORBTN:
             if (state && state->dark) {
-                SetTextColor(reinterpret_cast<HDC>(wParam), RGB(235, 235, 235));
+                // A disabled label would otherwise fall back to the system grey, which is
+                // chosen for a light dialog and is close to unreadable on this dark one.
+                // Dim enough to still read as disabled, light enough to actually read.
+                bool controlEnabled = IsWindowEnabled(reinterpret_cast<HWND>(lParam)) != FALSE;
+                SetTextColor(reinterpret_cast<HDC>(wParam),
+                             controlEnabled ? RGB(235, 235, 235) : RGB(150, 150, 150));
                 SetBkColor(reinterpret_cast<HDC>(wParam), RGB(32, 32, 32));
                 return reinterpret_cast<LRESULT>(state->backgroundBrush);
             }

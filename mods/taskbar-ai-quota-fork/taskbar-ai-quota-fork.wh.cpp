@@ -2,7 +2,7 @@
 // @id              taskbar-ai-quota-fork
 // @name            Taskbar AI Quota Bars - Fork
 // @description     Shows configurable AI agent/LLM subscription quota bars for Anthropic, OpenAI, and Google Antigravity on the Windows 11 taskbar
-// @version         1.6.0
+// @version         1.6.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -6515,19 +6515,40 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                 // track - still never straddling the boundary, which is the unreadable case.
                 bool followFill = !verticalBars && !ui.resetOutside[w] && ui.resetTexts[w] &&
                                   s.resetTextPlacement == PercentTextPlacement::FollowFill;
-                bool followFillOnFill = false;
+                // Whether it lands on the fill or the track is not tracked here: the colour
+                // pass works it out from the span, which stays correct if either moves.
                 double followFillLeft = 0;
                 if (followFill && !resetText.empty()) {
-                    double room = px - padDip * 2 - (leadWidth > 0 ? leadWidth + gapDip : 0);
-                    if (room >= trailWidth) {
+                    // Which end the percentage occupies decides what the countdown may use.
+                    // A left percentage eats into the fill the countdown wants to sit on; a
+                    // right one instead blocks the bar's trailing end, which is where the
+                    // countdown lands once the bar is nearly full.
+                    PercentTextAlignment percentSide =
+                        percentTextAlignment == PercentTextAlignment::Adaptive ?
+                            PercentTextAlignment::Left : percentTextAlignment;
+                    bool percentInside = leadWidth > 0;
+                    bool percentOnLeft = percentInside &&
+                                         percentSide != PercentTextAlignment::Right;
+                    bool percentOnRight = percentInside &&
+                                          percentSide == PercentTextAlignment::Right;
+
+                    // Rightmost pixel the countdown may occupy without hitting a right-hand
+                    // percentage.
+                    double rightLimit = barLength - padDip -
+                                        (percentOnRight ? leadWidth + gapDip : 0);
+                    double room = px - padDip - (percentOnLeft ? padDip + leadWidth + gapDip : 0);
+                    double onFillLeft = std::min(px, rightLimit) - trailWidth;
+                    double leftLimit = padDip + (percentOnLeft ? leadWidth + gapDip : 0);
+
+                    if (room >= trailWidth && onFillLeft >= leftLimit) {
                         // Fits inside the fill: hug its right edge.
-                        followFillOnFill = true;
-                        followFillLeft = px - padDip - trailWidth;
+                        followFillLeft = onFillLeft;
                     } else {
-                        // Park it just past the fill edge, clamped inside the bar.
-                        followFillLeft = std::clamp(px + gapDip, padDip,
-                                                    std::max(padDip,
-                                                             barLength - padDip - trailWidth));
+                        // Park it just past the fill edge, clamped inside the bar and clear of
+                        // the percentage on whichever end that sits.
+                        followFillLeft = std::clamp(px + gapDip, leftLimit,
+                                                    std::max(leftLimit,
+                                                             rightLimit - trailWidth));
                     }
                 }
 

@@ -2,7 +2,7 @@
 // @id              taskbar-ai-quota-fork
 // @name            Taskbar AI Quota Bars - Fork
 // @description     Shows configurable AI agent/LLM subscription quota bars for Anthropic, OpenAI, and Google Antigravity on the Windows 11 taskbar
-// @version         1.6.2
+// @version         1.6.3
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -383,7 +383,7 @@ struct Settings {
     // Fork addition: poll faster only while Claude Code is actually working, detected from
     // local transcript writes rather than by hammering the usage endpoint.
     bool adaptivePolling = true;
-    int activePollSeconds = 60;
+    int activePollSeconds = 120;
 
     bool operator==(const Settings&) const = default;
 };
@@ -4011,7 +4011,18 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
     // matter what the detector believes, because one rate-limit lockout lasts hours.
     ULONGLONG activeBudgetWindowMs = 0;
     int activePollsThisHour = 0;
-    constexpr int kMaxActivePollsPerHour = 30;
+    // Lowered from 30 after a real lockout. The detector is not wrong - during a long Claude
+    // Code session the transcript really is written continuously, so `claudeActive` stays
+    // true for hours and this ceiling is reached every hour rather than occasionally. Thirty
+    // of those plus the base polls put roughly thirty-six requests an hour against an
+    // endpoint that rate-limits per token, and it answered with a multi-hour 429 - costing
+    // far more freshness than the extra polls ever bought.
+    //
+    // Eighteen still allows a burst of quick updates when a session starts and then settles
+    // back to the normal interval, which is the shape that was wanted. For comparison, the
+    // companion Codenotch app settled on ten an hour and other readers of this endpoint use
+    // a five minute cache; this remains the most eager of the three.
+    constexpr int kMaxActivePollsPerHour = 18;
     // Per-account red-crossing arm state, indexed by QuotaBarIndex:
     // -1 unknown (primes without firing), 0 below/armed, 1 above/already notified.
     std::vector<std::array<int, kQuotaBarCount>> redState;
@@ -4182,8 +4193,12 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
                 // multi-hour 429s, and one lockout costs more freshness than these polls buy.
                 if (adaptivePolling && accounts[i].provider == L"anthropic" &&
                     results[i].error.empty() && claudeActive) {
+                    // Floor of sixty seconds, not thirty, and raised here rather than only in
+                    // the default so a configuration saved before this change is protected
+                    // too: the stored value is what an existing install keeps using, and it
+                    // was an existing install that hit the lockout.
                     ULONGLONG activeDelayMs =
-                        (ULONGLONG)std::max(activePollSeconds, 30) * 1000;
+                        (ULONGLONG)std::max(activePollSeconds, 60) * 1000;
                     if (activeDelayMs < pollDelayMs) {
                         pollDelayMs = activeDelayMs;
                         activePollsThisHour++;
@@ -8065,7 +8080,7 @@ static bool DeserializeSettings(const std::wstring& json, Settings* out) {
         s.colorblindMode = getBoolDefault(L"colorblind", false);
         s.showStaleWarning = getBoolDefault(L"staleWarning", true);
         s.adaptivePolling = getBoolDefault(L"adaptivePolling", true);
-        s.activePollSeconds = (int)GetNum(root, L"activePollSeconds", 60);
+        s.activePollSeconds = (int)GetNum(root, L"activePollSeconds", 120);
         NormalizeSettings(&s);
         *out = std::move(s);
         return true;

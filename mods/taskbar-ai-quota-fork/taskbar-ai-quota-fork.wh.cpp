@@ -2,7 +2,7 @@
 // @id              taskbar-ai-quota-fork
 // @name            Taskbar AI Quota Bars - Fork
 // @description     Shows configurable AI agent/LLM subscription quota bars for Anthropic, OpenAI, and Google Antigravity on the Windows 11 taskbar
-// @version         1.7.1
+// @version         1.8.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -454,6 +454,8 @@ struct AppliedState {
     std::array<std::wstring, kQuotaBarCount> percentTexts;
     std::wstring labelText;
     double labelOpacity = -1;
+    // -1 unknown, so the first pass always writes the brush rather than assuming inherited.
+    int labelWorking = -1;
     double columnOpacity = -1;
     int barMask = -1;
     int visible = -1;  // -1 unset, 0 collapsed, 1 visible.
@@ -1651,7 +1653,7 @@ static ULONGLONG CurrentAuthEpoch(uint64_t idHash) {
 // that header itself and offers no macro for it. Logged on load and unload so the Windhawk
 // log says which build was running - without it a reload and an update look identical, and
 // "which version was this happening on" is unanswerable after the fact.
-constexpr PCWSTR kModVersion = L"1.7.1";
+constexpr PCWSTR kModVersion = L"1.8.0";
 
 // Rate-limit state that has to outlive the mod being reloaded.
 //
@@ -4193,6 +4195,50 @@ static ULONGLONG NewestClaudeSessionWriteMs() {
     return std::max(codeMs, NewestClaudeDesktopWriteMs());
 }
 
+/// How recently the transcript must have been written for the label to say "working".
+///
+/// Shorter than the two minutes the polling detector uses, and deliberately so: those two
+/// answer different questions. `claudeActive` asks "has there been activity lately, is it worth
+/// polling faster", and being sticky there costs nothing - a poll one interval too many is
+/// cheap. This claims *right now*, on the taskbar, and a claim that stays up for two minutes
+/// after Claude finished is wrong for most of the time it is shown.
+///
+/// Forty-five seconds because a working turn writes to its transcript far more often than that
+/// - every message and every tool result - so the gap between writes is the thing being
+/// measured, not the length of the turn.
+constexpr ULONGLONG kWorkingWindowMs = 45000;
+
+/// Whether a Claude session is writing right now, cached so the UI can ask freely.
+///
+/// `NewestClaudeSessionWriteMs` enumerates every project directory and the transcripts inside
+/// them. That is fine on a poll interval and not fine on a repaint, and the UI repaints on
+/// every settings change, theme flip and hover. Five seconds of cache makes the question free
+/// to ask while keeping the answer fresher than the thing it describes.
+///
+/// # What this can and cannot say
+///
+/// It can say "working now", because a turn in progress writes to its transcript continuously.
+/// It cannot say "waiting for you" - a permission prompt writes nothing while it waits, so an
+/// idle transcript and a blocked one look identical from here. The companion Codenotch app
+/// tells them apart only because Claude Code's hooks tell it, and this mod has no messenger to
+/// receive those. So the indicator claims the half that is knowable and stays silent about the
+/// other half, rather than guessing and being wrong exactly when it matters.
+static bool ClaudeWorkingNow() {
+    static std::atomic<ULONGLONG> lastCheckMs{0};
+    static std::atomic<ULONGLONG> newestWriteMs{0};
+    ULONGLONG now = NowUnixMs();
+    ULONGLONG previous = lastCheckMs.load(std::memory_order_acquire);
+    if (now - previous >= 5000) {
+        // Whoever wins the exchange does the scan; everyone else uses the cached answer rather
+        // than queueing behind it. A repaint must never wait on the file system.
+        if (lastCheckMs.compare_exchange_strong(previous, now, std::memory_order_acq_rel)) {
+            newestWriteMs.store(NewestClaudeSessionWriteMs(), std::memory_order_release);
+        }
+    }
+    ULONGLONG written = newestWriteMs.load(std::memory_order_acquire);
+    return written != 0 && now >= written && now - written < kWorkingWindowMs;
+}
+
 static DWORD WINAPI FetchThreadProc(LPVOID) {
     bool apartmentInitialized = false;
     try {
@@ -6537,6 +6583,10 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
     showOpenAiExtraLimits = s.showOpenAiExtraLimits;
     colorblindMode = s.colorblindMode;
     showStaleWarning = s.showStaleWarning;
+    // The working indicator rides on the same setting as the detector behind it. Someone who
+    // has switched off adaptive polling has switched off watching Claude's transcripts, and a
+    // label that kept reporting from them anyway would be ignoring the switch.
+    bool adaptivePollingForUi = s.adaptivePolling;
     BarPalette palette = MakeBarPalette(state.appliedLightTheme == 1);
 
     ULONGLONG now = NowUnixMs();
@@ -7203,6 +7253,12 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                     tip += retry;
                 }
             }
+            // Said in words as well as shown, because a green dot is a convention the first
+            // person to see it has not learned yet - and because the wording is where the
+            // limit of the signal can be stated honestly.
+            if (accounts[i].provider == L"anthropic" && adaptivePollingForUi && ClaudeWorkingNow()) {
+                tip += L"\n[Claude is writing now - a session is working]";
+            }
             tip += L"\n" + FormatUpdated(d.lastSuccessMs, stale);
             tip += visualTestMode ? L" - visual test; click to open settings" :
                    accountRefreshing ? L" - refreshing..." :
@@ -7225,8 +7281,20 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                 ap.columnOpacity = columnOpacity;
             }
 
+            // Working state, for Anthropic accounts only: the detector reads Claude's own
+            // transcripts, so it has nothing to say about any other provider. A stale reading
+            // does not suppress it - the two are unrelated, one being about the number and the
+            // other about the machine - but a hidden account is not asked at all.
+            bool working = !visualTestMode && accounts[i].provider == L"anthropic" &&
+                           adaptivePollingForUi && ClaudeWorkingNow();
+
             double labelOpacity = stale ? 0.45 : 0.8;
-            std::wstring labelText = accounts[i].label;
+            std::wstring labelText;
+            // Before the label rather than after it. The suffixes already there are states of
+            // the *account* - a warning, a backup token - and this is a state of the machine,
+            // so putting it on the other side keeps the two from reading as one growing tag.
+            if (working) labelText += L"● ";
+            labelText += accounts[i].label;
             if (warn) labelText += L"!";
             else if (d.usingBackupToken) labelText += L" [BK]";
             if (labelOpacity != ap.labelOpacity || labelText != ap.labelText) {
@@ -7236,6 +7304,23 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                 }
                 ap.labelOpacity = labelOpacity;
                 ap.labelText = std::move(labelText);
+            }
+            // The colour, written only when it changes. A brush assignment per repaint would
+            // be churn on an element that is repainted for every hover and theme flip.
+            if (ui.label && ap.labelWorking != (working ? 1 : 0)) {
+                if (working) {
+                    // Two greens, because one is not readable on both taskbars: the bright one
+                    // disappears into a light taskbar and the dark one into a dark taskbar.
+                    winrt::Windows::UI::Color green =
+                        palette.light ? winrt::Windows::UI::Color{255, 0x11, 0x7A, 0x43}
+                                      : winrt::Windows::UI::Color{255, 0x28, 0xE0, 0x7B};
+                    ui.label.Foreground(SolidColorBrush(green));
+                } else {
+                    // Cleared rather than set back to a colour of our choosing, so the label
+                    // returns to whatever the taskbar's own theme says it should be.
+                    ui.label.ClearValue(TextBlock::ForegroundProperty());
+                }
+                ap.labelWorking = working ? 1 : 0;
             }
         }
 

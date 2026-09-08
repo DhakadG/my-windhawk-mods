@@ -2,7 +2,7 @@
 // @id              taskbar-ai-quota-fork
 // @name            Taskbar AI Quota Bars - Fork
 // @description     Shows configurable AI agent/LLM subscription quota bars for Anthropic, OpenAI, and Google Antigravity on the Windows 11 taskbar
-// @version         1.6.3
+// @version         1.8.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -101,6 +101,10 @@ For fork-specific placement, typography or Windows 11 26H2 problems, contact
 // winsock2.h is included cleanly below without redefinition conflicts.
 #include <winsock2.h>
 #include <ws2tcpip.h>
+
+#ifndef WH_MOD_ID
+#define WH_MOD_ID L"taskbar-ai-quota-fork"
+#endif
 
 #include <windhawk_utils.h>
 
@@ -421,6 +425,13 @@ struct AccountData {
     ULONGLONG retryDeadlineMs = 0;
     bool stale = true;
     bool needsLogin = false;  // Sign-in required; left-click signs in instead of refreshing.
+    bool usingBackupToken = false;        // Active quota was queried using backup token.
+    bool hasBackupToken = false;          // A backup token exists in store.
+    bool primaryRateLimited = false;      // Primary token hit rate limit.
+    ULONGLONG primaryRetryDeadlineMs = 0; // Cooldown end time for primary token.
+    ULONGLONG backupRetryDeadlineMs = 0;  // Cooldown end time for backup token.
+    bool backupNeedsLogin = false;        // Backup token expired or invalid.
+    std::wstring backupError;             // Error specifically from backup token (if any).
 };
 
 struct AppliedState {
@@ -443,6 +454,8 @@ struct AppliedState {
     std::array<std::wstring, kQuotaBarCount> percentTexts;
     std::wstring labelText;
     double labelOpacity = -1;
+    // -1 unknown, so the first pass always writes the brush rather than assuming inherited.
+    int labelWorking = -1;
     double columnOpacity = -1;
     int barMask = -1;
     int visible = -1;  // -1 unset, 0 collapsed, 1 visible.
@@ -1636,16 +1649,56 @@ static ULONGLONG CurrentAuthEpoch(uint64_t idHash) {
     return AuthEpochLocked(idHash);
 }
 
-static std::wstring TokenStorageKey(uint64_t idHash) {
-    wchar_t buf[32];
-    swprintf(buf, ARRAYSIZE(buf), L"auth_%016llx", (unsigned long long)idHash);
+// Kept in sync with `@version` in the header block above by hand, because Windhawk parses
+// that header itself and offers no macro for it. Logged on load and unload so the Windhawk
+// log says which build was running - without it a reload and an update look identical, and
+// "which version was this happening on" is unanswerable after the fact.
+constexpr PCWSTR kModVersion = L"1.8.1";
+
+// Rate-limit state that has to outlive the mod being reloaded.
+//
+// Every deadline and counter used to live in `FetchThreadProc`'s own locals, so unloading the
+// mod - which Windhawk does on every recompile, every update and some settings changes -
+// threw all of it away and the next load fetched every account immediately. That is how a
+// multi-hour 429 got *extended* by installing a new version: the lockout was still running,
+// the mod no longer knew, and it knocked again straight away.
+//
+// Stored as unix seconds in Windhawk's int store. Seconds rather than milliseconds because
+// the store holds a 32-bit int, and unix seconds fit in one until 2038 while milliseconds
+// overflowed in 1970.
+static std::wstring RetryStorageKey(uint64_t idHash) {
+    wchar_t name[40];
+    swprintf(name, ARRAYSIZE(name), L"retry_%016llx", idHash);
+    return name;
+}
+
+static ULONGLONG LoadStoredRetryDeadlineMs(uint64_t idHash, ULONGLONG nowMs) {
+    int secs = Wh_GetIntValue(RetryStorageKey(idHash).c_str(), 0);
+    if (secs <= 0) return 0;
+    ULONGLONG deadline = (ULONGLONG)secs * 1000;
+    if (deadline <= nowMs) return 0;
+    // A stored value further out than any Retry-After this endpoint issues is not a deadline,
+    // it is corruption or a clock that moved. Honour six hours of it and no more, so a bad
+    // write cannot silently mute the mod for a week.
+    ULONGLONG cap = nowMs + 6ULL * 60 * 60 * 1000;
+    return deadline > cap ? cap : deadline;
+}
+
+static void SaveStoredRetryDeadlineMs(uint64_t idHash, ULONGLONG deadlineMs) {
+    Wh_SetIntValue(RetryStorageKey(idHash).c_str(), (int)(deadlineMs / 1000));
+}
+
+static std::wstring TokenStorageKey(uint64_t idHash, bool isBackup = false) {
+    wchar_t buf[40];
+    swprintf(buf, ARRAYSIZE(buf), isBackup ? L"auth_bk_%016llx" : L"auth_%016llx",
+             (unsigned long long)idHash);
     return buf;
 }
 
-static bool LoadStoredToken(uint64_t idHash, StoredToken* out) {
+static bool LoadStoredToken(uint64_t idHash, StoredToken* out, bool isBackup = false) {
     std::lock_guard<std::mutex> lk(g_authMutex);
     std::vector<wchar_t> buf(16384);
-    Wh_GetStringValue(TokenStorageKey(idHash).c_str(), buf.data(), buf.size());
+    Wh_GetStringValue(TokenStorageKey(idHash, isBackup).c_str(), buf.data(), buf.size());
     std::wstring stored = buf.data();
     if (stored.empty()) return false;
 
@@ -1663,7 +1716,7 @@ static bool LoadStoredToken(uint64_t idHash, StoredToken* out) {
     }
 }
 
-static bool SaveStoredToken(uint64_t idHash, const StoredToken& t) {
+static bool SaveStoredToken(uint64_t idHash, const StoredToken& t, bool isBackup = false) {
     std::lock_guard<std::mutex> lk(g_authMutex);
     std::wstring json;
     try {
@@ -1678,12 +1731,12 @@ static bool SaveStoredToken(uint64_t idHash, const StoredToken& t) {
     }
     std::string b64 = DpapiProtect(WideToUtf8(json));
     if (b64.empty()) return false;
-    return Wh_SetStringValue(TokenStorageKey(idHash).c_str(), Utf8ToWide(b64).c_str());
+    return Wh_SetStringValue(TokenStorageKey(idHash, isBackup).c_str(), Utf8ToWide(b64).c_str());
 }
 
-static bool ClearStoredToken(uint64_t idHash) {
+static bool ClearStoredToken(uint64_t idHash, bool isBackup = false) {
     std::lock_guard<std::mutex> lk(g_authMutex);
-    std::wstring key = TokenStorageKey(idHash);
+    std::wstring key = TokenStorageKey(idHash, isBackup);
     Wh_DeleteValue(key.c_str());
     std::vector<wchar_t> stored(16384);
     Wh_GetStringValue(key.c_str(), stored.data(), stored.size());
@@ -1692,6 +1745,7 @@ static bool ClearStoredToken(uint64_t idHash) {
 
 static TokenSaveResult SaveStoredTokenIfCurrent(uint64_t idHash, ULONGLONG authEpoch,
                                                 const StoredToken& t,
+                                                bool isBackup = false,
                                                 uint64_t* savedIdentity = nullptr) {
     if (savedIdentity) *savedIdentity = 0;
     std::lock_guard<std::mutex> lk(g_authEpochMutex);
@@ -1710,7 +1764,7 @@ static TokenSaveResult SaveStoredTokenIfCurrent(uint64_t idHash, ULONGLONG authE
         destinationIdentity = redirect->destinationIdentity;
         destinationEpoch = redirect->destinationEpoch;
     }
-    if (!SaveStoredToken(destinationIdentity, t)) return TokenSaveResult::Failed;
+    if (!SaveStoredToken(destinationIdentity, t, isBackup)) return TokenSaveResult::Failed;
     if (savedIdentity) *savedIdentity = destinationIdentity;
     return TokenSaveResult::Saved;
 }
@@ -1725,9 +1779,9 @@ static void BumpAuthEpochLocked(uint64_t idHash) {
     g_authEpochs.push_back({idHash, 1});
 }
 
-static bool ClearStoredTokenAndBumpAuthEpoch(uint64_t idHash) {
+static bool ClearStoredTokenAndBumpAuthEpoch(uint64_t idHash, bool isBackup = false) {
     std::lock_guard<std::mutex> lk(g_authEpochMutex);
-    bool cleared = ClearStoredToken(idHash);
+    bool cleared = ClearStoredToken(idHash, isBackup);
     BumpAuthEpochLocked(idHash);
     return cleared;
 }
@@ -1750,6 +1804,23 @@ static TokenCopyResult CopyStoredTokenForRename(uint64_t oldHash, uint64_t newHa
     if (newValue[0]) return TokenCopyResult::DestinationOccupied;
     if (!Wh_SetStringValue(TokenStorageKey(newHash).c_str(), oldValue.data())) {
         return TokenCopyResult::Failed;
+    }
+    // The backup token moves with the account, and a failure to move it is a failure.
+    //
+    // It used to be copied on a best-effort basis and the result ignored, so a write that
+    // failed left the caller believing both tokens had arrived - it would go on to delete the
+    // old primary, and the account would come out of the rename with no backup and no
+    // explanation. Reporting `Failed` here aborts the rename with the message the caller
+    // already has for that case, which leaves both accounts exactly as they were.
+    std::vector<wchar_t> oldBackup(16384);
+    Wh_GetStringValue(TokenStorageKey(oldHash, true).c_str(), oldBackup.data(), oldBackup.size());
+    if (oldBackup[0]) {
+        if (!Wh_SetStringValue(TokenStorageKey(newHash, true).c_str(), oldBackup.data())) {
+            // Undo the primary copy, so a failure here does not leave the new identity holding
+            // half a pair.
+            ClearStoredToken(newHash);
+            return TokenCopyResult::Failed;
+        }
     }
     return TokenCopyResult::Copied;
 }
@@ -2091,10 +2162,12 @@ struct LoginRequest {
     std::wstring label;
     uint64_t idHash = 0;
     ULONGLONG authEpoch = 0;
+    bool isBackup = false;
 };
 
 static std::atomic<bool> g_loginInProgress{false};
 static std::atomic<uint64_t> g_loginAccountIdentity{0};
+static std::atomic<bool> g_loginIsBackup{false};
 static HANDLE g_loginThread = nullptr;
 static std::mutex g_loginThreadMutex;  // Guards g_loginThread handoff vs. the unload join.
 static std::atomic<HWND> g_loginWnd{nullptr};        // Anthropic paste dialog window.
@@ -2404,18 +2477,30 @@ static void DoAnthropicLogin(const LoginRequest& req) {
     }
 
     OpenUrl(BuildAnthropicAuthorizeUrl(challenge, state).c_str());
-    std::wstring title = L"Sign in: " + req.label + L" (Anthropic)";
+    std::wstring slotTag = req.isBackup ? L" - Backup Token" : L"";
+    std::wstring title = L"Sign in: " + req.label + L" (Anthropic" + slotTag + L")";
     std::wstring instructions =
         L"A browser window opened to claude.ai. Approve access, then copy the code shown "
-        L"on the page and paste it below.";
+        L"on the page (or the callback URL) and paste it below.";
     std::wstring pasted = ShowLoginInputDialog(title, instructions);
     if (g_unloading || pasted.empty()) return;
 
     size_t b = pasted.find_first_not_of(L" \t\r\n");
     size_t e = pasted.find_last_not_of(L" \t\r\n");
     std::wstring code = b == std::wstring::npos ? L"" : pasted.substr(b, e - b + 1);
+
+    // Robust extraction: handle full callback URLs (e.g. ...callback?code=xxx#state=yyy) and quotes
+    size_t codeParam = code.find(L"code=");
+    if (codeParam != std::wstring::npos) {
+        code = code.substr(codeParam + 5);
+        size_t ampPos = code.find(L'&');
+        if (ampPos != std::wstring::npos) code = code.substr(0, ampPos);
+    }
     size_t hashPos = code.find(L'#');  // pasted value is code#state.
     if (hashPos != std::wstring::npos) code = code.substr(0, hashPos);
+    if (code.size() >= 2 && code.front() == L'"' && code.back() == L'"') {
+        code = code.substr(1, code.size() - 2);
+    }
     if (code.empty()) {
         Wh_Log(L"Sign-in [%s]: no code entered", req.label.c_str());
         return;
@@ -2440,7 +2525,7 @@ static void DoAnthropicLogin(const LoginRequest& req) {
     std::wstring err;
     if (PostTokenEndpoint(/*anthropic*/ true, L"application/json", body, &tok, &err) ==
         TokenEndpointResult::Success) {
-        TokenSaveResult saved = SaveStoredTokenIfCurrent(req.idHash, req.authEpoch, tok);
+        TokenSaveResult saved = SaveStoredTokenIfCurrent(req.idHash, req.authEpoch, tok, req.isBackup);
         if (saved == TokenSaveResult::Stale) {
             Wh_Log(L"Sign-in [%s]: cancelled before saving token", req.label.c_str());
             return;
@@ -2450,9 +2535,9 @@ static void DoAnthropicLogin(const LoginRequest& req) {
             return;
         }
         RefreshQuotaByIdentity(req.idHash);
-        Wh_Log(L"Sign-in [%s]: success", req.label.c_str());
+        Wh_Log(L"Sign-in [%s%s]: success", req.label.c_str(), req.isBackup ? L" backup" : L"");
     } else {
-        Wh_Log(L"Sign-in [%s] failed: %s", req.label.c_str(), err.c_str());
+        Wh_Log(L"Sign-in [%s%s] failed: %s", req.label.c_str(), req.isBackup ? L" backup" : L"", err.c_str());
     }
 }
 
@@ -2499,7 +2584,7 @@ static void DoOpenAiLogin(const LoginRequest& req) {
     std::wstring err;
     if (PostTokenEndpoint(/*anthropic*/ false, L"application/x-www-form-urlencoded", formBody,
                           &tok, &err) == TokenEndpointResult::Success) {
-        TokenSaveResult saved = SaveStoredTokenIfCurrent(req.idHash, req.authEpoch, tok);
+        TokenSaveResult saved = SaveStoredTokenIfCurrent(req.idHash, req.authEpoch, tok, req.isBackup);
         if (saved == TokenSaveResult::Stale) {
             Wh_Log(L"Sign-in [%s]: cancelled before saving token", req.label.c_str());
             return;
@@ -2509,9 +2594,9 @@ static void DoOpenAiLogin(const LoginRequest& req) {
             return;
         }
         RefreshQuotaByIdentity(req.idHash);
-        Wh_Log(L"Sign-in [%s]: success", req.label.c_str());
+        Wh_Log(L"Sign-in [%s%s]: success", req.label.c_str(), req.isBackup ? L" backup" : L"");
     } else {
-        Wh_Log(L"Sign-in [%s] failed: %s", req.label.c_str(), err.c_str());
+        Wh_Log(L"Sign-in [%s%s] failed: %s", req.label.c_str(), req.isBackup ? L" backup" : L"", err.c_str());
     }
 }
 
@@ -2538,6 +2623,7 @@ static DWORD WINAPI LoginThreadProc(LPVOID param) {
     }
     if (apartmentInitialized) winrt::uninit_apartment();
     g_loginAccountIdentity.store(0);
+    g_loginIsBackup.store(false);
     g_loginInProgress.store(false);
     NotifySettingsWindowChanged();
     return 0;
@@ -2545,7 +2631,7 @@ static DWORD WINAPI LoginThreadProc(LPVOID param) {
 
 // Kicks off a sign-in on a dedicated thread (browser + paste dialog or loopback are blocking).
 // One at a time; runs on a taskbar UI thread (menu click).
-static void StartLoginByIdentity(uint64_t identityHash) {
+static void StartLoginByIdentity(uint64_t identityHash, bool isBackup = false) {
     if (g_unloading) return;
     std::lock_guard<std::mutex> configLock(g_configEditMutex);
     AccountConfig account;
@@ -2567,7 +2653,9 @@ static void StartLoginByIdentity(uint64_t identityHash) {
     req->label = account.label;
     req->idHash = identityHash;
     req->authEpoch = CurrentAuthEpoch(req->idHash);
+    req->isBackup = isBackup;
     g_loginAccountIdentity.store(identityHash);
+    g_loginIsBackup.store(isBackup);
     NotifySettingsWindowChanged();
 
     // Hand off g_loginThread under the lock and re-check g_unloading: Wh_ModUninit sets
@@ -2577,6 +2665,7 @@ static void StartLoginByIdentity(uint64_t identityHash) {
     if (g_unloading) {
         delete req;
         g_loginAccountIdentity.store(0);
+        g_loginIsBackup.store(false);
         g_loginInProgress.store(false);
         NotifySettingsWindowChanged();
         return;
@@ -2590,12 +2679,13 @@ static void StartLoginByIdentity(uint64_t identityHash) {
     if (!g_loginThread) {
         delete req;
         g_loginAccountIdentity.store(0);
+        g_loginIsBackup.store(false);
         g_loginInProgress.store(false);
         NotifySettingsWindowChanged();
     }
 }
 
-static bool SignOutAccountByIdentity(uint64_t identityHash) {
+static bool SignOutAccountByIdentity(uint64_t identityHash, bool isBackup = false) {
     if (g_unloading) return false;
     {
         std::lock_guard<std::mutex> lk(g_settingsMutex);
@@ -2605,8 +2695,8 @@ static bool SignOutAccountByIdentity(uint64_t identityHash) {
             });
         if (it == g_settings.accounts.end() || it->provider == L"antigravity") return false;
     }
-    bool cleared = ClearStoredTokenAndBumpAuthEpoch(identityHash);
-    RefreshQuotaByIdentity(identityHash);  // Re-fetch so the column flips to "not signed in".
+    bool cleared = ClearStoredTokenAndBumpAuthEpoch(identityHash, isBackup);
+    RefreshQuotaByIdentity(identityHash);  // Re-fetch so the column flips to updated state.
     NotifySettingsWindowChanged();
     return cleared;
 }
@@ -3679,10 +3769,23 @@ static void ApplyCreditsMax(const AccountConfig& acc, AccountData* d) {
     d->extraLimitAmount = acc.creditsMax;
 }
 
-static void FetchAccount(const AccountConfig& acc, AccountData* d, int* retryAfterSec) {
+struct TokenRequestResult {
+    bool ok = false;
+    bool rateLimited = false;
+    bool needsLogin = false;
+    int retryAfterSec = 0;
+    std::wstring error;
+    AccountData fresh;
+};
+
+static void FetchAccount(const AccountConfig& acc, AccountData* d, int* retryAfterSec,
+                         bool* switchedToBackupNotice = nullptr) {
+    if (switchedToBackupNotice) *switchedToBackupNotice = false;
     d->error.clear();
+    d->backupError.clear();
     d->retryDeadlineMs = 0;
     d->needsLogin = false;
+    d->backupNeedsLogin = false;
 
     // Antigravity uses local language server discovery, not OAuth.
     if (acc.provider == L"antigravity") {
@@ -3692,137 +3795,262 @@ static void FetchAccount(const AccountConfig& acc, AccountData* d, int* retryAft
 
     uint64_t idHash = AccountIdentityHash(acc);
     ULONGLONG authEpoch = CurrentAuthEpoch(idHash);
-    StoredToken tok;
-    if (!LoadStoredToken(idHash, &tok) || tok.accessToken.empty()) {
+    ULONGLONG now = NowUnixMs();
+
+    StoredToken primaryTok;
+    StoredToken backupTok;
+    bool hasPrimary = LoadStoredToken(idHash, &primaryTok) &&
+                      (!primaryTok.accessToken.empty() || !primaryTok.refreshToken.empty());
+    bool hasBackup = LoadStoredToken(idHash, &backupTok, true) &&
+                     (!backupTok.accessToken.empty() || !backupTok.refreshToken.empty());
+    d->hasBackupToken = hasBackup;
+
+    if (!hasPrimary && !hasBackup) {
         d->stale = true;
         d->needsLogin = true;
+        d->usingBackupToken = false;
+        d->primaryRateLimited = false;
         d->error = L"not signed in - click to sign in";
         return;
     }
 
-    // Refresh just before expiry so a request rarely races the token going stale.
-    if (tok.expiresMs && tok.expiresMs < NowUnixMs() + 60000) {
-        std::wstring refreshErr;
-        int refreshRetryAfter = 0;
-        TokenEndpointResult refreshResult =
-            RefreshToken(acc.provider, &tok, &refreshErr, &refreshRetryAfter);
-        if (refreshResult == TokenEndpointResult::Success) {
-            uint64_t savedIdentity = 0;
-            TokenSaveResult saved =
-                SaveStoredTokenIfCurrent(idHash, authEpoch, tok, &savedIdentity);
-            if (saved == TokenSaveResult::Stale) {
-                d->stale = true;
-                d->needsLogin = true;
-                d->error = L"not signed in - click to sign in";
-                return;
-            }
-            if (saved != TokenSaveResult::Saved) {
-                d->stale = true;
-                d->error = L"could not save refreshed token";
-                return;
-            }
-            if (savedIdentity != idHash) RefreshQuotaByIdentity(savedIdentity);
-        } else {
-            d->stale = true;
-            if (refreshResult == TokenEndpointResult::Rejected) {
-                d->needsLogin = true;
-                d->error = L"session expired - click to sign in";
-            } else {
-                d->error = L"token refresh failed";
-                if (!refreshErr.empty()) d->error += L": " + refreshErr;
-                *retryAfterSec = refreshRetryAfter > 0 ? refreshRetryAfter : 120;
-            }
-            return;
-        }
-    }
+    auto executeFetchWithToken = [&](StoredToken& tok, bool isBackupToken) -> TokenRequestResult {
+        TokenRequestResult res;
 
-    auto requestUsage = [&](const StoredToken& t) -> HttpResult {
-        if (acc.provider == L"anthropic") {
-            std::wstring headers = L"Authorization: Bearer " + t.accessToken +
-                                   L"\r\nanthropic-beta: oauth-2025-04-20"
-                                   L"\r\nAccept: application/json\r\n";
-            return HttpRequest(L"GET", L"api.anthropic.com", L"/api/oauth/usage",
-                               L"claude-code/2.1.0", headers);
+        // Proactive token refresh just before expiry
+        if (tok.expiresMs && tok.expiresMs < NowUnixMs() + 60000) {
+            std::wstring refreshErr;
+            int refreshRetryAfter = 0;
+            TokenEndpointResult refreshResult =
+                RefreshToken(acc.provider, &tok, &refreshErr, &refreshRetryAfter);
+            if (refreshResult == TokenEndpointResult::Success) {
+                uint64_t savedIdentity = 0;
+                TokenSaveResult saved =
+                    SaveStoredTokenIfCurrent(idHash, authEpoch, tok, isBackupToken, &savedIdentity);
+                if (saved == TokenSaveResult::Stale) {
+                    res.needsLogin = true;
+                    res.error = L"not signed in - click to sign in";
+                    return res;
+                }
+                if (saved != TokenSaveResult::Saved) {
+                    res.error = L"could not save refreshed token";
+                    return res;
+                }
+                if (savedIdentity != idHash) RefreshQuotaByIdentity(savedIdentity);
+            } else {
+                if (refreshResult == TokenEndpointResult::Rejected) {
+                    res.needsLogin = true;
+                    res.error = L"session expired - click to sign in";
+                } else {
+                    res.error = L"token refresh failed";
+                    if (!refreshErr.empty()) res.error += L": " + refreshErr;
+                    res.retryAfterSec = refreshRetryAfter > 0 ? refreshRetryAfter : 120;
+                }
+                return res;
+            }
         }
-        std::wstring headers = L"Authorization: Bearer " + t.accessToken +
-                               L"\r\nOrigin: https://chatgpt.com"
-                               L"\r\nReferer: https://chatgpt.com/"
-                               L"\r\nAccept: application/json\r\n";
-        if (!t.accountId.empty()) headers += L"ChatGPT-Account-Id: " + t.accountId + L"\r\n";
-        return HttpRequest(L"GET", L"chatgpt.com", L"/backend-api/wham/usage",
-                           L"taskbar-ai-quota/0.1", headers);
+
+        auto requestUsage = [&](const StoredToken& t) -> HttpResult {
+            if (acc.provider == L"anthropic") {
+                std::wstring headers = L"Authorization: Bearer " + t.accessToken +
+                                       L"\r\nanthropic-beta: oauth-2025-04-20"
+                                       L"\r\nAccept: application/json\r\n";
+                return HttpRequest(L"GET", L"api.anthropic.com", L"/api/oauth/usage",
+                                   L"claude-code/2.1.0", headers);
+            }
+            std::wstring headers = L"Authorization: Bearer " + t.accessToken +
+                                   L"\r\nOrigin: https://chatgpt.com"
+                                   L"\r\nReferer: https://chatgpt.com/"
+                                   L"\r\nAccept: application/json\r\n";
+            if (!t.accountId.empty()) headers += L"ChatGPT-Account-Id: " + t.accountId + L"\r\n";
+            return HttpRequest(L"GET", L"chatgpt.com", L"/backend-api/wham/usage",
+                               L"taskbar-ai-quota/0.1", headers);
+        };
+
+        HttpResult r = requestUsage(tok);
+        // Reactive refresh: the access token may have been revoked or expired early.
+        if (r.ok && r.status == 401 && !tok.refreshToken.empty()) {
+            std::wstring refreshErr;
+            int refreshRetryAfter = 0;
+            TokenEndpointResult refreshResult =
+                RefreshToken(acc.provider, &tok, &refreshErr, &refreshRetryAfter);
+            if (refreshResult == TokenEndpointResult::Success) {
+                uint64_t savedIdentity = 0;
+                TokenSaveResult saved =
+                    SaveStoredTokenIfCurrent(idHash, authEpoch, tok, isBackupToken, &savedIdentity);
+                if (saved == TokenSaveResult::Saved) {
+                    if (savedIdentity != idHash) RefreshQuotaByIdentity(savedIdentity);
+                    r = requestUsage(tok);
+                } else if (saved == TokenSaveResult::Stale) {
+                    res.needsLogin = true;
+                    res.error = L"not signed in - click to sign in";
+                    return res;
+                } else {
+                    res.error = L"could not save refreshed token";
+                    return res;
+                }
+            } else if (refreshResult == TokenEndpointResult::TransientFailure) {
+                res.error = L"token refresh failed";
+                if (!refreshErr.empty()) res.error += L": " + refreshErr;
+                res.retryAfterSec = refreshRetryAfter > 0 ? refreshRetryAfter : 120;
+                return res;
+            }
+        }
+
+        if (!r.ok) {
+            res.error = L"network error";
+            return res;
+        }
+        if (r.status == 401) {
+            res.needsLogin = true;
+            res.error = L"unauthorized - click to sign in";
+            return res;
+        }
+        if (r.status == 429) {
+            res.rateLimited = true;
+            res.error = L"rate limited by API";
+            res.retryAfterSec = r.retryAfterSec > 0 ? r.retryAfterSec : 120;
+            return res;
+        }
+        if (r.status != 200) {
+            res.error = L"HTTP " + std::to_wstring(r.status);
+            return res;
+        }
+
+        std::wstring parseError;
+        bool parsed = acc.provider == L"anthropic" ?
+            ParseAnthropicUsage(r.body, &res.fresh, &parseError) :
+            ParseOpenAiUsage(r.body, &res.fresh, &parseError);
+        if (!parsed) {
+            res.error = parseError.empty() ? L"unexpected response format" : parseError;
+            return res;
+        }
+
+        ApplyCreditsMax(acc, &res.fresh);
+        res.fresh.stale = false;
+        res.fresh.lastSuccessMs = NowUnixMs();
+        res.ok = true;
+        return res;
     };
 
-    HttpResult r = requestUsage(tok);
-    // Reactive refresh: the access token may have been revoked or expired early.
-    if (r.ok && r.status == 401 && !tok.refreshToken.empty()) {
-        std::wstring refreshErr;
-        int refreshRetryAfter = 0;
-        TokenEndpointResult refreshResult =
-            RefreshToken(acc.provider, &tok, &refreshErr, &refreshRetryAfter);
-        if (refreshResult == TokenEndpointResult::Success) {
-            uint64_t savedIdentity = 0;
-            TokenSaveResult saved =
-                SaveStoredTokenIfCurrent(idHash, authEpoch, tok, &savedIdentity);
-            if (saved == TokenSaveResult::Saved) {
-                if (savedIdentity != idHash) RefreshQuotaByIdentity(savedIdentity);
-                r = requestUsage(tok);
-            } else if (saved == TokenSaveResult::Stale) {
+    // Check primary cooldown
+    bool primaryInCooldown = d->primaryRateLimited && d->primaryRetryDeadlineMs > now;
+    bool primaryAttempted = false;
+    TokenRequestResult primaryRes;
+
+    if (hasPrimary && !primaryInCooldown) {
+        primaryAttempted = true;
+        primaryRes = executeFetchWithToken(primaryTok, false);
+        if (primaryRes.ok) {
+            // The backup's own cooldown survives a primary success. Assigning the fresh record
+            // wholesale drops every runtime field, and this one is the server's deadline rather
+            // than ours: forgetting it means the next failover treats a backup token that is
+            // still rate limited as ready, and spends a request learning what it already knew.
+            ULONGLONG bDeadline = d->backupRetryDeadlineMs;
+            std::wstring bError = d->backupError;
+            bool bNeedsLogin = d->backupNeedsLogin;
+
+            *d = std::move(primaryRes.fresh);
+            d->hasBackupToken = hasBackup;
+            d->usingBackupToken = false;
+            d->primaryRateLimited = false;
+            d->primaryRetryDeadlineMs = 0;
+            d->backupRetryDeadlineMs = bDeadline;
+            d->backupError = std::move(bError);
+            d->backupNeedsLogin = bNeedsLogin;
+            d->error.clear();
+            return;
+        }
+        if (primaryRes.rateLimited) {
+            int pRetry = primaryRes.retryAfterSec > 0 ? primaryRes.retryAfterSec : 120;
+            d->primaryRateLimited = true;
+            d->primaryRetryDeadlineMs = now + (ULONGLONG)pRetry * 1000;
+        } else {
+            d->error = primaryRes.error;
+            d->needsLogin = primaryRes.needsLogin;
+            if (!hasBackup) {
                 d->stale = true;
-                d->needsLogin = true;
-                d->error = L"not signed in - click to sign in";
-                return;
-            } else {
-                d->stale = true;
-                d->error = L"could not save refreshed token";
+                *retryAfterSec = primaryRes.retryAfterSec;
                 return;
             }
-        } else if (refreshResult == TokenEndpointResult::TransientFailure) {
-            d->stale = true;
-            d->error = L"token refresh failed";
-            if (!refreshErr.empty()) d->error += L": " + refreshErr;
-            *retryAfterSec = refreshRetryAfter > 0 ? refreshRetryAfter : 120;
-            return;
         }
     }
 
-    if (!r.ok) {
+    // Fail over whenever the primary is unusable, not only when it is rate limited.
+    //
+    // The gate used to be `rateLimited` alone, which left out the most common way a token stops
+    // working: it expires or is revoked, the endpoint answers 401, and `needsLogin` is set
+    // instead. The account then showed "session expired - click to sign in" and no quota at
+    // all, with a perfectly good backup token sitting in the store unused - the exact situation
+    // the second slot exists for.
+    bool primaryUnusable = primaryAttempted && (primaryRes.rateLimited || primaryRes.needsLogin);
+    if (hasBackup && (primaryInCooldown || primaryUnusable || !hasPrimary)) {
+        TokenRequestResult backupRes = executeFetchWithToken(backupTok, true);
+        if (backupRes.ok) {
+            bool previouslyUsingBackup = d->usingBackupToken;
+            ULONGLONG pDeadline = d->primaryRetryDeadlineMs;
+            bool pRateLimited = d->primaryRateLimited;
+
+            *d = std::move(backupRes.fresh);
+            d->hasBackupToken = true;
+            d->usingBackupToken = true;
+            d->primaryRateLimited = pRateLimited;
+            d->primaryRetryDeadlineMs = pDeadline;
+            d->error.clear();
+            d->backupError.clear();
+
+            if (!previouslyUsingBackup && switchedToBackupNotice) {
+                *switchedToBackupNotice = true;
+            }
+            return;
+        }
+
+        // Backup failed as well
         d->stale = true;
-        d->error = L"network error";
+        d->backupNeedsLogin = backupRes.needsLogin;
+        d->backupError = backupRes.error;
+
+        if (backupRes.rateLimited) {
+            int bRetry = backupRes.retryAfterSec > 0 ? backupRes.retryAfterSec : 120;
+            d->backupRetryDeadlineMs = now + (ULONGLONG)bRetry * 1000;
+            if (d->primaryRateLimited && d->primaryRetryDeadlineMs > now) {
+                d->error = L"rate limited by API (both primary & backup)";
+                ULONGLONG minDeadline = std::min(d->primaryRetryDeadlineMs, d->backupRetryDeadlineMs);
+                *retryAfterSec = (int)std::max<LONGLONG>(1, (LONGLONG)(minDeadline - now + 999) / 1000);
+            } else {
+                d->error = L"backup token rate limited by API";
+                *retryAfterSec = bRetry;
+            }
+            return;
+        }
+
+        // Backup had non-rate-limit error
+        if (d->primaryRateLimited) {
+            d->error = L"rate limited by API (backup also failed: " + backupRes.error + L")";
+            if (d->primaryRetryDeadlineMs > now) {
+                *retryAfterSec = (int)std::max<LONGLONG>(1, (LONGLONG)(d->primaryRetryDeadlineMs - now + 999) / 1000);
+            } else {
+                *retryAfterSec = 120;
+            }
+        } else {
+            d->error = d->error.empty() ? (L"backup error: " + backupRes.error) :
+                                          (d->error + L" | backup: " + backupRes.error);
+            *retryAfterSec = backupRes.retryAfterSec > 0 ? backupRes.retryAfterSec : primaryRes.retryAfterSec;
+        }
         return;
     }
-    if (r.status == 401) {
-        d->stale = true;
-        d->needsLogin = true;
-        d->error = L"unauthorized - click to sign in";
-        return;
-    }
-    if (r.status == 429) {
-        d->stale = true;
+
+    // If we reached here, primary failed and no backup token was available
+    d->stale = true;
+    if (d->primaryRateLimited) {
         d->error = L"rate limited by API";
-        *retryAfterSec = r.retryAfterSec > 0 ? r.retryAfterSec : 120;
-        return;
+        int pRetry = primaryRes.retryAfterSec > 0 ? primaryRes.retryAfterSec : 120;
+        *retryAfterSec = pRetry;
+    } else {
+        d->error = primaryRes.error.empty() ? L"fetch failed" : primaryRes.error;
+        d->needsLogin = primaryRes.needsLogin;
+        *retryAfterSec = primaryRes.retryAfterSec;
     }
-    if (r.status != 200) {
-        d->stale = true;
-        d->error = L"HTTP " + std::to_wstring(r.status);
-        return;
-    }
-
-    AccountData fresh;
-    std::wstring parseError;
-    bool parsed = acc.provider == L"anthropic" ? ParseAnthropicUsage(r.body, &fresh, &parseError)
-                                               : ParseOpenAiUsage(r.body, &fresh, &parseError);
-    if (!parsed) {
-        d->stale = true;
-        d->error = parseError.empty() ? L"unexpected response format" : parseError;
-        return;
-    }
-
-    ApplyCreditsMax(acc, &fresh);
-    fresh.stale = false;
-    fresh.lastSuccessMs = NowUnixMs();
-    *d = std::move(fresh);
 }
 
 static void PostUiUpdate() {
@@ -3995,12 +4223,80 @@ static ULONGLONG NewestClaudeSessionWriteMs() {
     return std::max(codeMs, NewestClaudeDesktopWriteMs());
 }
 
+/// How recently the transcript must have been written for the label to say "working".
+///
+/// Shorter than the two minutes the polling detector uses, and deliberately so: those two
+/// answer different questions. `claudeActive` asks "has there been activity lately, is it worth
+/// polling faster", and being sticky there costs nothing - a poll one interval too many is
+/// cheap. This claims *right now*, on the taskbar, and a claim that stays up for two minutes
+/// after Claude finished is wrong for most of the time it is shown.
+///
+/// Forty-five seconds because a working turn writes to its transcript far more often than that
+/// - every message and every tool result - so the gap between writes is the thing being
+/// measured, not the length of the turn.
+constexpr ULONGLONG kWorkingWindowMs = 45000;
+
+/// Whether a Claude session is writing right now, cached so the UI can ask freely.
+///
+/// `NewestClaudeSessionWriteMs` enumerates every project directory and the transcripts inside
+/// them. That is fine on a poll interval and not fine on a repaint, and the UI repaints on
+/// every settings change, theme flip and hover. Five seconds of cache makes the question free
+/// to ask while keeping the answer fresher than the thing it describes.
+///
+/// # What this can and cannot say
+///
+/// It can say "working now", because a turn in progress writes to its transcript continuously.
+/// It cannot say "waiting for you" - a permission prompt writes nothing while it waits, so an
+/// idle transcript and a blocked one look identical from here. The companion Codenotch app
+/// tells them apart only because Claude Code's hooks tell it, and this mod has no messenger to
+/// receive those. So the indicator claims the half that is knowable and stays silent about the
+/// other half, rather than guessing and being wrong exactly when it matters.
+static bool ClaudeWorkingNow() {
+    static std::atomic<ULONGLONG> lastCheckMs{0};
+    static std::atomic<ULONGLONG> newestWriteMs{0};
+    ULONGLONG now = NowUnixMs();
+    ULONGLONG previous = lastCheckMs.load(std::memory_order_acquire);
+    if (now - previous >= 5000) {
+        // Whoever wins the exchange does the scan; everyone else uses the cached answer rather
+        // than queueing behind it. A repaint must never wait on the file system.
+        if (lastCheckMs.compare_exchange_strong(previous, now, std::memory_order_acq_rel)) {
+            newestWriteMs.store(NewestClaudeSessionWriteMs(), std::memory_order_release);
+        }
+    }
+    ULONGLONG written = newestWriteMs.load(std::memory_order_acquire);
+    return written != 0 && now >= written && now - written < kWorkingWindowMs;
+}
+
 static DWORD WINAPI FetchThreadProc(LPVOID) {
     bool apartmentInitialized = false;
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
         apartmentInitialized = true;
     } catch (...) {}
+
+    // Exactly one process polls, for the whole desktop session.
+    //
+    // Windhawk loads this mod into every explorer.exe, and there are routinely four of them:
+    // one owning the primary taskbar and three that never inject anything ("eligible=0" in the
+    // log). Each ran its own fetch thread, so a reload produced three or four requests inside
+    // one second - and no per-process counter could see the others, which is why the hourly
+    // ceiling looked untouched while the endpoint was answering 429.
+    //
+    // A named mutex is the whole mechanism. The winner polls; the others sit on the stop event
+    // and cost nothing. If the winner's process exits the mutex is abandoned, and the wait
+    // below hands ownership to a survivor rather than leaving the bars frozen.
+    //
+    // Processes that have not injected any UI wait before even trying, so the one with the
+    // taskbar normally wins. That is a preference, not a guarantee: if nobody has injected,
+    // somebody still has to poll for the tray icon and the threshold notifications to work.
+    // A raw literal, because the escaped form of this name was written wrong once already:
+    // "Local\t..." puts a tab where the namespace separator was meant to go, so the mutex ended
+    // up with a control character in its name and outside the Local namespace entirely. It
+    // still worked - every process used the same wrong literal, and an unqualified name is
+    // still per-session - which is exactly why it survived a review of the behaviour.
+    HANDLE fetchOwnerMutex =
+        CreateMutexW(nullptr, FALSE, LR"(Local\taskbar-ai-quota-fork-fetch)");
+    bool isFetchOwner = false;
 
     std::vector<std::wstring> lastLoggedErrorStates;
     std::vector<uint64_t> retryIdentityHashes;
@@ -4009,8 +4305,11 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
     // Hard ceiling on activity-driven polls. The desktop app writes logs fairly freely, so
     // "recently written" can stay true for long stretches; this bounds the worst case no
     // matter what the detector believes, because one rate-limit lockout lasts hours.
-    ULONGLONG activeBudgetWindowMs = 0;
-    int activePollsThisHour = 0;
+    // Both restored from the store on load, for the reason given at RetryStorageKey: a reload
+    // used to hand the mod a fresh hourly allowance along with a clean slate, so recompiling
+    // it a few times in an afternoon spent several hours' worth of budget in one.
+    ULONGLONG activeBudgetWindowMs = (ULONGLONG)Wh_GetIntValue(L"pollBudgetWindow", 0) * 1000;
+    int activePollsThisHour = std::max(0, Wh_GetIntValue(L"pollBudgetCount", 0));
     // Lowered from 30 after a real lockout. The detector is not wrong - during a long Claude
     // Code session the transcript really is written continuously, so `claudeActive` stays
     // true for hours and this ceiling is reached every hour rather than occasionally. Thirty
@@ -4028,6 +4327,28 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
     std::vector<std::array<int, kQuotaBarCount>> redState;
     ULONGLONG lastLoggedSettingsGeneration = 0;
     while (!g_unloading) {
+        if (!isFetchOwner) {
+            if (!fetchOwnerMutex) {
+                // No mutex means no way to coordinate. Polling anyway would restore the very
+                // burst this guards against, so this process does nothing and lets whichever
+                // process does have one do the work.
+                if (WaitForSingleObject(g_stopEvent, 60000) == WAIT_OBJECT_0) break;
+                continue;
+            }
+            if (!g_uiInjected.load(std::memory_order_acquire)) {
+                if (WaitForSingleObject(g_stopEvent, 5000) == WAIT_OBJECT_0) break;
+            }
+            DWORD claimed = WaitForSingleObject(fetchOwnerMutex, 0);
+            // WAIT_ABANDONED means the previous owner's process died holding it. The mutex is
+            // ours now and there is no shared state to repair - every deadline that matters is
+            // in the store, not in that process's memory.
+            if (claimed != WAIT_OBJECT_0 && claimed != WAIT_ABANDONED) {
+                if (WaitForSingleObject(g_stopEvent, 15000) == WAIT_OBJECT_0) break;
+                continue;
+            }
+            isFetchOwner = true;
+            Wh_Log(L"Fetch owner for this session");
+        }
         ULONGLONG refreshGeneration;
         uint64_t refreshAccountIdentity;
         bool refreshRequested;
@@ -4061,6 +4382,8 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
             if (nowActiveMs - activeBudgetWindowMs > 3600000) {
                 activeBudgetWindowMs = nowActiveMs;
                 activePollsThisHour = 0;
+                Wh_SetIntValue(L"pollBudgetWindow", (int)(activeBudgetWindowMs / 1000));
+                Wh_SetIntValue(L"pollBudgetCount", 0);
             }
             if (claudeActive && activePollsThisHour >= kMaxActivePollsPerHour) {
                 claudeActive = false;
@@ -4099,6 +4422,13 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
                         oldDeadlineUsed[j] = true;
                         break;
                     }
+                }
+                // Nothing carried over means either a new account or - on the first pass after
+                // a load - that this process has no history at all. The store does, and an
+                // unexpired deadline there is the server's, not ours to discard.
+                if (retryDeadlineMs[i] == 0) {
+                    retryDeadlineMs[i] =
+                        LoadStoredRetryDeadlineMs(retryIdentityHashes[i], NowUnixMs());
                 }
             }
             lastLoggedSettingsGeneration = settingsGeneration;
@@ -4173,17 +4503,27 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
             }
 
             int retryAfter = 0;
-            FetchAccount(accounts[i], &results[i], &retryAfter);
+            bool failoverSwitched = false;
+            FetchAccount(accounts[i], &results[i], &retryAfter, &failoverSwitched);
+            if (failoverSwitched && enableNotifications) {
+                std::wstring providerName = ProviderDisplayName(accounts[i].provider);
+                wchar_t title[96];
+                swprintf(title, ARRAYSIZE(title), L"%s: using backup token", accounts[i].label.c_str());
+                std::wstring body = providerName + L" primary token hit rate limit. Gracefully switched to backup OAuth token.";
+                FireThresholdNotification(title, body);
+            }
             if (retryAfter > 0) {
                 nextPollDeadlineMs[i] = 0;
                 retryDeadlineMs[i] = NowUnixMs() + (ULONGLONG)retryAfter * 1000;
                 results[i].retryDeadlineMs = retryDeadlineMs[i];
+                SaveStoredRetryDeadlineMs(retryIdentityHashes[i], retryDeadlineMs[i]);
                 if (nextRetryMs == 0 || retryDeadlineMs[i] < nextRetryMs) {
                     nextRetryMs = retryDeadlineMs[i];
                 }
             } else {
                 retryDeadlineMs[i] = 0;
                 results[i].retryDeadlineMs = 0;
+                SaveStoredRetryDeadlineMs(retryIdentityHashes[i], 0);
                 ULONGLONG pollDelayMs = accounts[i].provider == L"antigravity"
                                             ? 60000
                                             : (ULONGLONG)intervalMin * 60000;
@@ -4202,6 +4542,7 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
                     if (activeDelayMs < pollDelayMs) {
                         pollDelayMs = activeDelayMs;
                         activePollsThisHour++;
+                        Wh_SetIntValue(L"pollBudgetCount", activePollsThisHour);
                     }
                 }
                 if (!results[i].error.empty() && !results[i].needsLogin &&
@@ -4374,6 +4715,10 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
 
         HANDLE handles[2] = {g_stopEvent, g_refreshEvent};
         if (WaitForMultipleObjects(2, handles, FALSE, waitMs) == WAIT_OBJECT_0) break;
+    }
+    if (fetchOwnerMutex) {
+        if (isFetchOwner) ReleaseMutex(fetchOwnerMutex);
+        CloseHandle(fetchOwnerMutex);
     }
     RemoveNotifyIcon();
     if (apartmentInitialized) winrt::uninit_apartment();
@@ -6133,25 +6478,49 @@ static Grid BuildQuotaGrid(QuotaUiInstance& state) {
                                         ProviderDisplayName(accounts[k].provider);
                     uint64_t authIdentity = AccountIdentityHash(accounts[k]);
 
+                    // Primary sign-in
                     MenuFlyoutItem signInItem;
-                    signInItem.Text(name);
+                    signInItem.Text(name + L" (Primary)");
                     auto signInToken = signInItem.Click(
                         [authIdentity](winrt::Windows::Foundation::IInspectable const&,
                                        RoutedEventArgs const&) {
-                            StartLoginByIdentity(authIdentity);
+                            StartLoginByIdentity(authIdentity, false);
                         });
                     state.menuItemClickHandlers.push_back({signInItem, signInToken});
                     signInSub.Items().Append(signInItem);
 
+                    // Backup sign-in
+                    MenuFlyoutItem signInBackupItem;
+                    signInBackupItem.Text(name + L" (Backup)");
+                    auto signInBackupToken = signInBackupItem.Click(
+                        [authIdentity](winrt::Windows::Foundation::IInspectable const&,
+                                       RoutedEventArgs const&) {
+                            StartLoginByIdentity(authIdentity, true);
+                        });
+                    state.menuItemClickHandlers.push_back({signInBackupItem, signInBackupToken});
+                    signInSub.Items().Append(signInBackupItem);
+
+                    // Primary sign-out
                     MenuFlyoutItem signOutItem;
-                    signOutItem.Text(name);
+                    signOutItem.Text(name + L" (Primary)");
                     auto signOutToken = signOutItem.Click(
                         [authIdentity](winrt::Windows::Foundation::IInspectable const&,
                                        RoutedEventArgs const&) {
-                            if (!SignOutAccountByIdentity(authIdentity)) OpenSettingsWindow();
+                            if (!SignOutAccountByIdentity(authIdentity, false)) OpenSettingsWindow();
                         });
                     state.menuItemClickHandlers.push_back({signOutItem, signOutToken});
                     signOutSub.Items().Append(signOutItem);
+
+                    // Backup sign-out
+                    MenuFlyoutItem signOutBackupItem;
+                    signOutBackupItem.Text(name + L" (Backup)");
+                    auto signOutBackupToken = signOutBackupItem.Click(
+                        [authIdentity](winrt::Windows::Foundation::IInspectable const&,
+                                       RoutedEventArgs const&) {
+                            if (!SignOutAccountByIdentity(authIdentity, true)) OpenSettingsWindow();
+                        });
+                    state.menuItemClickHandlers.push_back({signOutBackupItem, signOutBackupToken});
+                    signOutSub.Items().Append(signOutBackupItem);
                 }
                 if (signInSub.Items().Size() > 0) {
                     menu.Items().Append(MenuFlyoutSeparator{});
@@ -6248,6 +6617,10 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
     showOpenAiExtraLimits = s.showOpenAiExtraLimits;
     colorblindMode = s.colorblindMode;
     showStaleWarning = s.showStaleWarning;
+    // The working indicator rides on the same setting as the detector behind it. Someone who
+    // has switched off adaptive polling has switched off watching Claude's transcripts, and a
+    // label that kept reporting from them anyway would be ignoring the switch.
+    bool adaptivePollingForUi = s.adaptivePolling;
     BarPalette palette = MakeBarPalette(state.appliedLightTheme == 1);
 
     ULONGLONG now = NowUnixMs();
@@ -6877,6 +7250,18 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                 tip += L"\n" + d.openAiExtraLimitLines;
             }
             if (!d.extraLines.empty()) tip += L"\n" + d.extraLines;
+            if (d.usingBackupToken) {
+                tip += L"\n[Active: Backup OAuth Token]";
+                if (d.primaryRateLimited && d.primaryRetryDeadlineMs > now) {
+                    ULONGLONG sec = (d.primaryRetryDeadlineMs - now + 999) / 1000;
+                    ULONGLONG mins = sec / 60;
+                    ULONGLONG secs = sec % 60;
+                    wchar_t cooldown[64];
+                    if (mins > 0) swprintf(cooldown, ARRAYSIZE(cooldown), L"\n(Primary in rate-limit cooldown: %llum %llus)", mins, secs);
+                    else swprintf(cooldown, ARRAYSIZE(cooldown), L"\n(Primary in rate-limit cooldown: %llus)", secs);
+                    tip += cooldown;
+                }
+            }
             if (!d.error.empty()) {
                 tip += L"\nerror: " + d.error;
                 if (d.retryDeadlineMs > now) {
@@ -6902,10 +7287,17 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                     tip += retry;
                 }
             }
+            // Said in words as well as shown, because a green dot is a convention the first
+            // person to see it has not learned yet - and because the wording is where the
+            // limit of the signal can be stated honestly.
+            if (accounts[i].provider == L"anthropic" && adaptivePollingForUi && ClaudeWorkingNow()) {
+                tip += L"\n[Claude is writing now - a session is working]";
+            }
             tip += L"\n" + FormatUpdated(d.lastSuccessMs, stale);
             tip += visualTestMode ? L" - visual test; click to open settings" :
                    accountRefreshing ? L" - refreshing..." :
                    d.needsLogin ? L" - click to sign in" :
+                   (d.backupNeedsLogin && d.usingBackupToken) ? L" - backup token expired; click to sign in" :
                    clickAction == ClickAction::OpenDashboard && accounts[i].provider != L"antigravity"
                        ? L" - click to open dashboard" :
                    L" - click to refresh";
@@ -6923,8 +7315,22 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                 ap.columnOpacity = columnOpacity;
             }
 
+            // Working state, for Anthropic accounts only: the detector reads Claude's own
+            // transcripts, so it has nothing to say about any other provider. A stale reading
+            // does not suppress it - the two are unrelated, one being about the number and the
+            // other about the machine - but a hidden account is not asked at all.
+            bool working = !visualTestMode && accounts[i].provider == L"anthropic" &&
+                           adaptivePollingForUi && ClaudeWorkingNow();
+
             double labelOpacity = stale ? 0.45 : 0.8;
-            std::wstring labelText = warn ? accounts[i].label + L"!" : accounts[i].label;
+            std::wstring labelText;
+            // Before the label rather than after it. The suffixes already there are states of
+            // the *account* - a warning, a backup token - and this is a state of the machine,
+            // so putting it on the other side keeps the two from reading as one growing tag.
+            if (working) labelText += L"● ";
+            labelText += accounts[i].label;
+            if (warn) labelText += L"!";
+            else if (d.usingBackupToken) labelText += L" [BK]";
             if (labelOpacity != ap.labelOpacity || labelText != ap.labelText) {
                 if (ui.label) {
                     ui.label.Opacity(labelOpacity);
@@ -6932,6 +7338,23 @@ static void UpdateQuotaUi(QuotaUiInstance& state) {
                 }
                 ap.labelOpacity = labelOpacity;
                 ap.labelText = std::move(labelText);
+            }
+            // The colour, written only when it changes. A brush assignment per repaint would
+            // be churn on an element that is repainted for every hover and theme flip.
+            if (ui.label && ap.labelWorking != (working ? 1 : 0)) {
+                if (working) {
+                    // Two greens, because one is not readable on both taskbars: the bright one
+                    // disappears into a light taskbar and the dark one into a dark taskbar.
+                    winrt::Windows::UI::Color green =
+                        palette.light ? winrt::Windows::UI::Color{255, 0x11, 0x7A, 0x43}
+                                      : winrt::Windows::UI::Color{255, 0x28, 0xE0, 0x7B};
+                    ui.label.Foreground(SolidColorBrush(green));
+                } else {
+                    // Cleared rather than set back to a colour of our choosing, so the label
+                    // returns to whatever the taskbar's own theme says it should be.
+                    ui.label.ClearValue(TextBlock::ForegroundProperty());
+                }
+                ap.labelWorking = working ? 1 : 0;
             }
         }
 
@@ -8434,6 +8857,8 @@ enum SettingsControlId {
     kAccountToggleVisible,
     kAccountSignIn,
     kAccountSignOut,
+    kAccountSignInBackup,
+    kAccountSignOutBackup,
     kResetPage,
 
     kMonitorMode = 2100,
@@ -9060,8 +9485,7 @@ static void LayoutSettingsWindow(SettingsWindowState& state) {
         int y = ScaleForDpi(54, state.dpi);
         int buttonHeight = ScaleForDpi(28, state.dpi);
         int gap = ScaleForDpi(6, state.dpi);
-        bool compactButtons = width < ScaleForDpi(600, state.dpi);
-        int buttonRows = compactButtons ? 2 : 1;
+        int buttonRows = 2;
         int buttonY = viewportBottom - buttonHeight * buttonRows - gap * (buttonRows - 1);
         int listTop = std::max(y, viewportTop);
         int listBottom = std::min(buttonY - ScaleForDpi(10, state.dpi), viewportBottom);
@@ -9070,8 +9494,8 @@ static void LayoutSettingsWindow(SettingsWindowState& state) {
         setVisible(state.accountList,
                    state.currentPage == 0 &&
                        listBottom - listTop >= ScaleForDpi(30, state.dpi));
-        const int columnWidths[] = {90, 150, 120, 70, 120};
-        int desiredColumnsWidth = ScaleForDpi(550, state.dpi);
+        const int columnWidths[] = {90, 130, 110, 60, 140};
+        int desiredColumnsWidth = ScaleForDpi(530, state.dpi);
         int availableColumnsWidth = width - x * 2 - ScaleForDpi(4, state.dpi);
         double columnScale = desiredColumnsWidth > availableColumnsWidth ?
                                  (double)availableColumnsWidth / desiredColumnsWidth : 1.0;
@@ -9082,30 +9506,21 @@ static void LayoutSettingsWindow(SettingsWindowState& state) {
                                                    columnScale)));
         }
         const int ids[] = {kAccountAdd, kAccountEdit, kAccountRemove,
-                           kAccountMoveUp, kAccountMoveDown, kAccountToggleVisible,
-                           kAccountSignIn, kAccountSignOut};
-        const int widths[] = {60, 60, 70, 42, 50, 72, 68, 68};
-        int availableButtonsWidth = width - x * 2 - gap * 7;
-        int desiredButtonsWidth = ScaleForDpi(490, state.dpi);
-        double buttonScale = desiredButtonsWidth > availableButtonsWidth ?
-                                 (double)availableButtonsWidth / desiredButtonsWidth : 1.0;
-        int normalButtonX = x;
-        for (int i = 0; i < 8; i++) {
-            int buttonRow = compactButtons ? i / 4 : 0;
-            int buttonColumn = compactButtons ? i % 4 : i;
-            int buttonWidth = compactButtons ?
-                std::max(1, (width - x * 2 - gap * 3) / 4) :
-                std::max(ScaleForDpi(36, state.dpi),
-                         (int)(ScaleForDpi(widths[i], state.dpi) * buttonScale));
-            int buttonX = compactButtons ? x + buttonColumn * (buttonWidth + gap) :
-                                           normalButtonX;
+                           kAccountMoveUp, kAccountMoveDown,
+                           kAccountToggleVisible, kAccountSignIn, kAccountSignOut,
+                           kAccountSignInBackup, kAccountSignOutBackup};
+        int availableRowWidth = width - x * 2 - gap * 4;
+        int buttonWidth = std::max(1, availableRowWidth / 5);
+        for (int i = 0; i < 10; i++) {
+            int buttonRow = i / 5;
+            int buttonColumn = i % 5;
+            int buttonX = x + buttonColumn * (buttonWidth + gap);
             HWND button = GetDlgItem(state.hWnd, ids[i]);
             int rowY = buttonY + buttonRow * (buttonHeight + gap);
             SetWindowPos(button, nullptr, buttonX, rowY,
                          buttonWidth, buttonHeight, positionFlags);
             setVisible(button, state.currentPage == 0 && rowY >= viewportTop &&
                                    rowY + buttonHeight <= viewportBottom);
-            if (!compactButtons) normalButtonX += buttonWidth + gap;
         }
     }
 
@@ -9291,18 +9706,28 @@ static void UpdateAccountButtons(SettingsWindowState& state) {
 
     bool oauth = selected && account.provider != L"antigravity";
     bool hasToken = false;
+    bool hasBackupToken = false;
     if (oauth) {
         StoredToken token;
-        hasToken = LoadStoredToken(AccountIdentityHash(account), &token);
+        hasToken = LoadStoredToken(AccountIdentityHash(account), &token, false);
+        hasBackupToken = LoadStoredToken(AccountIdentityHash(account), &token, true);
     }
     bool selectedSigningIn = selected && loginInProgress &&
                              AccountIdentityHash(account) == g_loginAccountIdentity.load();
+    bool isBackupLogin = g_loginIsBackup.load();
     SetWindowTextW(GetDlgItem(state.hWnd, kAccountSignIn),
-                   selectedSigningIn ? L"Signing in..." :
+                   (selectedSigningIn && !isBackupLogin) ? L"Signing in..." :
                    hasToken ? L"Re-sign" : L"Sign in");
     EnableWindow(GetDlgItem(state.hWnd, kAccountSignIn),
                  oauth && !loginInProgress);
     EnableWindow(GetDlgItem(state.hWnd, kAccountSignOut), oauth && hasToken);
+
+    SetWindowTextW(GetDlgItem(state.hWnd, kAccountSignInBackup),
+                   (selectedSigningIn && isBackupLogin) ? L"Signing in..." :
+                   hasBackupToken ? L"Re-sign BK" : L"Sign in (BK)");
+    EnableWindow(GetDlgItem(state.hWnd, kAccountSignInBackup),
+                 oauth && !loginInProgress);
+    EnableWindow(GetDlgItem(state.hWnd, kAccountSignOutBackup), oauth && hasBackupToken);
 }
 
 static void RefreshAccountList(SettingsWindowState& state) {
@@ -9351,13 +9776,22 @@ static void RefreshAccountList(SettingsWindowState& state) {
         ListView_SetItemText(state.accountList, (int)i, 3, visible.data());
         std::wstring status;
         if (loginInProgress && AccountIdentityHash(accounts[i]) == loginIdentity) {
-            status = L"Signing in...";
+            status = g_loginIsBackup.load() ? L"Signing in (BK)..." : L"Signing in...";
         } else if (accounts[i].provider == L"antigravity") {
             status = L"Uses local session";
         } else {
             StoredToken token;
-            status = LoadStoredToken(AccountIdentityHash(accounts[i]), &token) ?
-                         L"Signed in" : L"Not signed in";
+            bool hasPrimary = LoadStoredToken(AccountIdentityHash(accounts[i]), &token, false);
+            bool hasBackup = LoadStoredToken(AccountIdentityHash(accounts[i]), &token, true);
+            if (hasPrimary && hasBackup) {
+                status = L"Primary + Backup";
+            } else if (hasPrimary) {
+                status = L"Primary only";
+            } else if (hasBackup) {
+                status = L"Backup only";
+            } else {
+                status = L"Not signed in";
+            }
         }
         ListView_SetItemText(state.accountList, (int)i, 4, const_cast<PWSTR>(status.c_str()));
     }
@@ -10367,6 +10801,12 @@ static void EditAccountFromSettingsWindow(SettingsWindowState& state) {
     }
     if (sameProviderRename) {
         oldTokenCleared = ClearStoredToken(oldIdentity);
+        // And the old backup, which was left behind: an encrypted token for an identity that no
+        // longer exists, sitting in the registry with nothing able to reach it and nothing ever
+        // going to clear it. Its absence is not an error - most accounts have no backup - so
+        // the result is deliberately not folded into `oldTokenCleared`, which reports on the
+        // primary the user can see.
+        ClearStoredToken(oldIdentity, true);
         BumpAuthEpochLocked(oldIdentity);
         g_authRenameRedirects.push_back(
             {oldIdentity, oldAuthEpoch, newIdentity, newAuthEpoch});
@@ -10713,6 +11153,10 @@ static LRESULT CALLBACK SettingsWindowProc(HWND hWnd, UINT message,
                                   WS_VISIBLE | WS_TABSTOP, 0, kAccountSignIn);
             CreateSettingsControl(*state, 0, L"BUTTON", L"Sign out",
                                   WS_VISIBLE | WS_TABSTOP, 0, kAccountSignOut);
+            CreateSettingsControl(*state, 0, L"BUTTON", L"Sign in (BK)",
+                                  WS_VISIBLE | WS_TABSTOP, 0, kAccountSignInBackup);
+            CreateSettingsControl(*state, 0, L"BUTTON", L"Sign out (BK)",
+                                  WS_VISIBLE | WS_TABSTOP, 0, kAccountSignOutBackup);
 
             AddSettingsCheck(*state, 1, L"Preview test data", kVisualTestModeLayout);
             HWND monitorMode = AddSettingsRow(*state, 1, L"Taskbar monitors",
@@ -11055,7 +11499,7 @@ static LRESULT CALLBACK SettingsWindowProc(HWND hWnd, UINT message,
                 case kAccountSignIn:
                     if (HIWORD(wParam) == BN_CLICKED) {
                         if (uint64_t identity = SelectedAccountIdentity(*state)) {
-                            StartLoginByIdentity(identity);
+                            StartLoginByIdentity(identity, false);
                         }
                         UpdateAccountButtons(*state);
                     }
@@ -11063,10 +11507,31 @@ static LRESULT CALLBACK SettingsWindowProc(HWND hWnd, UINT message,
                 case kAccountSignOut:
                     if (HIWORD(wParam) == BN_CLICKED) {
                         if (uint64_t identity = SelectedAccountIdentity(*state)) {
-                            if (!SignOutAccountByIdentity(identity)) {
+                            if (!SignOutAccountByIdentity(identity, false)) {
                                 SettingsMessageBoxW(
                                     state->hWnd,
                                     L"The stored sign-in could not be deleted and remains "
+                                    L"retained for this account.",
+                                    L"Account", MB_OK | MB_ICONERROR);
+                            }
+                        }
+                    }
+                    return 0;
+                case kAccountSignInBackup:
+                    if (HIWORD(wParam) == BN_CLICKED) {
+                        if (uint64_t identity = SelectedAccountIdentity(*state)) {
+                            StartLoginByIdentity(identity, true);
+                        }
+                        UpdateAccountButtons(*state);
+                    }
+                    return 0;
+                case kAccountSignOutBackup:
+                    if (HIWORD(wParam) == BN_CLICKED) {
+                        if (uint64_t identity = SelectedAccountIdentity(*state)) {
+                            if (!SignOutAccountByIdentity(identity, true)) {
+                                SettingsMessageBoxW(
+                                    state->hWnd,
+                                    L"The stored backup sign-in could not be deleted and remains "
                                     L"retained for this account.",
                                     L"Account", MB_OK | MB_ICONERROR);
                             }
@@ -11434,7 +11899,7 @@ static void OpenSettingsWindow() {
 /**********************************************/
 
 BOOL Wh_ModInit() {
-    Wh_Log(L"Init");
+    Wh_Log(L"Init - taskbar-ai-quota-fork %s", kModVersion);
     g_unloading = false;
     g_refreshing = false;
     g_refreshAccountIdentity = 0;
@@ -11525,8 +11990,25 @@ void Wh_ModAfterInit() {
     if (!g_fetchThread) PostUiUpdate();
 }
 
+/// Join a thread, and say so if it takes long enough to notice.
+///
+/// Every join here has to stay INFINITE: Windhawk frees this DLL when `Wh_ModUninit` returns,
+/// so abandoning a thread that is still executing our code crashes explorer rather than merely
+/// leaking it. What can be added is a name. A mod stuck at "Uninitializing..." in Windhawk's
+/// dialog currently says nothing at all about which of the five joins it is sitting in, which
+/// turns a rare hang into guesswork - and guessing at hangs in this project has been wrong more
+/// often than right.
+static void JoinNamed(HANDLE thread, PCWSTR what) {
+    if (!thread) return;
+    if (WaitForSingleObject(thread, 3000) == WAIT_TIMEOUT) {
+        Wh_Log(L"Uninit: still waiting on the %s thread", what);
+        WaitForSingleObject(thread, INFINITE);
+        Wh_Log(L"Uninit: the %s thread finished", what);
+    }
+}
+
 void Wh_ModUninit() {
-    Wh_Log(L"Uninit");
+    Wh_Log(L"Uninit - taskbar-ai-quota-fork %s", kModVersion);
     g_unloading = true;
     g_uiInjected.store(false, std::memory_order_release);
     if (g_stopEvent) SetEvent(g_stopEvent);
@@ -11543,7 +12025,7 @@ void Wh_ModUninit() {
         g_settingsWindowThread = nullptr;
     }
     if (settingsWindowThread) {
-        WaitForSingleObject(settingsWindowThread, INFINITE);
+        JoinNamed(settingsWindowThread, L"settings window");
         CloseHandle(settingsWindowThread);
     }
     g_settingsWindow.store(nullptr);
@@ -11556,7 +12038,7 @@ void Wh_ModUninit() {
         if (HWND loginWnd = g_loginWnd.load()) PostMessageW(loginWnd, WM_CLOSE, 0, 0);
         if (SOCKET s = g_loginSocket.exchange(INVALID_SOCKET); s != INVALID_SOCKET) closesocket(s);
         if (g_loginThread) {
-            WaitForSingleObject(g_loginThread, INFINITE);
+            JoinNamed(g_loginThread, L"sign-in");
             CloseHandle(g_loginThread);
             g_loginThread = nullptr;
         }
@@ -11571,12 +12053,12 @@ void Wh_ModUninit() {
         g_retryThread = nullptr;
     }
     if (retryThread) {
-        WaitForSingleObject(retryThread, INFINITE);
+        JoinNamed(retryThread, L"taskbar re-injection");
         CloseHandle(retryThread);
     }
 
     if (g_fetchThread) {
-        WaitForSingleObject(g_fetchThread, INFINITE);
+        JoinNamed(g_fetchThread, L"fetch");
         CloseHandle(g_fetchThread);
         g_fetchThread = nullptr;
     }

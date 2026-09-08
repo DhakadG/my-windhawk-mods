@@ -1,0 +1,29 @@
+CompileFlags:
+  Add:
+    - --target=x86_64-w64-windows-gnu
+    - -std=c++23
+    - -nostdinc++
+    - -isystem
+    - C:/Program Files/Windhawk/Compiler/include/c++/v1
+    - -isystem
+    - C:/Program Files/Windhawk/Compiler/lib/clang/20/include
+    - -isystem
+    - C:/Program Files/Windhawk/Compiler/include
+    - -DUNICODE
+    - -D_UNICODE
+    - -DWINVER=0x0A00
+    - -D_WIN32_WINNT=0x0A00
+    - -D_WIN32_IE=0x0A00
+    - -DNTDDI_VERSION=0x0A000008
+    - -D__USE_MINGW_ANSI_STDIO=0
+    - -DWH_MOD
+    - -DWH_MOD_ID=L"taskbar-ai-quota-fork"
+    - -DWIN32_LEAN_AND_MEAN
+    - -include
+    - C:/Program Files/Windhawk/Compiler/include/windhawk_api.h
+    - -Wno-pragma-pack
+    - -Wno-pragma-system-header-outside-header
+
+Diagnostics:
+  Suppress:
+    - unused-includes

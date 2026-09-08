@@ -2,7 +2,7 @@
 // @id              taskbar-ai-quota-fork
 // @name            Taskbar AI Quota Bars - Fork
 // @description     Shows configurable AI agent/LLM subscription quota bars for Anthropic, OpenAI, and Google Antigravity on the Windows 11 taskbar
-// @version         1.7.0
+// @version         1.7.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -1651,7 +1651,7 @@ static ULONGLONG CurrentAuthEpoch(uint64_t idHash) {
 // that header itself and offers no macro for it. Logged on load and unload so the Windhawk
 // log says which build was running - without it a reload and an update look identical, and
 // "which version was this happening on" is unanswerable after the fact.
-constexpr PCWSTR kModVersion = L"1.7.0";
+constexpr PCWSTR kModVersion = L"1.7.1";
 
 // Rate-limit state that has to outlive the mod being reloaded.
 //
@@ -4200,6 +4200,24 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
         apartmentInitialized = true;
     } catch (...) {}
 
+    // Exactly one process polls, for the whole desktop session.
+    //
+    // Windhawk loads this mod into every explorer.exe, and there are routinely four of them:
+    // one owning the primary taskbar and three that never inject anything ("eligible=0" in the
+    // log). Each ran its own fetch thread, so a reload produced three or four requests inside
+    // one second - and no per-process counter could see the others, which is why the hourly
+    // ceiling looked untouched while the endpoint was answering 429.
+    //
+    // A named mutex is the whole mechanism. The winner polls; the others sit on the stop event
+    // and cost nothing. If the winner's process exits the mutex is abandoned, and the wait
+    // below hands ownership to a survivor rather than leaving the bars frozen.
+    //
+    // Processes that have not injected any UI wait before even trying, so the one with the
+    // taskbar normally wins. That is a preference, not a guarantee: if nobody has injected,
+    // somebody still has to poll for the tray icon and the threshold notifications to work.
+    HANDLE fetchOwnerMutex = CreateMutexW(nullptr, FALSE, L"Local\taskbar-ai-quota-fork-fetch");
+    bool isFetchOwner = false;
+
     std::vector<std::wstring> lastLoggedErrorStates;
     std::vector<uint64_t> retryIdentityHashes;
     std::vector<ULONGLONG> retryDeadlineMs;
@@ -4229,6 +4247,28 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
     std::vector<std::array<int, kQuotaBarCount>> redState;
     ULONGLONG lastLoggedSettingsGeneration = 0;
     while (!g_unloading) {
+        if (!isFetchOwner) {
+            if (!fetchOwnerMutex) {
+                // No mutex means no way to coordinate. Polling anyway would restore the very
+                // burst this guards against, so this process does nothing and lets whichever
+                // process does have one do the work.
+                if (WaitForSingleObject(g_stopEvent, 60000) == WAIT_OBJECT_0) break;
+                continue;
+            }
+            if (!g_uiInjected.load(std::memory_order_acquire)) {
+                if (WaitForSingleObject(g_stopEvent, 5000) == WAIT_OBJECT_0) break;
+            }
+            DWORD claimed = WaitForSingleObject(fetchOwnerMutex, 0);
+            // WAIT_ABANDONED means the previous owner's process died holding it. The mutex is
+            // ours now and there is no shared state to repair - every deadline that matters is
+            // in the store, not in that process's memory.
+            if (claimed != WAIT_OBJECT_0 && claimed != WAIT_ABANDONED) {
+                if (WaitForSingleObject(g_stopEvent, 15000) == WAIT_OBJECT_0) break;
+                continue;
+            }
+            isFetchOwner = true;
+            Wh_Log(L"Fetch owner for this session");
+        }
         ULONGLONG refreshGeneration;
         uint64_t refreshAccountIdentity;
         bool refreshRequested;
@@ -4595,6 +4635,10 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
 
         HANDLE handles[2] = {g_stopEvent, g_refreshEvent};
         if (WaitForMultipleObjects(2, handles, FALSE, waitMs) == WAIT_OBJECT_0) break;
+    }
+    if (fetchOwnerMutex) {
+        if (isFetchOwner) ReleaseMutex(fetchOwnerMutex);
+        CloseHandle(fetchOwnerMutex);
     }
     RemoveNotifyIcon();
     if (apartmentInitialized) winrt::uninit_apartment();

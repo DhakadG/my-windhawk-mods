@@ -1,3 +1,12 @@
+# Shared configuration for every mod in this repository.
+#
+# Without these, clangd has no idea Windhawk ships its own MinGW libc++, and falls back to the
+# MSVC STL headers it finds through the registry. Its MinGW target cannot parse those, so the
+# editor reports two dozen errors inside <xstring> that have nothing to do with any mod here.
+#
+# The clang version in the include path is pinned because clangd has no globbing. It has to be
+# updated by hand after a Windhawk compiler update, and the symptom of forgetting is the same
+# wall of <xstring> errors this file exists to prevent.
 CompileFlags:
   Add:
     - --target=x86_64-w64-windows-gnu
@@ -17,7 +26,6 @@ CompileFlags:
     - -DNTDDI_VERSION=0x0A000008
     - -D__USE_MINGW_ANSI_STDIO=0
     - -DWH_MOD
-    - -DWH_MOD_ID=L"taskbar-ai-quota-fork"
     - -DWIN32_LEAN_AND_MEAN
     - -include
     - C:/Program Files/Windhawk/Compiler/include/windhawk_api.h
@@ -27,3 +35,17 @@ CompileFlags:
 Diagnostics:
   Suppress:
     - unused-includes
+
+---
+# `WH_MOD_ID` is one mod's identity, so it belongs to one mod's files.
+#
+# It started in the block above, where it handed every mod in this repository *this* mod's id
+# in editor analysis - wrong for all of them, and silently so, because nothing in an editor
+# complains about a module id that merely disagrees with the file it is looking at.
+#
+# One of these per mod that needs it.
+If:
+  PathMatch: mods/taskbar-ai-quota-fork/.*
+CompileFlags:
+  Add:
+    - -DWH_MOD_ID=L"taskbar-ai-quota-fork"

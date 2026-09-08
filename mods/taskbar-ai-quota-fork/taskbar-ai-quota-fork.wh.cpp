@@ -2,7 +2,7 @@
 // @id              taskbar-ai-quota-fork
 // @name            Taskbar AI Quota Bars - Fork
 // @description     Shows configurable AI agent/LLM subscription quota bars for Anthropic, OpenAI, and Google Antigravity on the Windows 11 taskbar
-// @version         1.8.0
+// @version         1.8.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @include         explorer.exe
@@ -1653,7 +1653,7 @@ static ULONGLONG CurrentAuthEpoch(uint64_t idHash) {
 // that header itself and offers no macro for it. Logged on load and unload so the Windhawk
 // log says which build was running - without it a reload and an update look identical, and
 // "which version was this happening on" is unanswerable after the fact.
-constexpr PCWSTR kModVersion = L"1.8.0";
+constexpr PCWSTR kModVersion = L"1.8.1";
 
 // Rate-limit state that has to outlive the mod being reloaded.
 //
@@ -1805,11 +1805,22 @@ static TokenCopyResult CopyStoredTokenForRename(uint64_t oldHash, uint64_t newHa
     if (!Wh_SetStringValue(TokenStorageKey(newHash).c_str(), oldValue.data())) {
         return TokenCopyResult::Failed;
     }
-    // Also copy backup token if present
+    // The backup token moves with the account, and a failure to move it is a failure.
+    //
+    // It used to be copied on a best-effort basis and the result ignored, so a write that
+    // failed left the caller believing both tokens had arrived - it would go on to delete the
+    // old primary, and the account would come out of the rename with no backup and no
+    // explanation. Reporting `Failed` here aborts the rename with the message the caller
+    // already has for that case, which leaves both accounts exactly as they were.
     std::vector<wchar_t> oldBackup(16384);
     Wh_GetStringValue(TokenStorageKey(oldHash, true).c_str(), oldBackup.data(), oldBackup.size());
     if (oldBackup[0]) {
-        Wh_SetStringValue(TokenStorageKey(newHash, true).c_str(), oldBackup.data());
+        if (!Wh_SetStringValue(TokenStorageKey(newHash, true).c_str(), oldBackup.data())) {
+            // Undo the primary copy, so a failure here does not leave the new identity holding
+            // half a pair.
+            ClearStoredToken(newHash);
+            return TokenCopyResult::Failed;
+        }
     }
     return TokenCopyResult::Copied;
 }
@@ -3931,13 +3942,23 @@ static void FetchAccount(const AccountConfig& acc, AccountData* d, int* retryAft
         primaryAttempted = true;
         primaryRes = executeFetchWithToken(primaryTok, false);
         if (primaryRes.ok) {
+            // The backup's own cooldown survives a primary success. Assigning the fresh record
+            // wholesale drops every runtime field, and this one is the server's deadline rather
+            // than ours: forgetting it means the next failover treats a backup token that is
+            // still rate limited as ready, and spends a request learning what it already knew.
+            ULONGLONG bDeadline = d->backupRetryDeadlineMs;
+            std::wstring bError = d->backupError;
+            bool bNeedsLogin = d->backupNeedsLogin;
+
             *d = std::move(primaryRes.fresh);
             d->hasBackupToken = hasBackup;
             d->usingBackupToken = false;
             d->primaryRateLimited = false;
             d->primaryRetryDeadlineMs = 0;
+            d->backupRetryDeadlineMs = bDeadline;
+            d->backupError = std::move(bError);
+            d->backupNeedsLogin = bNeedsLogin;
             d->error.clear();
-            d->backupError.clear();
             return;
         }
         if (primaryRes.rateLimited) {
@@ -3955,8 +3976,15 @@ static void FetchAccount(const AccountConfig& acc, AccountData* d, int* retryAft
         }
     }
 
-    // Attempt backup token if primary hit rate-limit or primary is in cooldown, or if primary is not configured
-    if (hasBackup && (primaryInCooldown || (primaryAttempted && primaryRes.rateLimited) || !hasPrimary)) {
+    // Fail over whenever the primary is unusable, not only when it is rate limited.
+    //
+    // The gate used to be `rateLimited` alone, which left out the most common way a token stops
+    // working: it expires or is revoked, the endpoint answers 401, and `needsLogin` is set
+    // instead. The account then showed "session expired - click to sign in" and no quota at
+    // all, with a perfectly good backup token sitting in the store unused - the exact situation
+    // the second slot exists for.
+    bool primaryUnusable = primaryAttempted && (primaryRes.rateLimited || primaryRes.needsLogin);
+    if (hasBackup && (primaryInCooldown || primaryUnusable || !hasPrimary)) {
         TokenRequestResult backupRes = executeFetchWithToken(backupTok, true);
         if (backupRes.ok) {
             bool previouslyUsingBackup = d->usingBackupToken;
@@ -4261,7 +4289,13 @@ static DWORD WINAPI FetchThreadProc(LPVOID) {
     // Processes that have not injected any UI wait before even trying, so the one with the
     // taskbar normally wins. That is a preference, not a guarantee: if nobody has injected,
     // somebody still has to poll for the tray icon and the threshold notifications to work.
-    HANDLE fetchOwnerMutex = CreateMutexW(nullptr, FALSE, L"Local\taskbar-ai-quota-fork-fetch");
+    // A raw literal, because the escaped form of this name was written wrong once already:
+    // "Local\t..." puts a tab where the namespace separator was meant to go, so the mutex ended
+    // up with a control character in its name and outside the Local namespace entirely. It
+    // still worked - every process used the same wrong literal, and an unqualified name is
+    // still per-session - which is exactly why it survived a review of the behaviour.
+    HANDLE fetchOwnerMutex =
+        CreateMutexW(nullptr, FALSE, LR"(Local\taskbar-ai-quota-fork-fetch)");
     bool isFetchOwner = false;
 
     std::vector<std::wstring> lastLoggedErrorStates;
@@ -10767,6 +10801,12 @@ static void EditAccountFromSettingsWindow(SettingsWindowState& state) {
     }
     if (sameProviderRename) {
         oldTokenCleared = ClearStoredToken(oldIdentity);
+        // And the old backup, which was left behind: an encrypted token for an identity that no
+        // longer exists, sitting in the registry with nothing able to reach it and nothing ever
+        // going to clear it. Its absence is not an error - most accounts have no backup - so
+        // the result is deliberately not folded into `oldTokenCleared`, which reports on the
+        // primary the user can see.
+        ClearStoredToken(oldIdentity, true);
         BumpAuthEpochLocked(oldIdentity);
         g_authRenameRedirects.push_back(
             {oldIdentity, oldAuthEpoch, newIdentity, newAuthEpoch});
@@ -11950,6 +11990,23 @@ void Wh_ModAfterInit() {
     if (!g_fetchThread) PostUiUpdate();
 }
 
+/// Join a thread, and say so if it takes long enough to notice.
+///
+/// Every join here has to stay INFINITE: Windhawk frees this DLL when `Wh_ModUninit` returns,
+/// so abandoning a thread that is still executing our code crashes explorer rather than merely
+/// leaking it. What can be added is a name. A mod stuck at "Uninitializing..." in Windhawk's
+/// dialog currently says nothing at all about which of the five joins it is sitting in, which
+/// turns a rare hang into guesswork - and guessing at hangs in this project has been wrong more
+/// often than right.
+static void JoinNamed(HANDLE thread, PCWSTR what) {
+    if (!thread) return;
+    if (WaitForSingleObject(thread, 3000) == WAIT_TIMEOUT) {
+        Wh_Log(L"Uninit: still waiting on the %s thread", what);
+        WaitForSingleObject(thread, INFINITE);
+        Wh_Log(L"Uninit: the %s thread finished", what);
+    }
+}
+
 void Wh_ModUninit() {
     Wh_Log(L"Uninit - taskbar-ai-quota-fork %s", kModVersion);
     g_unloading = true;
@@ -11968,7 +12025,7 @@ void Wh_ModUninit() {
         g_settingsWindowThread = nullptr;
     }
     if (settingsWindowThread) {
-        WaitForSingleObject(settingsWindowThread, INFINITE);
+        JoinNamed(settingsWindowThread, L"settings window");
         CloseHandle(settingsWindowThread);
     }
     g_settingsWindow.store(nullptr);
@@ -11981,7 +12038,7 @@ void Wh_ModUninit() {
         if (HWND loginWnd = g_loginWnd.load()) PostMessageW(loginWnd, WM_CLOSE, 0, 0);
         if (SOCKET s = g_loginSocket.exchange(INVALID_SOCKET); s != INVALID_SOCKET) closesocket(s);
         if (g_loginThread) {
-            WaitForSingleObject(g_loginThread, INFINITE);
+            JoinNamed(g_loginThread, L"sign-in");
             CloseHandle(g_loginThread);
             g_loginThread = nullptr;
         }
@@ -11996,12 +12053,12 @@ void Wh_ModUninit() {
         g_retryThread = nullptr;
     }
     if (retryThread) {
-        WaitForSingleObject(retryThread, INFINITE);
+        JoinNamed(retryThread, L"taskbar re-injection");
         CloseHandle(retryThread);
     }
 
     if (g_fetchThread) {
-        WaitForSingleObject(g_fetchThread, INFINITE);
+        JoinNamed(g_fetchThread, L"fetch");
         CloseHandle(g_fetchThread);
         g_fetchThread = nullptr;
     }

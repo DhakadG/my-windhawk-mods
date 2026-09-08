@@ -1,16 +1,29 @@
 # Consolidated Mod Report & End-to-End Walkthrough
 **Taskbar AI Quota Bars - Fork (`taskbar-ai-quota-fork`)**
 
+> **Scope.** This document covers the dual-token work that became **1.7.0**. Three later
+> changes are deliberately not described below, because a report that has to be kept in step
+> with every commit rots faster than the code does - the pull request and the commit messages
+> are the record for those:
+>
+> - **1.7.1** - one polling process per desktop session, and rate-limit state that survives a
+>   mod reload. A log from a real lockout showed the mod loaded into four `explorer.exe`
+>   processes, three of them with no UI, each running its own fetch thread.
+> - **1.8.0** - a green dot on the label while a Claude session is writing.
+> - Review fixes on top of both: the backup token is now tried when the primary's session has
+>   *expired* and not only when it is rate limited, the backup's cooldown survives a successful
+>   primary poll, and renaming an account moves the backup token rather than leaving it behind.
+
 ---
 
 ## Executive Summary
 
-This document provides a consolidated technical report of all improvements, bug fixes, architecture additions, and code cleanup implemented for the Windhawk mod **Taskbar AI Quota Bars - Fork** ([taskbar-ai-quota-fork.wh.cpp](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/mods/taskbar-ai-quota-fork/taskbar-ai-quota-fork.wh.cpp)).
+This document provides a consolidated technical report of all improvements, bug fixes, architecture additions, and code cleanup implemented for the Windhawk mod **Taskbar AI Quota Bars - Fork** ([taskbar-ai-quota-fork.wh.cpp](taskbar-ai-quota-fork.wh.cpp)).
 
 ### Key Deliverables Completed:
 1. **Resolved 24 VS Code / Clang / Clangd Diagnostic Errors & Warnings**: Fixed compiler toolchain mismatches and standard library include paths that previously blocked IDE analysis and caused cascade compilation failures.
 2. **Dual OAuth Architecture (Primary + Backup Token)**: Added secondary OAuth credentials for both Anthropic Claude and OpenAI accounts.
-3. **Automated Two-Tier Rate-Limit Failover Engine**: When the primary token receives an HTTP 429 (Rate Limit), the mod dynamically switches to the backup token without service interruption, calculates cooldown timers, and auto-recovers back to the primary token once the cooldown expires.
+3. **Automated Two-Tier Failover Engine**: When the primary token is unusable - an HTTP 429, or a session that has expired - the mod switches to the backup token without service interruption, calculates cooldown timers, and auto-recovers back to the primary once its cooldown expires. (The expired-session case was added after review; the original version failed over on 429 alone, which missed the most common way a token stops working.)
 4. **Desktop Notifications**: Alerts the user via Windows toast notifications when a rate limit failover occurs.
 5. **UI & Taskbar Visual Indicators**:
    - Taskbar label displays a `[BK]` badge when operating on the backup token.
@@ -37,11 +50,11 @@ The 24 errors reported in the editor (`@[current_problems]`) were caused by an e
 
 | File | Changes Made |
 | :--- | :--- |
-| [compile_flags.txt](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/mods/taskbar-ai-quota-fork/compile_flags.txt) | Added `--target=x86_64-w64-windows-gnu`, `-nostdinc++`, explicit `-isystem` paths for `include/c++/v1`, `lib/clang/20/include`, and `include`, plus forced inclusion of `windhawk_api.h`. |
-| [.clangd](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/.clangd) | Mirrored sysroot include flags and added `Diagnostics.Suppress: [unused-includes]` to silence unused include notices for `<chrono>` and `<optional>`. |
-| [.vscode/c_cpp_properties.json](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/.vscode/c_cpp_properties.json) | Created IntelliSense configuration pointing to Windhawk's `clang++.exe`, `windows-clang-x64` mode, and C++23. |
-| [WindHawk Mods.code-workspace](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/WindHawk%20Mods.code-workspace) | Injected matching `C_Cpp.default.*` workspace settings. |
-| [taskbar-ai-quota-fork.wh.cpp](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/mods/taskbar-ai-quota-fork/taskbar-ai-quota-fork.wh.cpp#L105-L109) | Added fallback preprocessor definition: `#ifndef WH_MOD_ID #define WH_MOD_ID L"taskbar-ai-quota-fork" #endif`. |
+| [compile_flags.txt](compile_flags.txt) | Added `--target=x86_64-w64-windows-gnu`, `-nostdinc++`, explicit `-isystem` paths for `include/c++/v1`, `lib/clang/20/include`, and `include`, plus forced inclusion of `windhawk_api.h`. |
+| [.clangd](../../.clangd) | Mirrored sysroot include flags and added `Diagnostics.Suppress: [unused-includes]` to silence unused include notices for `<chrono>` and `<optional>`. |
+| [.vscode/c_cpp_properties.json](../../.vscode/c_cpp_properties.json) | Created IntelliSense configuration pointing to Windhawk's `clang++.exe`, `windows-clang-x64` mode, and C++23. |
+| [WindHawk Mods.code-workspace](../../WindHawk Mods.code-workspace) | Injected matching `C_Cpp.default.*` workspace settings. |
+| [taskbar-ai-quota-fork.wh.cpp](taskbar-ai-quota-fork.wh.cpp#L105-L109) | Added fallback preprocessor definition: `#ifndef WH_MOD_ID #define WH_MOD_ID L"taskbar-ai-quota-fork" #endif`. |
 
 **Result**: Clangd AST, preambles, inlay hints, and semantic highlighting now build cleanly with **0 diagnostics emitted**.
 
@@ -84,7 +97,7 @@ flowchart TD
 ## 3. Detailed Component Breakdown
 
 ### A. Data Model Extensions (`AccountData`)
-[taskbar-ai-quota-fork.wh.cpp](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/mods/taskbar-ai-quota-fork/taskbar-ai-quota-fork.wh.cpp#L560-L580)
+[taskbar-ai-quota-fork.wh.cpp](taskbar-ai-quota-fork.wh.cpp#L560-L580)
 
 Added runtime fields to track token failover and independent cooldown states:
 ```cpp
@@ -107,7 +120,7 @@ struct AccountData {
 ---
 
 ### B. Secure Token Storage (Windows DPAPI)
-[taskbar-ai-quota-fork.wh.cpp](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/mods/taskbar-ai-quota-fork/taskbar-ai-quota-fork.wh.cpp#L1620-L1770)
+[taskbar-ai-quota-fork.wh.cpp](taskbar-ai-quota-fork.wh.cpp#L1620-L1770)
 
 1. **Registry Key Namespacing**:
    - Primary: `auth_%016llx`
@@ -124,7 +137,7 @@ struct AccountData {
 ---
 
 ### C. Authentication & Browser Sign-In
-[taskbar-ai-quota-fork.wh.cpp](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/mods/taskbar-ai-quota-fork/taskbar-ai-quota-fork.wh.cpp#L2230-L2600)
+[taskbar-ai-quota-fork.wh.cpp](taskbar-ai-quota-fork.wh.cpp#L2230-L2600)
 
 - **Login Request Dispatching**: `LoginRequest` struct and atomic tracking (`g_loginIsBackup`) route login flows to the intended slot.
 - **Anthropic & OpenAI Handlers**: `DoAnthropicLogin` and `DoOpenAiLogin` save to the requested token slot (`req.isBackup`).
@@ -145,7 +158,7 @@ struct AccountData {
 ---
 
 ### D. Two-Tier Fetch Engine (`FetchAccount`)
-[taskbar-ai-quota-fork.wh.cpp](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/mods/taskbar-ai-quota-fork/taskbar-ai-quota-fork.wh.cpp#L4300-L4550)
+[taskbar-ai-quota-fork.wh.cpp](taskbar-ai-quota-fork.wh.cpp#L4300-L4550)
 
 The quota fetching pipeline encapsulates network requests in a reusable lambda `executeFetchWithToken`:
 1. **Primary Evaluation**:
@@ -164,7 +177,7 @@ The quota fetching pipeline encapsulates network requests in a reusable lambda `
 ---
 
 ### E. Taskbar UI & Visual Indicators
-[taskbar-ai-quota-fork.wh.cpp](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/mods/taskbar-ai-quota-fork/taskbar-ai-quota-fork.wh.cpp#L5350-L5500)
+[taskbar-ai-quota-fork.wh.cpp](taskbar-ai-quota-fork.wh.cpp#L5350-L5500)
 
 1. **Taskbar Label**:
    When `usingBackupToken` is active, the rendered account label appends `[BK]`:
@@ -190,7 +203,7 @@ The quota fetching pipeline encapsulates network requests in a reusable lambda `
 ---
 
 ### F. Native Settings Window Upgrades
-[taskbar-ai-quota-fork.wh.cpp](file:///c:/Users/lost_husky/Downloads/Programs/VS%20Code%20Works/WindHawk%20Mods/mods/taskbar-ai-quota-fork/taskbar-ai-quota-fork.wh.cpp#L8635-L11300)
+[taskbar-ai-quota-fork.wh.cpp](taskbar-ai-quota-fork.wh.cpp#L8635-L11300)
 
 1. **Control IDs**:
    Added `kAccountSignInBackup` and `kAccountSignOutBackup` to `enum SettingsControlId`.

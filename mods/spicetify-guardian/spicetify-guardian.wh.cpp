@@ -2,7 +2,7 @@
 // @id              spicetify-guardian
 // @name            Spicetify Guardian
 // @description     Keeps Spicetify alive across Spotify updates - detects the moment Spotify wipes it, checks compatibility, and re-applies. Rolls Spotify back to a known-good build when a new one breaks Spicetify. Plus a tray dashboard for every other Spicetify chore.
-// @version         1.2.1
+// @version         1.2.2
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -4294,6 +4294,12 @@ static void RefreshRollbackTab(DashState* d) {
     // would snap the user's selection back to the recommendation.
     if (gen == d->rbGen) {
         return;
+    }
+    if (d->rbGen < 0) {
+        // Default on. Set here as well as at creation: the create-time
+        // BM_SETCHECK was observed not to stick, and an unblocked rollback
+        // is undone by Spotify's next auto-update.
+        SendMessageW(d->rbBlock, BM_SETCHECK, BST_CHECKED, 0);
     }
     d->rbGen = gen;
     SendMessageW(d->rbCombo, CB_RESETCONTENT, 0, 0);

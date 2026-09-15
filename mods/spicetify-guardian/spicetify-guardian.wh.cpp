@@ -2,7 +2,7 @@
 // @id              spicetify-guardian
 // @name            Spicetify Guardian
 // @description     Keeps Spicetify alive across Spotify updates - detects the moment Spotify wipes it, checks compatibility, and re-applies. Rolls Spotify back to a known-good build when a new one breaks Spicetify. Plus a tray dashboard for every other Spicetify chore.
-// @version         1.2.0
+// @version         1.2.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -256,9 +256,18 @@ static constexpr wchar_t kDowngradeGuide[] =
 // that loadspot.pages.dev and amd64fox/Rollback-Spotify both read; the
 // Guardian repo carries a pinned subset in the same shape as a fallback, plus a
 // "recommended" key naming a build known to work well with Spicetify.
-static constexpr wchar_t kIndexHost[]     = L"raw.githubusercontent.com";
-static constexpr wchar_t kIndexPath[]     = L"/LoaderSpot/table/refs/heads/main/table/versions.json";
-static constexpr wchar_t kFallbackPath[]  = L"/DhakadG/spicetify-guardian/main/rollback-index.json";
+//
+// Both are fetched with FetchGitHubFile, which tries several hosts:
+// raw.githubusercontent.com is blocked outright on some ISPs while
+// api.github.com and jsDelivr sail through.
+struct GitHubFile {
+    const wchar_t* owner;
+    const wchar_t* repo;
+    const wchar_t* branch;
+    const wchar_t* path;
+};
+static constexpr GitHubFile kIndexFile    = {L"LoaderSpot", L"table", L"main", L"table/versions.json"};
+static constexpr GitHubFile kFallbackFile = {L"DhakadG", L"spicetify-guardian", L"main", L"rollback-index.json"};
 
 // The dropdown shows this many of the newest builds; the full index goes back
 // years and nobody wants to scroll through 300 entries.
@@ -1550,7 +1559,10 @@ static Verdict g_lastVerdict;
 
 // HTTPS GET with a User-Agent. Wh_GetUrlContent cannot set headers and the
 // GitHub API rejects requests without one, so this goes direct to WinHTTP.
-static bool HttpGet(const wchar_t* host, const wchar_t* path, std::string* body) {
+static bool HttpGet(const wchar_t* host,
+                    const wchar_t* path,
+                    std::string* body,
+                    const wchar_t* accept = L"application/vnd.github+json") {
     bool ok = false;
     HINTERNET ses = WinHttpOpen(L"SpicetifyGuardian/1.0",
                                 WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
@@ -1566,12 +1578,17 @@ static bool HttpGet(const wchar_t* host, const wchar_t* path, std::string* body)
                         : nullptr;
 
     if (req) {
-        static const wchar_t kHeaders[] =
-            L"Accept: application/vnd.github+json\r\n"
-            L"X-GitHub-Api-Version: 2022-11-28\r\n";
+        std::wstring headers = std::wstring(L"Accept: ") + accept +
+                               L"\r\nX-GitHub-Api-Version: 2022-11-28\r\n";
 
-        if (WinHttpSendRequest(req, kHeaders, (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-            WinHttpReceiveResponse(req, nullptr)) {
+        if (!WinHttpSendRequest(req, headers.c_str(), (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0,
+                                0) ||
+            !WinHttpReceiveResponse(req, nullptr)) {
+            // 12002 timeout, 12007 name not resolved, 12029 cannot connect -
+            // the difference between "GitHub is down" and "my ISP blocks it".
+            LogF(L"WARN", L"GET https://%s%s failed (WinHTTP error %lu).", host, path,
+                 GetLastError());
+        } else {
             DWORD status = 0;
             DWORD len = sizeof(status);
             WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
@@ -1594,9 +1611,11 @@ static bool HttpGet(const wchar_t* host, const wchar_t* path, std::string* body)
                 }
                 ok = !body->empty();
             } else {
-                LogF(L"WARN", L"GitHub API returned HTTP %lu.", status);
+                LogF(L"WARN", L"GET https://%s%s returned HTTP %lu.", host, path, status);
             }
         }
+    } else {
+        LogF(L"WARN", L"Could not open a request to %s (WinHTTP error %lu).", host, GetLastError());
     }
 
     if (req) WinHttpCloseHandle(req);
@@ -2487,21 +2506,52 @@ static const SpotifyBuild* FindBuild(const RollbackIndex& idx, const std::wstrin
 //      range Spicetify's release notes declare;
 //   2. the newest build inside that range;
 //   3. the pinned build regardless, when there is no range to check against.
+// A file from a public GitHub repo, by whichever route works. The API goes
+// first because the compatibility check already proves it reachable; jsDelivr
+// second (a CDN mirror that can lag a push by minutes, but answers fast); the
+// raw host last, because where it is blocked it is blocked by a black hole
+// that only gives up at the connect timeout.
+static bool FetchGitHubFile(const GitHubFile& f, std::wstring* out) {
+    std::wstring api = std::wstring(L"/repos/") + f.owner + L"/" + f.repo + L"/contents/" + f.path +
+                       L"?ref=" + f.branch;
+    std::wstring raw = std::wstring(L"/") + f.owner + L"/" + f.repo + L"/" + f.branch + L"/" + f.path;
+    std::wstring cdn = std::wstring(L"/gh/") + f.owner + L"/" + f.repo + L"@" + f.branch + L"/" + f.path;
+
+    struct Route {
+        const wchar_t* host;
+        const std::wstring& path;
+        const wchar_t* accept;
+    } routes[] = {
+        {L"api.github.com", api, L"application/vnd.github.raw+json"},
+        {L"cdn.jsdelivr.net", cdn, L"*/*"},
+        {L"raw.githubusercontent.com", raw, L"*/*"},
+    };
+
+    for (const auto& r : routes) {
+        std::string body;
+        if (HttpGet(r.host, r.path.c_str(), &body, r.accept)) {
+            *out = FromUtf8(body);
+            LogF(L"INFO", L"Fetched %s/%s/%s via %s.", f.owner, f.repo, f.path, r.host);
+            return true;
+        }
+    }
+    LogF(L"ERROR", L"Could not fetch %s/%s/%s from any host.", f.owner, f.repo, f.path);
+    return false;
+}
+
 static RollbackIndex FetchRollbackIndex(const Compat& compat) {
     RollbackIndex idx;
 
-    std::string raw;
     std::wstring fallbackJson;
-    if (HttpGet(kIndexHost, kFallbackPath, &raw)) {
-        fallbackJson = FromUtf8(raw);
+    if (FetchGitHubFile(kFallbackFile, &fallbackJson)) {
         idx.pinned = JsonStr(fallbackJson, L"recommended");
     } else {
         GuardianLog(L"WARN", L"Guardian rollback index unreachable; no pinned recommendation.");
     }
 
-    raw.clear();
-    if (HttpGet(kIndexHost, kIndexPath, &raw)) {
-        idx.builds = ParseVersionIndex(FromUtf8(raw));
+    std::wstring indexJson;
+    if (FetchGitHubFile(kIndexFile, &indexJson)) {
+        idx.builds = ParseVersionIndex(indexJson);
         idx.source = L"LoaderSpot index";
     }
     if (idx.builds.empty() && !fallbackJson.empty()) {
@@ -4230,8 +4280,10 @@ static void RefreshRollbackTab(DashState* d) {
         t += L"Version list:        " + std::to_wstring(idx.builds.size()) + L" builds from " +
              idx.source + L"\r\n";
         t += L"Recommended:         " + idx.recommended + L"  -  " + idx.why + L"\r\n";
+    } else if (gen > 0) {
+        t += L"Version list:        COULD NOT BE FETCHED - see the Log tab, then Refresh.\r\n";
     } else {
-        t += L"Version list:        not fetched yet - press Refresh version list.\r\n";
+        t += L"Version list:        fetching...\r\n";
     }
     t += L"\r\nRollback needs the desktop (non-Store) Spotify. Your login and cache in "
          L"%LOCALAPPDATA%\\Spotify are kept; if some songs will not play afterwards, clear that "

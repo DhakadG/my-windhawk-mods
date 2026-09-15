@@ -1,0 +1,124 @@
+{
+  "_comment": "Fallback rollback index for Spicetify Guardian. Same shape as LoaderSpot versions.json (win entries only). \"recommended\" is a build known to work well with Spicetify; keep it inside the range the latest spicetify/cli release declares.",
+  "recommended": "1.2.98.301",
+  "1.3.0.277": {
+    "fullversion": "1.3.0.277.g5441bb3e",
+    "win": {
+      "arm64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.3.0.277.g5441bb3e-arm64.exe",
+        "date": "08.09.2026",
+        "size": 133329608
+      },
+      "x64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.3.0.277.g5441bb3e-x64.exe",
+        "date": "08.09.2026",
+        "size": 147802264
+      }
+    }
+  },
+  "1.2.99.317": {
+    "fullversion": "1.2.99.317.g9bd8c54d",
+    "win": {
+      "arm64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.99.317.g9bd8c54d-arm64.exe",
+        "date": "02.09.2026",
+        "size": 133157544
+      },
+      "x64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.99.317.g9bd8c54d-x64.exe",
+        "date": "02.09.2026",
+        "size": 147662352
+      }
+    }
+  },
+  "1.2.98.301": {
+    "fullversion": "1.2.98.301.gfcaeba72",
+    "win": {
+      "arm64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.98.301.gfcaeba72-arm64.exe",
+        "date": "24.08.2026",
+        "size": 133909576
+      },
+      "x64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.98.301.gfcaeba72-x64.exe",
+        "date": "24.08.2026",
+        "size": 148504064
+      }
+    }
+  },
+  "1.2.97.270": {
+    "fullversion": "1.2.97.270.ge94a76a2",
+    "win": {
+      "arm64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.97.270.ge94a76a2-arm64.exe",
+        "date": "18.08.2026",
+        "size": 133595128
+      },
+      "x64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.97.270.ge94a76a2-x64.exe",
+        "date": "18.08.2026",
+        "size": 148106472
+      }
+    }
+  },
+  "1.2.96.518": {
+    "fullversion": "1.2.96.518.g366879e1",
+    "win": {
+      "arm64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.96.518.g366879e1-arm64.exe",
+        "date": "11.08.2026",
+        "size": 133519992
+      },
+      "x64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.96.518.g366879e1-x64.exe",
+        "date": "11.08.2026",
+        "size": 148033992
+      }
+    }
+  },
+  "1.2.95.453": {
+    "fullversion": "1.2.95.453.g0eeebbed",
+    "win": {
+      "arm64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.95.453.g0eeebbed-arm64.exe",
+        "date": "05.08.2026",
+        "size": 133553184
+      },
+      "x64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.95.453.g0eeebbed-x64.exe",
+        "date": "05.08.2026",
+        "size": 148071328
+      }
+    }
+  },
+  "1.2.93.667": {
+    "fullversion": "1.2.93.667.g7b5cc0ce",
+    "win": {
+      "arm64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.93.667.g7b5cc0ce-arm64.exe",
+        "date": "01.07.2026",
+        "size": 132373048
+      },
+      "x64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.93.667.g7b5cc0ce-x64.exe",
+        "date": "01.07.2026",
+        "size": 146096232
+      }
+    }
+  },
+  "1.2.90.451": {
+    "fullversion": "1.2.90.451.gb094aab0",
+    "win": {
+      "arm64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.90.451.gb094aab0-arm64.exe",
+        "date": "19.05.2026",
+        "size": 126272624
+      },
+      "x64": {
+        "url": "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.90.451.gb094aab0-x64.exe",
+        "date": "19.05.2026",
+        "size": 142018008
+      }
+    }
+  }
+}

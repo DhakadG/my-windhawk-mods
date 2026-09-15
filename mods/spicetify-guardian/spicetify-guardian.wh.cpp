@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              spicetify-guardian
 // @name            Spicetify Guardian
-// @description     Keeps Spicetify alive across Spotify updates - detects the moment Spotify wipes it, checks compatibility, and re-applies. Plus a tray dashboard for every other Spicetify chore.
-// @version         1.1.0
+// @description     Keeps Spicetify alive across Spotify updates - detects the moment Spotify wipes it, checks compatibility, and re-applies. Rolls Spotify back to a known-good build when a new one breaks Spicetify. Plus a tray dashboard for every other Spicetify chore.
+// @version         1.2.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @donateUrl       https://ko-fi.com/losthusky_
@@ -144,6 +144,31 @@ one that actually holds).
 Note that blocking and auto-repair solve the same problem from opposite ends,
 and blocking means no Spotify security fixes until you unblock.
 
+## Rolling Spotify back
+
+Sometimes a new Spotify build breaks Spicetify outright and no amount of
+re-applying helps until the Spicetify project catches up. The **Rollback** tab
+in the dashboard handles that the way the community does it by hand
+(https://github.com/amd64fox/Rollback-Spotify), minus the typing:
+
+1. It fetches the full list of Spotify installers from the LoaderSpot index
+   (the same list https://loadspot.pages.dev/versions is built from), with a
+   pinned fallback list in the Guardian repo in case that index is unreachable.
+2. It **recommends a version**: a build pinned as known-good in the Guardian
+   index if one exists inside Spicetify's tested range, otherwise the newest
+   build that is inside the range Spicetify's release notes declare.
+3. You pick that one or any other, and it: snapshots your config, downloads
+   the installer, closes Spotify, restores it to stock, uninstalls it silently,
+   installs the chosen build, re-applies Spicetify, blocks Spotify updates
+   (optional, on by default - otherwise it just updates itself again), and
+   restarts Spotify.
+
+Every step is logged as it happens, and the bar at the bottom of the dashboard
+shows exactly what the mod is doing right now, including download progress.
+
+If some songs will not play after a downgrade, clear `%LOCALAPPDATA%\Spotify`
+(Spotify's cache) and launch it again - that is Spicetify's own FAQ answer.
+
 ## Command-line equivalents
 
 Everything here is also available as standalone PowerShell scripts, for machines
@@ -227,6 +252,18 @@ static constexpr int kMaxSnapshots          = 30;
 static constexpr wchar_t kDowngradeGuide[] =
     L"https://spicetify.app/docs/faq#can-i-use-an-older-version-of-spotify";
 
+// Where the rollback version list comes from. LoaderSpot maintains the index
+// that loadspot.pages.dev and amd64fox/Rollback-Spotify both read; the
+// Guardian repo carries a pinned subset in the same shape as a fallback, plus a
+// "recommended" key naming a build known to work well with Spicetify.
+static constexpr wchar_t kIndexHost[]     = L"raw.githubusercontent.com";
+static constexpr wchar_t kIndexPath[]     = L"/LoaderSpot/table/refs/heads/main/table/versions.json";
+static constexpr wchar_t kFallbackPath[]  = L"/DhakadG/spicetify-guardian/main/rollback-index.json";
+
+// The dropdown shows this many of the newest builds; the full index goes back
+// years and nobody wants to scroll through 300 entries.
+static constexpr size_t kRollbackListMax = 80;
+
 // Tasks the worker thread can be asked to perform.
 enum class Task {
     Repair,
@@ -243,6 +280,8 @@ enum class Task {
     UninstallSpicetify,
     RefreshCompat,
     ApplyConfig,
+    FetchVersions,
+    Rollback,
 };
 
 // =====================================================================
@@ -481,11 +520,18 @@ static void LogF(const wchar_t* level, const wchar_t* fmt, ...) {
 static int g_stageTotal = 0;
 static int g_stageIndex = 0;
 
+// The one line the dashboard's progress bar shows: whatever the worker is doing
+// right now. Every stage and every download tick lands here, so the user is
+// never left guessing whether the mod is still working. Defined with the
+// status globals further down.
+static void SetProgress(const std::wstring& text);
+
 static void StartStages(const std::wstring& title, int total) {
     g_stageTotal = total;
     g_stageIndex = 0;
     size_t dashes = (title.size() < 54) ? (58 - title.size()) : 4;
     GuardianLog(L"INFO", L"-- " + title + L" " + std::wstring(dashes, L'-'));
+    SetProgress(title + L"...");
 }
 
 enum class Outcome { Ok, Warn, Fail, Skip, Dry };
@@ -511,6 +557,10 @@ static void LogStage(const std::wstring& name,
         default: break;
     }
     GuardianLog(level, text);
+
+    wchar_t brief[256];
+    swprintf_s(brief, L"[%d/%d] %s: %s", g_stageIndex, g_stageTotal, name.c_str(), result.c_str());
+    SetProgress(brief);
 
     if (detail.empty()) {
         return;
@@ -2331,6 +2381,519 @@ static void RemoveMarketplace() {
 }
 
 // =====================================================================
+// Rollback - downgrade Spotify to a build Spicetify is known to work with
+// =====================================================================
+//
+// What amd64fox/Rollback-Spotify does by hand, driven from the dashboard:
+// pick a build from the LoaderSpot index, download the full installer,
+// uninstall the current Spotify silently, extract the chosen one over the
+// same folder, re-apply Spicetify, block updates so it stays put.
+
+struct SpotifyBuild {
+    std::wstring version;       // 1.2.98.301
+    std::wstring fullVersion;   // 1.2.98.301.gfcaeba72
+    std::wstring date;
+    std::wstring urlX64;
+    std::wstring urlArm64;
+};
+
+struct RollbackIndex {
+    bool available = false;
+    std::wstring source;                // where the list came from
+    std::wstring pinned;                // "recommended" from the Guardian index
+    std::wstring recommended;
+    std::wstring why;                   // one line on how it was chosen
+    std::vector<SpotifyBuild> builds;   // newest first, as the index lists them
+};
+
+// Guarded by g_compatLock - like the verdict, it is network-derived and read
+// by the UI thread.
+static RollbackIndex g_rollback;
+static int g_rollbackGen = 0;   // bumped on every refresh so the UI knows to repopulate
+
+// Pending rollback request, handed to the worker the same way config edits are.
+static std::wstring g_rollbackTarget;
+static bool g_rollbackBlock = true;
+
+// The index is `{ "1.3.1.223": { "fullversion": "...", "mac": {...}, "win": {
+// "arm64": {"url",...}, "x64": {"url",...} } }, ... }`. The flat JSON reader
+// cannot walk that, but each entry is small and self-delimiting: it starts at
+// its "fullversion" key and ends at the next one. Within an entry, "mac" comes
+// before "win", so the first "x64"/"arm64" after "win" are the Windows ones.
+static std::vector<SpotifyBuild> ParseVersionIndex(const std::wstring& json) {
+    static const wchar_t kKey[] = L"\"fullversion\"";
+    static const size_t kKeyLen = ARRAYSIZE(kKey) - 1;
+
+    std::vector<SpotifyBuild> out;
+    size_t pos = json.find(kKey);
+    while (pos != std::wstring::npos) {
+        size_t next = json.find(kKey, pos + kKeyLen);
+        std::wstring entry = json.substr(pos, (next == std::wstring::npos) ? std::wstring::npos
+                                                                            : next - pos);
+
+        SpotifyBuild b;
+        b.fullVersion = JsonStr(entry, L"fullversion");
+        size_t g = b.fullVersion.find(L".g");
+        b.version = (g == std::wstring::npos) ? b.fullVersion : b.fullVersion.substr(0, g);
+
+        size_t win = entry.find(L"\"win\"");
+        if (win != std::wstring::npos) {
+            std::wstring w = entry.substr(win);
+            size_t x = w.find(L"\"x64\"");
+            if (x != std::wstring::npos) {
+                std::wstring blk = w.substr(x);
+                b.urlX64 = JsonStr(blk, L"url");
+                b.date = JsonStr(blk, L"date");
+            }
+            size_t a = w.find(L"\"arm64\"");
+            if (a != std::wstring::npos) {
+                b.urlArm64 = JsonStr(w.substr(a), L"url");
+            }
+        }
+
+        if (ParseVer3(b.version).ok() && (!b.urlX64.empty() || !b.urlArm64.empty())) {
+            out.push_back(b);
+        }
+        pos = next;
+    }
+    return out;
+}
+
+static bool IsArm64Host() {
+    // A tool mod is a 32-bit process; GetNativeSystemInfo lies to x86 code
+    // under ARM64 emulation, IsWow64Process2 does not.
+    using Fn = BOOL(WINAPI*)(HANDLE, USHORT*, USHORT*);
+    auto fn = (Fn)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "IsWow64Process2");
+    USHORT process = 0, native = 0;
+    if (fn && fn(GetCurrentProcess(), &process, &native)) {
+        return native == IMAGE_FILE_MACHINE_ARM64;
+    }
+    SYSTEM_INFO si{};
+    GetNativeSystemInfo(&si);
+    return si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64;
+}
+
+static const SpotifyBuild* FindBuild(const RollbackIndex& idx, const std::wstring& version) {
+    for (const auto& b : idx.builds) {
+        if (b.version == version) {
+            return &b;
+        }
+    }
+    return nullptr;
+}
+
+// Recommendation, in order of trust:
+//   1. a build pinned as known-good in the Guardian index, if it is inside the
+//      range Spicetify's release notes declare;
+//   2. the newest build inside that range;
+//   3. the pinned build regardless, when there is no range to check against.
+static RollbackIndex FetchRollbackIndex(const Compat& compat) {
+    RollbackIndex idx;
+
+    std::string raw;
+    std::wstring fallbackJson;
+    if (HttpGet(kIndexHost, kFallbackPath, &raw)) {
+        fallbackJson = FromUtf8(raw);
+        idx.pinned = JsonStr(fallbackJson, L"recommended");
+    } else {
+        GuardianLog(L"WARN", L"Guardian rollback index unreachable; no pinned recommendation.");
+    }
+
+    raw.clear();
+    if (HttpGet(kIndexHost, kIndexPath, &raw)) {
+        idx.builds = ParseVersionIndex(FromUtf8(raw));
+        idx.source = L"LoaderSpot index";
+    }
+    if (idx.builds.empty() && !fallbackJson.empty()) {
+        idx.builds = ParseVersionIndex(fallbackJson);
+        idx.source = L"Guardian fallback index (LoaderSpot unreachable)";
+        GuardianLog(L"WARN", L"LoaderSpot index unreachable; using the Guardian fallback list.");
+    }
+    idx.available = !idx.builds.empty();
+    if (!idx.available) {
+        GuardianLog(L"ERROR", L"No rollback version list could be fetched.");
+        return idx;
+    }
+
+    Ver3 lo = ParseVer3(compat.min);
+    Ver3 hi = ParseVer3(compat.max);
+    bool haveRange = compat.available && lo.ok() && hi.ok();
+    auto inRange = [&](const std::wstring& v) {
+        Ver3 x = ParseVer3(v);
+        return haveRange && x.ok() && CompareVer3(x, lo) >= 0 && CompareVer3(x, hi) <= 0;
+    };
+
+    if (!idx.pinned.empty() && FindBuild(idx, idx.pinned) && (inRange(idx.pinned) || !haveRange)) {
+        idx.recommended = idx.pinned;
+        idx.why = haveRange ? L"pinned as known-good in the Guardian index and inside Spicetify's "
+                              L"tested range (" + compat.min + L" -> " + compat.max + L")"
+                            : L"pinned as known-good in the Guardian index";
+    } else {
+        for (const auto& b : idx.builds) {
+            if (inRange(b.version)) {
+                idx.recommended = b.version;
+                idx.why = L"newest build inside Spicetify's tested range (" + compat.min +
+                          L" -> " + compat.max + L")";
+                break;
+            }
+        }
+    }
+    if (idx.recommended.empty()) {
+        idx.recommended = idx.builds.front().version;
+        idx.why = L"newest build listed; Spicetify's tested range could not be checked";
+    }
+
+    LogF(L"INFO", L"Rollback index: %d builds from %s. Recommended %s - %s.", (int)idx.builds.size(),
+         idx.source.c_str(), idx.recommended.c_str(), idx.why.c_str());
+    return idx;
+}
+
+// Streams a URL to disk, reporting progress through SetProgress. The generic
+// HttpGet is for small API bodies; an installer is ~150 MB.
+static bool HttpDownload(const std::wstring& url, const std::wstring& dest, const wchar_t* label) {
+    wchar_t host[256] = {};
+    wchar_t path[2048] = {};
+    URL_COMPONENTS uc{};
+    uc.dwStructSize = sizeof(uc);
+    uc.lpszHostName = host;
+    uc.dwHostNameLength = ARRAYSIZE(host);
+    uc.lpszUrlPath = path;
+    uc.dwUrlPathLength = ARRAYSIZE(path);
+    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) {
+        LogF(L"ERROR", L"Bad download URL: %s", url.c_str());
+        return false;
+    }
+
+    bool ok = false;
+    HINTERNET ses = WinHttpOpen(L"SpicetifyGuardian/1.2", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!ses) {
+        return false;
+    }
+    WinHttpSetTimeouts(ses, 15000, 15000, 30000, 60000);
+
+    HINTERNET con = WinHttpConnect(ses, host, uc.nPort, 0);
+    HINTERNET req = con ? WinHttpOpenRequest(con, L"GET", path, nullptr, WINHTTP_NO_REFERER,
+                                             WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                             uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
+                        : nullptr;
+    HANDLE file = INVALID_HANDLE_VALUE;
+
+    if (req && WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0,
+                                  0, 0) &&
+        WinHttpReceiveResponse(req, nullptr)) {
+        DWORD status = 0;
+        DWORD len = sizeof(status);
+        WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &status, &len, WINHTTP_NO_HEADER_INDEX);
+        DWORD total = 0;
+        len = sizeof(total);
+        WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &total, &len, WINHTTP_NO_HEADER_INDEX);
+
+        if (status != 200) {
+            LogF(L"ERROR", L"Download returned HTTP %lu.", status);
+        } else {
+            file = CreateFileW(dest.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        }
+
+        if (file != INVALID_HANDLE_VALUE) {
+            std::vector<BYTE> buf(256 * 1024);
+            unsigned long long done = 0;
+            int lastPct = -1;
+            ok = true;
+            while (true) {
+                DWORD avail = 0;
+                if (!WinHttpQueryDataAvailable(req, &avail)) {
+                    ok = false;
+                    break;
+                }
+                if (avail == 0) {
+                    break;
+                }
+                DWORD read = 0;
+                DWORD want = std::min(avail, (DWORD)buf.size());
+                if (!WinHttpReadData(req, buf.data(), want, &read)) {
+                    ok = false;
+                    break;
+                }
+                DWORD written = 0;
+                if (!WriteFile(file, buf.data(), read, &written, nullptr) || written != read) {
+                    ok = false;
+                    break;
+                }
+                done += read;
+                int pct = total ? (int)(done * 100 / total) : -1;
+                if (pct != lastPct && (pct < 0 || pct % 2 == 0)) {
+                    lastPct = pct;
+                    wchar_t p[256];
+                    if (pct >= 0) {
+                        swprintf_s(p, L"%s: downloading %d%% (%llu of %lu MB)", label, pct,
+                                   done >> 20, total >> 20);
+                    } else {
+                        swprintf_s(p, L"%s: downloading, %llu MB so far", label, done >> 20);
+                    }
+                    SetProgress(p);
+                }
+            }
+            CloseHandle(file);
+            if (ok && total && done != total) {
+                LogF(L"ERROR", L"Download truncated: %llu of %lu bytes.", done, total);
+                ok = false;
+            }
+            if (!ok) {
+                DeleteFileW(dest.c_str());
+            }
+        }
+    } else {
+        LogF(L"ERROR", L"Download request failed (error %lu).", GetLastError());
+    }
+
+    if (req) WinHttpCloseHandle(req);
+    if (con) WinHttpCloseHandle(con);
+    WinHttpCloseHandle(ses);
+    return ok;
+}
+
+static bool DeleteDirTree(const std::wstring& dir) {
+    std::wstring from = dir;
+    from.push_back(L'\0');
+    SHFILEOPSTRUCTW op{};
+    op.wFunc = FO_DELETE;
+    op.pFrom = from.c_str();
+    op.fFlags = FOF_NO_UI | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+    return SHFileOperationW(&op) == 0;
+}
+
+// The directory watch must be released around a rollback: an open handle on
+// Spotify\Apps keeps the uninstaller from removing the folder. Both live with
+// the worker thread below.
+static void StopDirWatch();
+static void StartDirWatch();
+
+struct RollbackResult {
+    bool success = false;
+    std::wstring reason;
+};
+
+static RollbackResult DoRollback(const std::wstring& target, bool blockAfter) {
+    RollbackResult r;
+    Status st = GetStatus();
+    bool dry = IsDryRun();
+
+    EnterCriticalSection(&g_compatLock);
+    RollbackIndex idx = g_rollback;
+    Verdict verdict = g_lastVerdict;
+    LeaveCriticalSection(&g_compatLock);
+
+    StartStages((dry ? L"Roll back Spotify to " + target + L" (DRY RUN - nothing will change)"
+                     : L"Roll back Spotify to " + target),
+                11);
+
+    // --- 1. prerequisites -------------------------------------------------
+    const SpotifyBuild* build = FindBuild(idx, target);
+    std::wstring url = build ? (IsArm64Host() ? build->urlArm64 : build->urlX64) : L"";
+    if (!st.spotifyInstalled) {
+        LogStage(L"Prerequisites", L"FAIL", L"Spotify is not installed.", Outcome::Fail);
+        r.reason = L"Spotify is not installed.";
+        return r;
+    }
+    if (!build || url.empty()) {
+        LogStage(L"Prerequisites", L"FAIL", L"No installer for " + target + L" on this architecture.",
+                 Outcome::Fail);
+        r.reason = L"No installer is listed for " + target + L".";
+        return r;
+    }
+    {
+        size_t leaf = st.paths.root.find_last_of(L'\\');
+        std::wstring leafName = (leaf == std::wstring::npos) ? st.paths.root
+                                                              : st.paths.root.substr(leaf + 1);
+        if (_wcsicmp(leafName.c_str(), L"Spotify") != 0 ||
+            StrStrIW(st.paths.root.c_str(), L"WindowsApps") != nullptr) {
+            LogStage(L"Prerequisites", L"FAIL",
+                     L"Rollback only supports the desktop installer in " + st.paths.root,
+                     Outcome::Fail);
+            r.reason = L"Rollback needs the desktop (non-Store) Spotify install.";
+            return r;
+        }
+    }
+    if (st.spotifyVersion.compare(0, target.size(), target) == 0) {
+        LogStage(L"Prerequisites", L"SAME", L"Spotify is already " + st.spotifyVersion + L".",
+                 Outcome::Skip);
+        r.reason = L"Spotify is already " + target + L".";
+        return r;
+    }
+    LogStage(L"Prerequisites", L"ok",
+             L"Spotify " + st.spotifyVersion + L" at " + st.paths.root + L"\nTarget " +
+                 build->fullVersion + L" (" + build->date + L")\n" + url);
+
+    // --- 2. compatibility of the target ----------------------------------
+    if (verdict.compat.available) {
+        Ver3 want = ParseVer3(target);
+        Ver3 lo = ParseVer3(verdict.compat.min);
+        Ver3 hi = ParseVer3(verdict.compat.max);
+        bool in = want.ok() && lo.ok() && hi.ok() && CompareVer3(want, lo) >= 0 &&
+                  CompareVer3(want, hi) <= 0;
+        LogStage(L"Target compatibility", in ? L"Supported" : L"Outside tested range",
+                 L"Spicetify " + st.spicetifyVersion + L" tested " + verdict.compat.min + L" -> " +
+                     verdict.compat.max + (target == idx.recommended ? L" (recommended build)" : L""),
+                 in ? Outcome::Ok : Outcome::Warn);
+    } else {
+        LogStage(L"Target compatibility", L"unknown", L"Tested range not available.", Outcome::Warn);
+    }
+
+    // --- 3. snapshot ------------------------------------------------------
+    bool snapped = SnapshotConfig(L"rollback");
+    LogStage(L"Config snapshot", dry ? L"skipped (dry run)" : (snapped ? L"saved" : L"none"), L"",
+             dry ? Outcome::Dry : Outcome::Ok);
+
+    // --- 4. download (before anything is touched) ------------------------
+    EnsureStateDir();
+    std::wstring installer = StateDir() + L"\\SpotifySetup-" + target + L".exe";
+    if (dry) {
+        LogStage(L"Download installer", L"skipped (dry run)", url, Outcome::Dry);
+    } else {
+        if (!HttpDownload(url, installer, (L"Spotify " + target).c_str())) {
+            LogStage(L"Download installer", L"FAILED", L"Nothing was changed.", Outcome::Fail);
+            r.reason = L"Download failed; Spotify was not touched.";
+            return r;
+        }
+        LogStage(L"Download installer", L"ok", installer);
+    }
+
+    // --- 5. close Spotify -------------------------------------------------
+    bool weClosed = StopSpotifyGracefully();
+    if (!weClosed && st.spotifyRunning && !dry) {
+        LogStage(L"Close Spotify", L"FAILED", L"Spotify would not stop.", Outcome::Fail);
+        DeleteFileW(installer.c_str());
+        r.reason = L"Could not stop Spotify; nothing was changed.";
+        return r;
+    }
+    LogStage(L"Close Spotify", dry ? L"skipped (dry run)" : (weClosed ? L"closed" : L"was not running"),
+             L"", dry ? Outcome::Dry : Outcome::Ok);
+
+    // --- 6. restore to stock, so nothing patched is left behind ---------
+    if (st.applied && st.spicetifyInstalled) {
+        RunResult rr = RunSpicetify(L"restore");
+        LogStage(L"Restore to stock", dry ? L"skipped (dry run)" : (rr.success ? L"ok" : L"failed"),
+                 L"", dry ? Outcome::Dry : (rr.success ? Outcome::Ok : Outcome::Warn));
+    } else {
+        LogStage(L"Restore to stock", L"not needed", L"", Outcome::Skip);
+    }
+
+    if (dry) {
+        LogStage(L"Uninstall current", L"skipped (dry run)", L"", Outcome::Dry);
+        LogStage(L"Install " + target, L"skipped (dry run)", L"", Outcome::Dry);
+        LogStage(L"Re-apply Spicetify", L"skipped (dry run)", L"", Outcome::Dry);
+        LogStage(L"Block updates", L"skipped (dry run)", L"", Outcome::Dry);
+        LogStage(L"Restart Spotify", L"skipped (dry run)", L"", Outcome::Dry);
+        r.success = true;
+        r.reason = L"Dry run complete - nothing was changed.";
+        GuardianLog(L"DRY", r.reason);
+        return r;
+    }
+
+    // --- 7. uninstall the current build ----------------------------------
+    // Nothing from here on can be undone by this mod; the installer is on
+    // disk and verified, so the worst case is a re-run.
+    StopDirWatch();
+    LogF(L"ACTION", L"> Spotify.exe /UNINSTALL /SILENT");
+    RunCapture(st.paths.exe, L"/UNINSTALL /SILENT", 180000);
+    for (int i = 0; i < 60 && FileExists(st.paths.exe); i++) {
+        Sleep(500);
+    }
+    if (FileExists(st.paths.exe)) {
+        // Same as Rollback-Spotify: the uninstaller sometimes leaves the
+        // folder, and a fresh extract over stale files is asking for trouble.
+        DeleteDirTree(st.paths.root);
+    }
+    bool gone = !FileExists(st.paths.exe);
+    LogStage(L"Uninstall current", gone ? L"ok" : L"FAILED", L"", gone ? Outcome::Ok : Outcome::Fail);
+    if (!gone) {
+        r.reason = L"Could not remove the current Spotify. Re-run, or uninstall it by hand.";
+        StartDirWatch();
+        return r;
+    }
+
+    // --- 8. install the chosen build --------------------------------------
+    LogF(L"ACTION", L"> SpotifySetup.exe /extract \"%s\"", st.paths.root.c_str());
+    RunCapture(installer, L"/extract \"" + st.paths.root + L"\"", 300000);
+    DeleteFileW(installer.c_str());
+    std::wstring nowVer = FileVersionOf(st.paths.exe);
+    bool installed = nowVer.compare(0, target.size(), target) == 0;
+    LogStage(L"Install " + target, installed ? L"ok" : L"FAILED",
+             installed ? L"" : L"Spotify.exe reports " + (nowVer.empty() ? L"(missing)" : nowVer),
+             installed ? Outcome::Ok : Outcome::Fail);
+    if (!installed) {
+        r.reason = L"Install failed; Spotify.exe reports " + (nowVer.empty() ? L"(missing)" : nowVer) +
+                   L". Reinstall Spotify from spotify.com/download.";
+        StartDirWatch();
+        return r;
+    }
+
+    // /extract lays down the files only. Give Windows the Start-menu entry
+    // and the Apps-list record the real installer would have made.
+    RunPowerShell(
+        L"$r='" + st.paths.root + L"'; $s=New-Object -ComObject WScript.Shell; "
+        L"$l=$s.CreateShortcut([Environment]::GetFolderPath('StartMenu')+'\\Programs\\Spotify.lnk'); "
+        L"$l.TargetPath=$r+'\\Spotify.exe'; $l.Save(); "
+        L"$k='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Spotify'; "
+        L"New-Item -Path $k -Force | Out-Null; "
+        L"Set-ItemProperty $k DisplayName Spotify; "
+        L"Set-ItemProperty $k DisplayVersion '" + build->fullVersion + L"'; "
+        L"Set-ItemProperty $k DisplayIcon ($r+'\\Spotify.exe,0'); "
+        L"Set-ItemProperty $k Publisher 'Spotify AB'; "
+        L"Set-ItemProperty $k UninstallString ($r+'\\Spotify.exe /uninstall')");
+
+    // --- 9. re-apply Spicetify -------------------------------------------
+    // A fresh install is pristine by definition, so `clear backup apply` is
+    // exactly right here - the one place the usual footgun does not apply.
+    bool applied = false;
+    if (st.spicetifyInstalled) {
+        RunResult rr = RunSpicetify(L"clear backup apply -n");
+        Sleep(500);
+        applied = rr.success && TestSpicetifyApplied(FindSpotify());
+        LogStage(L"Re-apply Spicetify", applied ? L"APPLIED" : L"FAILED", L"",
+                 applied ? Outcome::Ok : Outcome::Fail);
+    } else {
+        LogStage(L"Re-apply Spicetify", L"skipped", L"Spicetify is not installed.", Outcome::Skip);
+    }
+
+    // --- 10. block updates -----------------------------------------------
+    if (blockAfter) {
+        BlockSpotifyUpdates();
+        LogStage(L"Block updates", AreUpdatesBlocked() ? L"blocked" : L"NOT blocked",
+                 AreUpdatesBlocked() ? L"" : L"Spotify will update itself again. See the log.",
+                 AreUpdatesBlocked() ? Outcome::Ok : Outcome::Warn);
+    } else {
+        LogStage(L"Block updates", L"skipped", L"Spotify will update itself again eventually.",
+                 Outcome::Warn);
+    }
+
+    EnterCriticalSection(&g_stateLock);
+    g_state.lastSpotifyVersion = nowVer;
+    g_state.attempts = 0;
+    g_state.lastRunUtc = UtcNowIso();
+    g_state.lastRunResult = L"Rolled back";
+    g_state.lastRunDetail = L"Spotify " + st.spotifyVersion + L" -> " + nowVer;
+    LeaveCriticalSection(&g_stateLock);
+    SaveState();
+
+    // --- 11. restart ------------------------------------------------------
+    StartDirWatch();
+    bool started = StartSpotify();
+    LogStage(L"Restart Spotify", started ? L"started" : L"FAILED", L"",
+             started ? Outcome::Ok : Outcome::Warn);
+
+    r.success = !st.spicetifyInstalled || applied;
+    r.reason = L"Spotify rolled back to " + nowVer +
+               (st.spicetifyInstalled ? (applied ? L" and Spicetify applied." : L" but Spicetify did not apply - see the log.")
+                                      : L".");
+    return r;
+}
+
+// =====================================================================
 // Health checks
 // =====================================================================
 
@@ -2490,6 +3053,16 @@ static Status g_status;
 static std::vector<HealthIssue> g_issues;
 static bool g_busy = false;
 static std::wstring g_busyLabel;
+static std::wstring g_progressText;
+
+static void SetProgress(const std::wstring& text) {
+    EnterCriticalSection(&g_statusLock);
+    g_progressText = text;
+    LeaveCriticalSection(&g_statusLock);
+    if (g_hTrayWnd) {
+        PostMessageW(g_hTrayWnd, WM_APP_STATE_DIRTY, 0, 0);
+    }
+}
 
 // Config-tab edits are queued as spicetify argument strings and applied
 // together, so ticking three extensions is one `apply` rather than three.
@@ -2746,6 +3319,98 @@ static void HandleTask(Task t) {
             RefreshStatus();
             break;
         }
+
+        case Task::FetchVersions: {
+            SetBusy(true, L"Fetching Spotify version list");
+            SetProgress(L"Reading Spicetify's tested range...");
+            Status st = GetStatus();
+            EnterCriticalSection(&g_stateLock);
+            bool strict = g_state.strictMode;
+            LeaveCriticalSection(&g_stateLock);
+            Verdict v = EvaluateCompat(st.spotifyVersion, st.spicetifyVersion, strict, false);
+
+            SetProgress(L"Fetching the Spotify installer index...");
+            RollbackIndex idx = FetchRollbackIndex(v.compat);
+
+            EnterCriticalSection(&g_compatLock);
+            g_lastVerdict = v;
+            g_rollback = idx;
+            g_rollbackGen++;
+            LeaveCriticalSection(&g_compatLock);
+
+            SetProgress(idx.available ? L"Version list ready." : L"Version list unavailable.");
+            SetBusy(false, nullptr);
+            RefreshStatus();
+            break;
+        }
+
+        case Task::Rollback: {
+            EnterCriticalSection(&g_queueLock);
+            std::wstring target = g_rollbackTarget;
+            bool block = g_rollbackBlock;
+            LeaveCriticalSection(&g_queueLock);
+            if (target.empty()) {
+                break;
+            }
+            SetBusy(true, (L"Rolling back to Spotify " + target).c_str());
+            Notify(kAppName,
+                   L"Rolling Spotify back to " + target +
+                       L". This takes a few minutes - the dashboard shows each step as it happens.",
+                   NIIF_INFO);
+            RollbackResult r = DoRollback(target, block);
+            SetBusy(false, nullptr);
+            RefreshStatus();
+            Notify(kAppName, r.reason, r.success ? NIIF_INFO : NIIF_ERROR);
+            break;
+        }
+    }
+}
+
+// Directory watch state. Globals rather than locals in the thread proc so a
+// rollback can release the handle (an open handle on Spotify\Apps stops the
+// uninstaller removing the folder) and re-arm it afterwards.
+static HANDLE g_watchDir = INVALID_HANDLE_VALUE;
+static HANDLE g_watchEvent = nullptr;
+static OVERLAPPED g_watchOv{};
+static std::vector<BYTE> g_watchBuf(8192);
+static bool g_watching = false;
+
+static constexpr DWORD kWatchFilter =
+    FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE;
+
+static void StopDirWatch() {
+    if (g_watchDir != INVALID_HANDLE_VALUE) {
+        CancelIo(g_watchDir);
+        CloseHandle(g_watchDir);
+        g_watchDir = INVALID_HANDLE_VALUE;
+    }
+    g_watching = false;
+}
+
+static void StartDirWatch() {
+    StopDirWatch();
+    SpotifyPaths sp = FindSpotify();
+    if (!sp.valid || !DirExists(sp.appsDir)) {
+        return;
+    }
+    g_watchDir = CreateFileW(sp.appsDir.c_str(), FILE_LIST_DIRECTORY,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                             OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+                             nullptr);
+    if (g_watchDir == INVALID_HANDLE_VALUE) {
+        LogF(L"WARN", L"Could not watch %s (error %lu); falling back to polling.",
+             sp.appsDir.c_str(), GetLastError());
+        return;
+    }
+    ZeroMemory(&g_watchOv, sizeof(g_watchOv));
+    g_watchOv.hEvent = g_watchEvent;
+    if (ReadDirectoryChangesW(g_watchDir, g_watchBuf.data(), (DWORD)g_watchBuf.size(), FALSE,
+                              kWatchFilter, nullptr, &g_watchOv, nullptr)) {
+        g_watching = true;
+        LogF(L"INFO", L"Watching %s", sp.appsDir.c_str());
+    } else {
+        CloseHandle(g_watchDir);
+        g_watchDir = INVALID_HANDLE_VALUE;
     }
 }
 
@@ -2766,49 +3431,17 @@ static DWORD WINAPI WorkerThreadProc(LPVOID) {
              st.applied ? L"applied" : L"NOT applied");
     }
 
-    HANDLE hDir = INVALID_HANDLE_VALUE;
-    OVERLAPPED ov{};
-    HANDLE hDirEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    std::vector<BYTE> buf(8192);
-    bool watching = false;
+    g_watchEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 
     ULONGLONG pendingSince = 0;
     ULONGLONG lastPoll = GetTickCount64();
 
-    auto startWatch = [&]() {
-        Status st = SnapshotStatus();
-        if (!st.paths.valid || !DirExists(st.paths.appsDir)) {
-            return;
-        }
-        hDir = CreateFileW(st.paths.appsDir.c_str(), FILE_LIST_DIRECTORY,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                           OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-                           nullptr);
-        if (hDir == INVALID_HANDLE_VALUE) {
-            LogF(L"WARN", L"Could not watch %s (error %lu); falling back to polling.",
-                 st.paths.appsDir.c_str(), GetLastError());
-            return;
-        }
-        ZeroMemory(&ov, sizeof(ov));
-        ov.hEvent = hDirEvent;
-        if (ReadDirectoryChangesW(hDir, buf.data(), (DWORD)buf.size(), FALSE,
-                                  FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
-                                      FILE_NOTIFY_CHANGE_LAST_WRITE,
-                                  nullptr, &ov, nullptr)) {
-            watching = true;
-            LogF(L"INFO", L"Watching %s", st.paths.appsDir.c_str());
-        } else {
-            CloseHandle(hDir);
-            hDir = INVALID_HANDLE_VALUE;
-        }
-    };
+    StartDirWatch();
 
-    startWatch();
-
-    HANDLE waits[3] = {g_stopEvent, g_workEvent, hDirEvent};
+    HANDLE waits[3] = {g_stopEvent, g_workEvent, g_watchEvent};
 
     while (true) {
-        DWORD n = watching ? 3 : 2;
+        DWORD n = g_watching ? 3 : 2;
         DWORD w = WaitForMultipleObjects(n, waits, FALSE, 5000);
 
         if (w == WAIT_OBJECT_0) {
@@ -2826,22 +3459,18 @@ static DWORD WINAPI WorkerThreadProc(LPVOID) {
             continue;
         }
 
-        if (watching && w == WAIT_OBJECT_0 + 2) {
-            ResetEvent(hDirEvent);
+        if (g_watching && w == WAIT_OBJECT_0 + 2) {
+            ResetEvent(g_watchEvent);
             DWORD bytes = 0;
-            GetOverlappedResult(hDir, &ov, &bytes, FALSE);
+            GetOverlappedResult(g_watchDir, &g_watchOv, &bytes, FALSE);
 
             pendingSince = GetTickCount64();
 
-            ZeroMemory(&ov, sizeof(ov));
-            ov.hEvent = hDirEvent;
-            if (!ReadDirectoryChangesW(hDir, buf.data(), (DWORD)buf.size(), FALSE,
-                                       FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
-                                           FILE_NOTIFY_CHANGE_LAST_WRITE,
-                                       nullptr, &ov, nullptr)) {
-                CloseHandle(hDir);
-                hDir = INVALID_HANDLE_VALUE;
-                watching = false;
+            ZeroMemory(&g_watchOv, sizeof(g_watchOv));
+            g_watchOv.hEvent = g_watchEvent;
+            if (!ReadDirectoryChangesW(g_watchDir, g_watchBuf.data(), (DWORD)g_watchBuf.size(),
+                                       FALSE, kWatchFilter, nullptr, &g_watchOv, nullptr)) {
+                StopDirWatch();
             }
             continue;
         }
@@ -2849,9 +3478,8 @@ static DWORD WINAPI WorkerThreadProc(LPVOID) {
         // Timeout tick: handle the debounce and the backstop poll.
         ULONGLONG now = GetTickCount64();
 
-        if (!watching && now - lastPoll > 60000) {
-            startWatch();
-            waits[2] = hDirEvent;
+        if (!g_watching && now - lastPoll > 60000) {
+            StartDirWatch();
         }
 
         bool due = false;
@@ -2874,6 +3502,12 @@ static DWORD WINAPI WorkerThreadProc(LPVOID) {
 
         if (st.health == Health::Wiped || st.health == Health::StaleBackup) {
             if (Settings().autoRepair) {
+                // Say so before starting: a repair closes Spotify, and a
+                // Spotify that vanishes with no explanation looks like a crash.
+                Notify(kAppName,
+                       L"Spotify " + st.spotifyVersion + L" removed Spicetify. Repairing now - "
+                       L"Spotify will close and reopen. Open the dashboard to follow along.",
+                       NIIF_INFO);
                 RunRepairTask(false, true);
             } else {
                 Notify(kAppName,
@@ -2884,12 +3518,10 @@ static DWORD WINAPI WorkerThreadProc(LPVOID) {
         }
     }
 
-    if (hDir != INVALID_HANDLE_VALUE) {
-        CancelIo(hDir);
-        CloseHandle(hDir);
-    }
-    if (hDirEvent) {
-        CloseHandle(hDirEvent);
+    StopDirWatch();
+    if (g_watchEvent) {
+        CloseHandle(g_watchEvent);
+        g_watchEvent = nullptr;
     }
     return 0;
 }
@@ -3091,9 +3723,11 @@ enum {
     IDM_OPEN_CONFIG,
     IDM_STRICT_TOGGLE,
     IDM_DRYRUN_TOGGLE,
+    IDM_ROLLBACK,
 };
 
-static void ShowDashboard();
+// tab < 0 keeps whichever tab is showing.
+static void ShowDashboard(int tab = -1);
 
 static void ShowTrayMenu() {
     Status st = SnapshotStatus();
@@ -3122,6 +3756,7 @@ static void ShowTrayMenu() {
     UINT busyFlag = busy ? MF_GRAYED : MF_ENABLED;
     AppendMenuW(menu, MF_STRING | busyFlag, IDM_REPAIR, L"&Repair now");
     AppendMenuW(menu, MF_STRING | busyFlag, IDM_RESTART_SPOTIFY, L"Re&start Spotify");
+    AppendMenuW(menu, MF_STRING | busyFlag, IDM_ROLLBACK, L"Roll &back Spotify...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
 
     HMENU pause = CreatePopupMenu();
@@ -3204,6 +3839,7 @@ static LRESULT CALLBACK TrayWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
                 case IDM_DASHBOARD:       ShowDashboard(); break;
+                case IDM_ROLLBACK:        ShowDashboard(5); break;
                 case IDM_REPAIR:          QueueTask(Task::RepairForced); break;
                 case IDM_RESTART_SPOTIFY: QueueTask(Task::RestartSpotify); break;
                 case IDM_PAUSE_1:         SetPause(1); UpdateTrayIcon(false); break;
@@ -3272,6 +3908,10 @@ enum {
     IDC_THEME_COMBO,
     IDC_HEALTH_LIST,
     IDC_SNAP_LIST,
+    IDC_PROGRESS,
+    IDC_RB_TEXT,
+    IDC_RB_COMBO,
+    IDC_RB_BLOCK,
 
     IDC_BTN_FIRST = 1100,
     IDC_BTN_REPAIR = IDC_BTN_FIRST,
@@ -3291,11 +3931,19 @@ enum {
     IDC_BTN_CONFIG_APPLY,
     IDC_BTN_SNAP_RESTORE,
     IDC_BTN_SNAP_NEW,
+    IDC_BTN_RB_GO,
+    IDC_BTN_RB_REFRESH,
     IDC_BTN_LAST,
 };
 
-static constexpr int kTabCount = 5;
-static const wchar_t* kTabNames[kTabCount] = {L"Status", L"Actions", L"Config", L"Health", L"Log"};
+static constexpr int kTabCount = 6;
+static const wchar_t* kTabNames[kTabCount] = {L"Status", L"Actions",  L"Config",
+                                              L"Health", L"Log",      L"Rollback"};
+static constexpr int kTabRollback = 5;
+
+static bool IsRollbackButton(int id) {
+    return id == IDC_BTN_RB_GO || id == IDC_BTN_RB_REFRESH;
+}
 
 struct DashState {
     HWND tab = nullptr;
@@ -3306,9 +3954,14 @@ struct DashState {
     HWND themeCombo = nullptr;
     HWND healthList = nullptr;
     HWND snapList = nullptr;
+    HWND progress = nullptr;
+    HWND rbText = nullptr;
+    HWND rbCombo = nullptr;
+    HWND rbBlock = nullptr;
     HWND buttons[IDC_BTN_LAST - IDC_BTN_FIRST] = {};
     HFONT font = nullptr;
     int activeTab = 0;
+    int rbGen = -1;   // g_rollbackGen the combo was last filled from
 };
 
 static DashState* DashOf(HWND h) {
@@ -3557,9 +4210,84 @@ static void RefreshSnapshotList(DashState* d) {
     }
 }
 
+static void RefreshRollbackTab(DashState* d) {
+    EnterCriticalSection(&g_compatLock);
+    RollbackIndex idx = g_rollback;
+    Verdict v = g_lastVerdict;
+    int gen = g_rollbackGen;
+    LeaveCriticalSection(&g_compatLock);
+    Status st = SnapshotStatus();
+
+    std::wstring t;
+    t += L"Roll Spotify back to a build Spicetify works with, then block updates so it stays there.\r\n";
+    t += L"Steps: snapshot config -> download installer -> close Spotify -> restore to stock -> "
+         L"uninstall -> install chosen build -> re-apply Spicetify -> block updates -> restart.\r\n\r\n";
+    t += L"Installed Spotify:   " + (st.spotifyVersion.empty() ? L"not found" : st.spotifyVersion) + L"\r\n";
+    t += L"Spicetify tested:    " +
+         (v.compat.available ? v.compat.min + L" -> " + v.compat.max + L"  (" + v.compat.tag + L")"
+                             : std::wstring(L"unknown")) + L"\r\n";
+    if (idx.available) {
+        t += L"Version list:        " + std::to_wstring(idx.builds.size()) + L" builds from " +
+             idx.source + L"\r\n";
+        t += L"Recommended:         " + idx.recommended + L"  -  " + idx.why + L"\r\n";
+    } else {
+        t += L"Version list:        not fetched yet - press Refresh version list.\r\n";
+    }
+    t += L"\r\nRollback needs the desktop (non-Store) Spotify. Your login and cache in "
+         L"%LOCALAPPDATA%\\Spotify are kept; if some songs will not play afterwards, clear that "
+         L"folder (Spicetify FAQ).\r\n";
+    SetWindowTextW(d->rbText, t.c_str());
+
+    // Only repopulate when the list actually changed, or a refresh mid-scroll
+    // would snap the user's selection back to the recommendation.
+    if (gen == d->rbGen) {
+        return;
+    }
+    d->rbGen = gen;
+    SendMessageW(d->rbCombo, CB_RESETCONTENT, 0, 0);
+    int sel = 0;
+    int i = 0;
+    for (const auto& b : idx.builds) {
+        if ((size_t)i >= kRollbackListMax && b.version != idx.recommended) {
+            continue;
+        }
+        std::wstring label = b.version + L"   (" + b.date + L")";
+        if (b.version == idx.recommended) {
+            label += L"   - recommended";
+            sel = i;
+        }
+        SendMessageW(d->rbCombo, CB_ADDSTRING, 0, (LPARAM)label.c_str());
+        i++;
+    }
+    SendMessageW(d->rbCombo, CB_SETCURSEL, sel, 0);
+}
+
+static void RefreshProgressBar(DashState* d) {
+    EnterCriticalSection(&g_statusLock);
+    bool busy = g_busy;
+    std::wstring label = g_busyLabel;
+    std::wstring progress = g_progressText;
+    LeaveCriticalSection(&g_statusLock);
+
+    std::wstring t;
+    if (busy) {
+        t = L"WORKING - " + label + (progress.empty() ? L"" : L":  " + progress);
+    } else {
+        EnterCriticalSection(&g_stateLock);
+        std::wstring last = g_state.lastRunResult;
+        LeaveCriticalSection(&g_stateLock);
+        t = L"Idle." + (progress.empty() ? L"" : L"  Last: " + progress) +
+            (last.empty() ? L"" : L"  (last run: " + last + L")");
+    }
+    SetWindowTextW(d->progress, t.c_str());
+}
+
 static void ShowTabControls(DashState* d) {
     int t = d->activeTab;
 
+    ShowWindow(d->rbText,     t == kTabRollback ? SW_SHOW : SW_HIDE);
+    ShowWindow(d->rbCombo,    t == kTabRollback ? SW_SHOW : SW_HIDE);
+    ShowWindow(d->rbBlock,    t == kTabRollback ? SW_SHOW : SW_HIDE);
     ShowWindow(d->statusText, t == 0 ? SW_SHOW : SW_HIDE);
     ShowWindow(d->extList,    t == 2 ? SW_SHOW : SW_HIDE);
     ShowWindow(d->appList,    t == 2 ? SW_SHOW : SW_HIDE);
@@ -3572,9 +4300,11 @@ static void ShowTabControls(DashState* d) {
         int id = IDC_BTN_FIRST + i;
         bool visible = false;
         if (t == 1) {
-            visible = (id != IDC_BTN_CONFIG_APPLY);
+            visible = (id != IDC_BTN_CONFIG_APPLY && !IsRollbackButton(id));
         } else if (t == 2) {
             visible = (id == IDC_BTN_CONFIG_APPLY);
+        } else if (t == kTabRollback) {
+            visible = IsRollbackButton(id);
         }
         if (d->buttons[i]) {
             ShowWindow(d->buttons[i], visible ? SW_SHOW : SW_HIDE);
@@ -3594,9 +4324,12 @@ static void LayoutDashboard(HWND hWnd) {
     int w = rc.right - rc.left;
     int h = rc.bottom - rc.top;
 
-    MoveWindow(d->tab, pad, pad, w - 2 * pad, h - 2 * pad, TRUE);
+    // Progress bar along the bottom, always visible whatever tab is showing.
+    const int barH = 22;
+    MoveWindow(d->progress, pad, h - pad - barH + 3, w - 2 * pad, barH, TRUE);
+    MoveWindow(d->tab, pad, pad, w - 2 * pad, h - 2 * pad - barH, TRUE);
 
-    RECT page = {pad, pad, w - pad, h - pad};
+    RECT page = {pad, pad, w - pad, h - pad - barH};
     TabCtrl_AdjustRect(d->tab, FALSE, &page);
     int px = page.left + 6;
     int py = page.top + 6;
@@ -3617,14 +4350,27 @@ static void LayoutDashboard(HWND hWnd) {
                    pw - half - 10, 28, TRUE);
     }
 
-    // Actions tab: a grid of buttons, snapshot list below.
+    // Rollback tab: explanation on top, picker row and buttons underneath.
     const int bw = 180;
     const int bh = 30;
     const int gap = 8;
+    {
+        int rowY = py + ph - 2 * (bh + gap);
+        MoveWindow(d->rbText, px, py, pw, rowY - py - gap, TRUE);
+        MoveWindow(d->rbCombo, px, rowY, std::min(pw, 320), 300, TRUE);
+        MoveWindow(d->rbBlock, px + std::min(pw, 320) + gap, rowY + 4,
+                   std::max(100, pw - std::min(pw, 320) - gap), bh - 8, TRUE);
+        HWND go = d->buttons[IDC_BTN_RB_GO - IDC_BTN_FIRST];
+        HWND rf = d->buttons[IDC_BTN_RB_REFRESH - IDC_BTN_FIRST];
+        if (go) MoveWindow(go, px, rowY + bh + gap, bw + 40, bh, TRUE);
+        if (rf) MoveWindow(rf, px + bw + 40 + gap, rowY + bh + gap, bw, bh, TRUE);
+    }
+
+    // Actions tab: a grid of buttons, snapshot list below.
     int cols = std::max(1, (pw + gap) / (bw + gap));
     int i = 0;
     for (int id = IDC_BTN_FIRST; id < IDC_BTN_LAST; id++) {
-        if (id == IDC_BTN_CONFIG_APPLY) {
+        if (id == IDC_BTN_CONFIG_APPLY || IsRollbackButton(id)) {
             continue;
         }
         HWND b = d->buttons[id - IDC_BTN_FIRST];
@@ -3652,6 +4398,8 @@ static void RefreshDashboard(HWND hWnd) {
     RefreshHealthTab(d);
     RefreshLogTab(d);
     RefreshSnapshotList(d);
+    RefreshRollbackTab(d);
+    RefreshProgressBar(d);
 
     EnterCriticalSection(&g_statusLock);
     bool busy = g_busy;
@@ -3661,6 +4409,44 @@ static void RefreshDashboard(HWND hWnd) {
             EnableWindow(d->buttons[i], !busy);
         }
     }
+    EnableWindow(d->rbCombo, !busy);
+}
+
+static void QueueRollback(DashState* d) {
+    int sel = (int)SendMessageW(d->rbCombo, CB_GETCURSEL, 0, 0);
+    if (sel < 0) {
+        MessageBoxW(g_hDashWnd, L"Fetch the version list and pick a build first.", kAppName,
+                    MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    wchar_t label[256] = {};
+    SendMessageW(d->rbCombo, CB_GETLBTEXT, sel, (LPARAM)label);
+    std::wstring target = label;
+    target = target.substr(0, target.find(L' '));
+    bool block = SendMessageW(d->rbBlock, BM_GETCHECK, 0, 0) == BST_CHECKED;
+
+    EnterCriticalSection(&g_compatLock);
+    std::wstring recommended = g_rollback.recommended;
+    LeaveCriticalSection(&g_compatLock);
+    Status st = SnapshotStatus();
+
+    std::wstring msg = L"Roll Spotify back from " + st.spotifyVersion + L" to " + target +
+                       (target == recommended ? L" (the recommended build)" : L"") + L"?\r\n\r\n"
+                       L"Spotify will be closed, uninstalled and reinstalled at that version, "
+                       L"Spicetify re-applied, and " +
+                       (block ? L"Spotify updates blocked so it stays there."
+                              : L"updates left ON, so Spotify will upgrade itself again.") +
+                       L"\r\n\r\nThe installer is ~150 MB. Each step shows in the bar at the bottom "
+                       L"and on the Log tab.";
+    if (MessageBoxW(g_hDashWnd, msg.c_str(), kAppName, MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+        return;
+    }
+
+    EnterCriticalSection(&g_queueLock);
+    g_rollbackTarget = target;
+    g_rollbackBlock = block;
+    LeaveCriticalSection(&g_queueLock);
+    QueueTask(Task::Rollback);
 }
 
 // Turn the tick states back into `spicetify config` arguments. Only the
@@ -3838,6 +4624,27 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                                           (HMENU)IDC_SNAP_LIST, nullptr, nullptr);
             SendMessageW(d->snapList, WM_SETFONT, (WPARAM)mono, TRUE);
 
+            d->progress = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP |
+                                          SS_ENDELLIPSIS, 0, 0, 0, 0, hWnd, (HMENU)IDC_PROGRESS,
+                                          nullptr, nullptr);
+            SendMessageW(d->progress, WM_SETFONT, (WPARAM)d->font, TRUE);
+
+            d->rbText = CreateWindowExW(0, L"EDIT", L"",
+                                        WS_CHILD | WS_VSCROLL | ES_MULTILINE | ES_READONLY, 0, 0, 0,
+                                        0, hWnd, (HMENU)IDC_RB_TEXT, nullptr, nullptr);
+            SendMessageW(d->rbText, WM_SETFONT, (WPARAM)mono, TRUE);
+
+            d->rbCombo = CreateWindowExW(0, L"COMBOBOX", L"",
+                                         WS_CHILD | WS_VSCROLL | CBS_DROPDOWNLIST, 0, 0, 0, 0, hWnd,
+                                         (HMENU)IDC_RB_COMBO, nullptr, nullptr);
+            SendMessageW(d->rbCombo, WM_SETFONT, (WPARAM)d->font, TRUE);
+
+            d->rbBlock = CreateWindowExW(0, L"BUTTON", L"Block Spotify updates afterwards (recommended)",
+                                         WS_CHILD | BS_AUTOCHECKBOX | WS_TABSTOP, 0, 0, 0, 0, hWnd,
+                                         (HMENU)IDC_RB_BLOCK, nullptr, nullptr);
+            SendMessageW(d->rbBlock, WM_SETFONT, (WPARAM)d->font, TRUE);
+            SendMessageW(d->rbBlock, BM_SETCHECK, BST_CHECKED, 0);
+
             struct {
                 int id;
                 const wchar_t* text;
@@ -3859,6 +4666,8 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                 {IDC_BTN_SNAP_NEW,     L"Snapshot config now"},
                 {IDC_BTN_SNAP_RESTORE, L"Restore selected snapshot"},
                 {IDC_BTN_CONFIG_APPLY, L"Apply config changes"},
+                {IDC_BTN_RB_GO,        L"Roll back to selected version"},
+                {IDC_BTN_RB_REFRESH,   L"Refresh version list"},
             };
             for (const auto& b : kButtons) {
                 d->buttons[b.id - IDC_BTN_FIRST] = MakeButton(hWnd, b.id, b.text, d->font);
@@ -3886,6 +4695,15 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                 ShowTabControls(d);
                 LayoutDashboard(hWnd);
                 InvalidateRect(hWnd, nullptr, TRUE);
+                if (d->activeTab == kTabRollback) {
+                    // First visit fetches the list; later visits keep it.
+                    EnterCriticalSection(&g_compatLock);
+                    bool have = g_rollback.available;
+                    LeaveCriticalSection(&g_compatLock);
+                    if (!have) {
+                        QueueTask(Task::FetchVersions);
+                    }
+                }
             }
             return 0;
         }
@@ -3993,6 +4811,8 @@ static LRESULT CALLBACK DashWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
                 case IDC_BTN_SNAP_RESTORE: RestoreSelectedSnapshot(d); break;
                 case IDC_BTN_CONFIG_APPLY: QueueConfigChanges(d); break;
+                case IDC_BTN_RB_REFRESH:   QueueTask(Task::FetchVersions); break;
+                case IDC_BTN_RB_GO:        QueueRollback(d); break;
             }
             return 0;
         }
@@ -4089,11 +4909,23 @@ static DWORD WINAPI TrayThreadProc(LPVOID) {
     return 0;
 }
 
-static void ShowDashboard() {
+static void SelectDashboardTab(int tab) {
+    DashState* d = g_hDashWnd ? DashOf(g_hDashWnd) : nullptr;
+    if (!d || tab < 0 || tab >= kTabCount || tab == d->activeTab) {
+        return;
+    }
+    TabCtrl_SetCurSel(d->tab, tab);
+    // TabCtrl_SetCurSel does not send TCN_SELCHANGE; do what it would have.
+    NMHDR nh{d->tab, IDC_TAB, TCN_SELCHANGE};
+    SendMessageW(g_hDashWnd, WM_NOTIFY, IDC_TAB, (LPARAM)&nh);
+}
+
+static void ShowDashboard(int tab) {
     if (g_hDashWnd && IsWindow(g_hDashWnd)) {
         ShowWindow(g_hDashWnd, SW_RESTORE);
         SetForegroundWindow(g_hDashWnd);
         RefreshDashboard(g_hDashWnd);
+        SelectDashboardTab(tab);
         return;
     }
 
@@ -4129,6 +4961,7 @@ static void ShowDashboard() {
     LayoutDashboard(g_hDashWnd);
     ShowWindow(g_hDashWnd, SW_SHOW);
     SetForegroundWindow(g_hDashWnd);
+    SelectDashboardTab(tab);
 }
 
 // =====================================================================

@@ -26,14 +26,33 @@ and refuses to when doing it would be a bad idea.
 - **Never kills your music** — all checks run before Spotify is touched, then it closes
   with `WM_CLOSE` rather than a kill, and restarts after.
 - **Config snapshots** before every destructive operation; last 30 restorable.
+- **Rollback** — when a new Spotify build breaks Spicetify outright, the Rollback tab
+  downgrades to a known-good build the way [amd64fox/Rollback-Spotify](https://github.com/amd64fox/Rollback-Spotify)
+  does by hand: fetch the LoaderSpot installer index, recommend a version, download,
+  silent uninstall, `/extract` the chosen build, re-apply Spicetify, block updates.
+- **Progress bar** — the bottom of the dashboard always shows what the worker is doing
+  right now, stage by stage, including download percentage.
+
+## Rollback version sources
+
+1. `https://raw.githubusercontent.com/LoaderSpot/table/refs/heads/main/table/versions.json` —
+   the index behind loadspot.pages.dev and Rollback-Spotify. ~330 builds, newest first.
+2. [`rollback-index.json`](rollback-index.json) in this folder, published at
+   `https://raw.githubusercontent.com/DhakadG/spicetify-guardian/main/rollback-index.json` —
+   same shape (Windows entries only) plus a `recommended` key. Used for the list only when
+   LoaderSpot is unreachable; its `recommended` build is always the first choice when it
+   sits inside the range the latest `spicetify/cli` release declares.
+
+Recommendation order: pinned build if inside Spicetify's tested range → newest build
+inside that range → pinned build when there is no range to check → newest listed.
 
 ## Tray icon
 
 Green when healthy, amber when Spicetify is missing, grey when paused.
 
 - **Left-click** — dashboard
-- **Right-click** — repair, restart Spotify, pause (1/3/7 days or until the next Spotify
-  update), block/unblock Spotify updates, strict mode
+- **Right-click** — repair, restart Spotify, roll back Spotify, pause (1/3/7 days or until
+  the next Spotify update), block/unblock Spotify updates, strict mode
 
 ## Dashboard
 
@@ -45,6 +64,8 @@ Green when healthy, amber when Spicetify is missing, grey when paused.
 - **Health** — config entries pointing at deleted files, Marketplace without its
   placeholder theme, duplicate extension filenames across the two extension folders
 - **Log** — what it did and why
+- **Rollback** — installed vs. tested range, the recommended build and why, a dropdown of
+  the newest 80 builds, "block updates afterwards" (default on), go
 
 ## Settings
 

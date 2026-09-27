@@ -1,14 +1,15 @@
-# Compile and link every mod against each Windhawk release the gallery tests,
-# so a submission is known-good before it is pushed to a pull request there.
+# Compile every mod the way the Windhawk gallery's "Mod compatibility check"
+# does, against the same Windhawk versions, so a submission is known-good before
+# it is pushed to a pull request there.
 #
-# The gallery's own compatibility check only runs on a pull request and only for
-# the single file that changed, which means a round trip per attempt and a wait
-# for a maintainer to approve the run on a fork. This does the same compile here,
-# on every push, for every mod.
-#
-# The other four workflows in the gallery are specific to running a catalogue -
-# PR labels, PR commands, submission validation and the site deploy - so there is
-# nothing to mirror.
+# Nothing here is a reimplementation of the gallery's checks. The version list
+# is read from the gallery's own workflow on every run, the 1.x compile is the
+# gallery's own scripts/compile_mod.py, the 2.x compile is the same windhawk-cli
+# call it makes (warnings fail), and the metadata/readme/settings rules are the
+# gallery's own pr_validation.py via scripts/check-gallery.py. Two things are
+# added on top: the newest Windhawk release is tested even before the gallery
+# adopts it, and every mod is built on every push rather than one changed file
+# per pull request.
 
 name: Build mods
 
@@ -16,28 +17,74 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  # Weekly, so a new Windhawk release that breaks something shows up without
+  # waiting for the next push.
+  schedule:
+    - cron: '0 6 * * 1'
+
+env:
+  PYTHONUTF8: '1'
 
 jobs:
+  versions:
+    name: Windhawk versions
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - name: Read the gallery's list and the newest release
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m pip install --quiet pyyaml
+          gh api repos/ramensoftware/windhawk-mods/contents/.github/workflows/mod_compatibility_check.yml \
+            --jq .content | base64 -d > gallery.yml
+          # Newest by date, pre-releases included - that is the one users on
+          # the alpha channel are actually running.
+          latest=$(gh api repos/ramensoftware/windhawk/releases \
+            --jq '[.[] | select(.draft | not)][0].tag_name')
+          matrix=$(python - "$latest" <<'EOF'
+          import json, sys, yaml
+          wf = yaml.safe_load(open('gallery.yml'))
+          versions = list(wf['jobs']['run']['strategy']['matrix']['version'])
+          latest = sys.argv[1].removeprefix('v')
+          if latest and latest not in versions:
+              versions.append(latest)
+          if not versions:
+              sys.exit('No Windhawk versions found in the gallery workflow')
+          print(json.dumps({'version': versions}))
+          EOF
+          )
+          echo "Testing against: $matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   build:
     name: Windhawk ${{ matrix.version }}
+    needs: versions
     runs-on: windows-latest
     defaults:
       run:
         shell: bash
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - version: '1.6.1'
-            std: 'c++20'
-          - version: '1.7.3'
-            std: 'c++20'
-          - version: '2.0.0-alpha.2'
-            std: 'c++23'
+      matrix: ${{ fromJSON(needs.versions.outputs.matrix) }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Checkout the gallery's tooling
+        uses: actions/checkout@v6
+        with:
+          repository: ramensoftware/windhawk-mods
+          path: gallery
+          sparse-checkout: scripts
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
 
       - name: Cache Windhawk
         id: cache-windhawk
@@ -61,16 +108,45 @@ jobs:
 
           url="https://github.com/ramensoftware/windhawk/releases/download/$release_tag/windhawk_setup.exe"
           installer="${{ runner.temp }}/windhawk_setup.exe"
-          curl -L "$url" -o "$installer"
+          curl -fL "$url" -o "$installer"
           MSYS_NO_PATHCONV=1 "$installer" /S /PORTABLE $installer_args \
             "/D=${{ runner.temp }}\\windhawk"
 
-      - name: Build every mod
-        shell: pwsh
+      - name: Compile every mod
         run: |
-          ./scripts/build-mod.ps1 `
-            -WindhawkRoot "${{ runner.temp }}\windhawk" `
-            -Std "${{ matrix.std }}"
+          windhawk_path="${{ runner.temp }}\windhawk"
+          failed=()
+          for f in mods/*/*.wh.cpp; do
+            echo "::group::$f"
+            ok=1
+            if [[ "${{ matrix.version }}" == 1.* ]]; then
+              python -u gallery/scripts/compile_mod.py -w "$windhawk_path" \
+                -f "$f" \
+                -o32 "${{ runner.temp }}\mod_32.dll" \
+                -o64 "${{ runner.temp }}\mod_64.dll" \
+                -oarm64 "${{ runner.temp }}\mod_arm64.dll" || ok=0
+            else
+              # Same call as the gallery: --disabled builds without activating,
+              # --arch all builds every machine scenario, and a compile that
+              # only produced warnings still fails.
+              result="${{ runner.temp }}/compile_result.json"
+              if ! MSYS_NO_PATHCONV=1 "$windhawk_path\windhawk-cli.exe" --json \
+                mod install --disabled --arch all --file "$f" > "$result"; then
+                jq -r --arg f "$f" '"::error file=\($f)::\(.error.code): \(.error.message)"' "$result" \
+                  || cat "$result"
+                ok=0
+              elif jq -e '.data.warnings' "$result" > /dev/null; then
+                echo "::error file=$f::The mod compiled with warnings"
+                ok=0
+              fi
+            fi
+            echo "::endgroup::"
+            [[ $ok == 1 ]] || failed+=("$f")
+          done
+          if (( ${#failed[@]} )); then
+            printf '::error::Failed: %s\n' "${failed[@]}"
+            exit 1
+          fi
 
   settings:
     name: Settings blocks
@@ -92,3 +168,26 @@ jobs:
       # job above cannot catch it.
       - name: Validate settings blocks
         run: python scripts/check-settings.py
+
+  gallery:
+    name: Gallery validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: python -m pip install pyyaml
+
+      # The gallery's own pr_validation.py, per file. Only the mods that are
+      # gallery submissions: the forks correctly fail its @github-must-match
+      # rule, which is the reason they are forks.
+      - name: Run the gallery's validator
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/check-gallery.py mods/win-x-hotcorners/win-x-hotcorners.wh.cpp

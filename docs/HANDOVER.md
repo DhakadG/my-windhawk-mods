@@ -10,8 +10,10 @@ Starting context for a fresh session. Everything here is verified, not assumed. 
 
 1. Edit locally, then `scripts/check-mod.ps1`, `scripts/build-mod.ps1`,
    `scripts/check-settings.py`.
-2. Push to **this repo** and wait for its **Build mods** workflow to go green on all
-   three Windhawk versions.
+2. Push to **this repo** and wait for its **Build mods** workflow to go green on every
+   Windhawk version it tests - read from the gallery's own compatibility-check
+   matrix on each run, plus the newest Windhawk release - and on its Gallery
+   validation job.
 3. **Only then** copy the file into the gallery fork (`DhakadG/windhawk-mods`) on a
    **fresh branch cut from an up-to-date `main`**, and open a **new** PR.
 

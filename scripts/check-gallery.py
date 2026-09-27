@@ -18,12 +18,22 @@ so they cannot be checked here - only the per-file rules can.
 """
 
 import base64
+import http.client
+import os
 import pathlib
+import urllib.error
 import subprocess
 import sys
 import tempfile
 
 DEPS = ('pr_validation', 'extract_mod_symbols', 'preprocessor')
+
+# GitHub Actions sets CI. There, a check that could not run is a failure: a
+# green run has to mean the validator actually looked at the file.
+IN_CI = bool(os.environ.get('CI'))
+
+NETWORK_ERRORS = (urllib.error.URLError, http.client.HTTPException,
+                  TimeoutError, ConnectionError)
 REPO = 'ramensoftware/windhawk-mods'
 
 
@@ -65,7 +75,7 @@ def main(argv: list[str]) -> int:
     except Exception as e:               # noqa: BLE001 - report and skip, not fail
         print(f'SKIPPED: {e}')
         print('This check needs the gh CLI and network access.')
-        return 0
+        return 1 if IN_CI else 0
 
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = pathlib.Path(tmp)
@@ -83,11 +93,11 @@ def main(argv: list[str]) -> int:
 
         sys.path.insert(0, str(tmpdir))
         cwd = pathlib.Path.cwd()
-        import os
         os.chdir(tmpdir)
         try:
             import pr_validation as V
             total = 0
+            inconclusive = 0
             for dest, original in staged.items():
                 print(f'== {original.name}')
                 try:
@@ -96,14 +106,20 @@ def main(argv: list[str]) -> int:
                         # started requiring it alongside the login.
                         pathlib.Path('mods') / dest.name, 'DhakadG', 73574085
                     )
-                except Exception as e:      # noqa: BLE001
+                except NETWORK_ERRORS as e:
                     # The validator fetches the mod catalogue and the licence
                     # list over the network. A 502 from that is not a finding
                     # about this mod, and reporting it as one would train
-                    # everyone to ignore a red result.
+                    # everyone to ignore a red result - locally. In CI there is
+                    # nobody to read the word INCONCLUSIVE, so it fails and the
+                    # run is retried instead of passing unchecked.
                     print(f'   INCONCLUSIVE: {type(e).__name__}: {e}')
                     print('   (network hiccup inside the validator - rerun)')
+                    inconclusive += 1
                     continue
+                # Anything else is not the network. It is how the validator
+                # gaining a required argument once passed every run as a
+                # "hiccup", so it propagates and fails the check.
                 total += n
                 print('   clean' if n == 0 else f'   {n} warning(s)')
         finally:
@@ -113,6 +129,9 @@ def main(argv: list[str]) -> int:
     if total:
         print(f'Gallery validation FAILED with {total} warning(s).')
         return 1
+    if inconclusive:
+        print(f'{inconclusive} mod(s) could not be checked.')
+        return 1 if IN_CI else 0
     print('All mods pass the gallery validator.')
     return 0
 

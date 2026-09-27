@@ -37,6 +37,9 @@ kept because the answers they produced are cited in `docs/HANDOVER.md`.
   drives a live window with it. Proved that a physically-held modifier
   contaminated injected combinations.
 - `probe-vtext.cpp` — vertical text rendering candidates for the dashboard.
+- `probe-hold-modifier.cpp` — slices the key parser and Hold modifier key out
+  of the source, asserts the parsing, and presses/releases real keys to prove
+  the release lets go and a solo Win release does not open Start.
 - `zonegeom.cpp` — asserts the 16 zones tile the border with no overlap or gap,
   at six aspect ratios including portrait.
 

@@ -92,7 +92,9 @@ def main(argv: list[str]) -> int:
                 print(f'== {original.name}')
                 try:
                     n = V.validate_mod_file(
-                        pathlib.Path('mods') / dest.name, 'DhakadG'
+                        # DhakadG's numeric GitHub id; the gallery's validator
+                        # started requiring it alongside the login.
+                        pathlib.Path('mods') / dest.name, 'DhakadG', 73574085
                     )
                 except Exception as e:      # noqa: BLE001
                     # The validator fetches the mod catalogue and the licence

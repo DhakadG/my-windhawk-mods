@@ -38,7 +38,7 @@ the top of each mod's readme.
 | [mac-magnifying-cursor](mods/mac-magnifying-cursor/) | 1.5.0 | [Jaali](https://github.com/alivca) | Shake-to-magnify cursor. |
 | [bt-battery-monitor-fork](mods/bt-battery-monitor-fork/) | 1.1.1 | — | Bluetooth battery levels. |
 | [spicetify-guardian](mods/spicetify-guardian/) | 1.1.0 | — | Keeps a Spicetify install from being undone by a Spotify update. |
-| [lock-screen-flip-clock](mods/lock-screen-flip-clock/) | 1.0.0 | — | A mechanical flip clock for the lock screen, ported from LyricDock: real 3D flaps, an airport-board roll-in, synthesised flap sounds and a vibration thump. Standalone repo: [DhakadG/lock-screen-flip-clock](https://github.com/DhakadG/lock-screen-flip-clock). |
+| [lock-screen-flip-clock](mods/lock-screen-flip-clock/) | 1.0.1 | — | A mechanical flip clock for the lock screen, ported from LyricDock: real 3D flaps, an airport-board roll-in, synthesised flap sounds and a vibration thump. |
 | [tray-hover-expand-plus](mods/tray-hover-expand-plus/) | 2.3.0 | [wygodad](https://github.com/wygodad) | Hidden-icons chevron on hover, plus any configurable tray icon opening its own popup, with a forgiving icon → popup cursor path. |
 
 Only `win-x-hotcorners` is in the public gallery. The rest are personal builds and forks,

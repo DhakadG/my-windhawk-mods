@@ -2,10 +2,10 @@
 // @id              lock-screen-flip-clock
 // @name            Lock Screen Flip Clock
 // @description     A mechanical flip clock for the lock screen: paper-grain cards that really flip, an airport-board roll-in, synthesised flap sounds and a vibration thump
-// @version         1.0.0
+// @version         1.0.1
 // @author          lost_husky
 // @github          https://github.com/DhakadG
-// @homepage        https://github.com/DhakadG/lock-screen-flip-clock
+// @homepage        https://github.com/DhakadG/my-windhawk-mods/tree/main/mods/lock-screen-flip-clock
 // @donateUrl       https://ko-fi.com/losthusky_
 // @license         MIT
 // @include         LockApp.exe
@@ -21,9 +21,9 @@ Turns the Windows 11 lock screen into a mechanical flip clock: one card per
 digit, raised puff-print numerals on paper-grain cards, and flaps that fall
 over and land like the real thing.
 
-![The flip clock on the lock screen](https://raw.githubusercontent.com/DhakadG/lock-screen-flip-clock/main/docs/media/lock-screen.png)
+![The flip clock on the lock screen](https://raw.githubusercontent.com/DhakadG/my-windhawk-mods/main/docs/media/lock-screen-flip-clock/lock-screen.png)
 
-![A minute flipping over](https://raw.githubusercontent.com/DhakadG/lock-screen-flip-clock/main/docs/media/flip.gif)
+![A minute flipping over](https://raw.githubusercontent.com/DhakadG/my-windhawk-mods/main/docs/media/lock-screen-flip-clock/flip.gif)
 
 ## What it does
 

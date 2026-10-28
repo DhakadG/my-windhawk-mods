@@ -15,6 +15,8 @@ $mods = @{
     'taskbar-ai-quota-fork'           = 'local@taskbar-ai-quota-fork.wh.cpp'
     'taskbar-clock-customization-v3'  = 'local@taskbar-clock-customization-v3.wh.cpp'
     'mac-magnifying-cursor'           = 'local@mac-magnifying-cursor.wh.cpp'
+    'explorer-justified-view'         = 'local@explorer-justified-view.wh.cpp'
+    'explorer-details-better-file-sizes' = 'local@explorer-details-better-file-sizes.wh.cpp'
 }
 
 foreach ($name in $mods.Keys | Sort-Object) {

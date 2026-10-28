@@ -18,6 +18,9 @@ pwsh -File scripts/build-mod.ps1
 python scripts/check-gallery.py
 ```
 
+`run-upstream-suite.ps1` runs DarkionAvey's offscreen regression suite (from a clone
+of his repo) against `explorer-justified-view`; see that mod's handover.
+
 `sync-from-modssource.ps1` copies mods out of `C:\ProgramData\Windhawk\ModsSource`
 (which needs admin to write) into this repo, printing versions as it goes.
 
@@ -42,6 +45,11 @@ kept because the answers they produced are cited in `docs/HANDOVER.md`.
   the release lets go and a solo Win release does not open Start.
 - `zonegeom.cpp` — asserts the 16 zones tile the border with no overlap or gap,
   at six aspect ratios including portrait.
+- `probe-view-mode.cpp` — hosts a private ExplorerBrowser to show how DefView
+  stores view modes and icon sizes, dumps the background menu's View submenu, and
+  round-trips a value in a folder's view-state bag. Settled how
+  explorer-justified-view remembers Justified per folder
+  (`docs/per-mod/HANDOVER-explorer-view-pair.md` §4).
 
 ## `legacy/`
 

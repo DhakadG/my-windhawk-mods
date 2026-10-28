@@ -1,5 +1,9 @@
 # Deferred work
 
+> Explorer view pair (explorer-justified-view + Better file sizes): open work lives in
+> [`per-mod/HANDOVER-explorer-view-pair.md`](per-mod/HANDOVER-explorer-view-pair.md) §6;
+> the new mod's phases in [`per-mod/PLAN-explorer-justified-view.md`](per-mod/PLAN-explorer-justified-view.md).
+
 Ordered by when it should happen, not by size. Nothing here blocks the current
 priority, which is getting the taskbar mods rendering again on 26H2 build 26300.
 

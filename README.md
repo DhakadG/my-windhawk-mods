@@ -40,6 +40,8 @@ the top of each mod's readme.
 | [spicetify-guardian](mods/spicetify-guardian/) | 1.1.0 | — | Keeps a Spicetify install from being undone by a Spotify update. |
 | [lock-screen-flip-clock](mods/lock-screen-flip-clock/) | 1.0.1 | — | A mechanical flip clock for the lock screen, ported from LyricDock: real 3D flaps, an airport-board roll-in, synthesised flap sounds and a vibration thump. |
 | [tray-hover-expand-plus](mods/tray-hover-expand-plus/) | 2.3.0 | [wygodad](https://github.com/wygodad) | Hidden-icons chevron on hover, plus any configurable tray icon opening its own popup, with a forgiving icon → popup cursor path. |
+| [explorer-justified-view](mods/explorer-justified-view/) | 0.1.0 | [DarkionAvey](https://github.com/DarkionAvey/windhawk-gpu-accelerated-explorer-view) | GPU-drawn Explorer views with justified photo rows, a tight photo grid, cache-first and preloaded thumbnails (HEIF/RAW from embedded previews). Based on DarkionAvey's 0.9.263. **GPL-2.0.** |
+| [explorer-details-better-file-sizes](mods/explorer-details-better-file-sizes/) | 1.6 | [m417z](https://github.com/m417z) | Folder sizes in Explorer details, with a reused Everything connection and column auto-fit; feeds folder sizes to explorer-justified-view. |
 
 Only `win-x-hotcorners` is in the public gallery. The rest are personal builds and forks,
 installed from source.
@@ -83,4 +85,5 @@ everything it copies, which is the quickest way to spot a mismatch.
 
 ## Licence
 
-[MIT](LICENSE).
+[MIT](LICENSE), except `mods/explorer-justified-view/`, which is GPL-2.0 because it is
+derived from DarkionAvey's GPL-2.0 mod.

@@ -55,12 +55,13 @@ static std::map<std::wstring, std::wstring> g_ini;
 static std::mutex g_iniLock;
 static const std::map<std::wstring, std::wstring> kDefaults = {
     {L"theme", L"dark"},       {L"darkFrom", L"22"},       {L"darkTo", L"7"},         {L"timeFormat", L"system"},
-    {L"seconds", L"0"},        {L"animation", L"classic"}, {L"intro", L"roll"},       {L"speed", L"100"},
+    {L"secondsCard", L"off"},  {L"animation", L"classic"}, {L"intro", L"roll"},       {L"speed", L"100"},
     {L"sound", L"mechanical"}, {L"volume", L"40"},         {L"latency", L"0"},        {L"soundEvery", L"minute"},
     {L"thump", L"light"},      {L"cards", L"1"},           {L"background", L"black"}, {L"layout", L"auto"},
     {L"size", L"96"},          {L"digitGap", L"3"},        {L"groupGap", L"14"},      {L"dim", L"0"},
     {L"date", L"0"},           {L"hideStockClock", L"1"},  {L"hideWidgets", L"1"},    {L"dryRun", L"0"},
-    {L"tee", L"1"},
+    {L"tee", L"1"},            {L"cardStyle", L"digits"}, {L"ampm", L"corner"},  {L"cardDate", L"0"},
+    {L"cardWeekday", L"0"},
 };
 static void LoadIni() {
     std::map<std::wstring, std::wstring> m;
@@ -293,8 +294,8 @@ static void AfterTick() {
         }
         if (g_ui->lastKey != g_lastKey) {
             g_lastKey = g_ui->lastKey;
-            TestLog(L"time key '%S' (built %d, cards %.0fx%.0f, art %u px)", g_lastKey.c_str(), g_ui->built, g_ui->cw,
-                    g_ui->ch, g_ui->artPx[g_ui->painted]);
+            TestLog(L"time key '%S' (built %d, %.3f DIP a unit, %zu images)", g_lastKey.c_str(), g_ui->built, g_ui->k,
+                    g_ui->art[g_ui->painted].size());
         }
     }
     // one screenshot at a time: render, then read the pixels, then save

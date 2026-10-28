@@ -1,5 +1,19 @@
 # Changelog - Lock Screen Flip Clock
 
+## 1.1.0 - 2026-10-28
+
+- **Card style: Pairs** - one card for the hours and one for the minutes, with the
+  same Puff 3D numerals two to a card.
+- **On the cards**, each a toggle: the date (hours card, top left), the weekday
+  (minutes card, top), the seconds as small flip cards in the minutes card's bottom
+  right, and AM / PM in the corner or as a small flip card in the hours card's
+  bottom left. AM and PM are drawn in the same strokes as the numerals.
+- **Seconds** is now Off / Small / Full size (was a switch for full size); the old
+  setting does not carry over.
+- Card art is drawn on demand and cached, in any width, instead of ten images up front.
+- The roll-in moves every figure of a pair card at once (00 reaches 46 in six flaps).
+- Corner text uses Inter (LyricDock's label font) where it is installed.
+
 ## 1.0.1 - 2026-10-28
 
 - The readme and its media moved into this repository (`docs/media/lock-screen-flip-clock/`);

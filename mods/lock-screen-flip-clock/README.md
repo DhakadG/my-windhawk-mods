@@ -14,7 +14,8 @@ inside LockApp - nothing outside can screenshot the secure desktop.</sub>
 ![The airport-board roll-in, then 10:59 turning to 11:00](../../docs/media/lock-screen-flip-clock/flip.gif)
 
 **With sound:** [dark cards, Airport board clack + light thump](../../docs/media/lock-screen-flip-clock/demo.mp4) ·
-[light cards, Gravity flaps, Mechanical + firm thump](../../docs/media/lock-screen-flip-clock/demo-light.mp4)
+[light cards, Gravity flaps, Mechanical + firm thump](../../docs/media/lock-screen-flip-clock/demo-light.mp4) ·
+[Pairs with seconds and AM / PM cards](../../docs/media/lock-screen-flip-clock/demo-pairs.mp4)
 
 ## What it does
 
@@ -28,6 +29,18 @@ inside LockApp - nothing outside can screenshot the secure desktop.</sub>
   sheen), Cascade (digit by digit, like a departure board), Roll and Fade.
 
   ![The eight flip styles, half way through 59 turning to 00](../../docs/media/lock-screen-flip-clock/styles.png)
+
+- **Two card styles.** A card per digit, or Pairs: one card for the hours and one
+  for the minutes, with the same Figma numerals two to a card.
+
+  ![Pairs: the date and weekday on the cards, seconds and AM / PM as small flip cards](../../docs/media/lock-screen-flip-clock/clock-pairs.png)
+
+- **On the cards** - each its own toggle: the date in the hours card's top left,
+  the weekday on top of the minutes card, the seconds as small flip cards in the
+  minutes card's bottom right, and AM / PM in the hours card's corner or as its
+  own small flip card. The small cards flip on their own while the big ones stay.
+
+  ![The roll-in and the seconds ticking on the Pairs cards](../../docs/media/lock-screen-flip-clock/flip-pairs.gif)
 
 - **Airport-board roll-in.** When the lock screen appears - Win+L, waking the
   display, coming back from the sign-in prompt - every card starts at 0 and
@@ -56,6 +69,8 @@ inside LockApp - nothing outside can screenshot the secure desktop.</sub>
 | --- | --- | --- |
 | ![Dark cards](../../docs/media/lock-screen-flip-clock/clock-dark.png) | ![Light cards](../../docs/media/lock-screen-flip-clock/clock-light.png) | ![Numerals only](../../docs/media/lock-screen-flip-clock/clock-numerals.png) |
 | Dark | Light | Numerals only |
+| ![Light Pairs](../../docs/media/lock-screen-flip-clock/clock-pairs-light.png) | ![Digits with everything on the cards](../../docs/media/lock-screen-flip-clock/clock-digits-extras.png) | |
+| Light Pairs | Digits with the extras | |
 
 <sub>These three, the styles strip and the GIF are rendered by the preview
 harness in `tests/` from the mod's own code, frame-exact.</sub>
@@ -90,10 +105,14 @@ Or from an elevated terminal:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
+| Card style | A card per digit | A card per digit, or one for the hours and one for the minutes (the same numerals, two to a card). |
 | Card colour | Dark | Dark cards with light numerals, light cards with dark numerals, or Automatic: light by day, dark between the two hours below. |
 | Automatic - dark from / light from | 22 / 7 | The hours the Automatic colour switches at. At the switch every card flips over to the new colour. |
 | Time format | Follow Windows | 12-hour puts AM or PM in the corner of the hours card; single-digit hours collapse to one card. |
-| Show seconds | Off | A third pair of cards. |
+| Seconds | Off | Small flip cards in the minutes card's bottom right, or full-size cards. |
+| AM / PM | In the corner | In the hours card's corner, or a small flip card in its bottom left. 12-hour time only. |
+| Date on the hours card | Off | The short date, top left, in your locale's format. |
+| Day of the week on the minutes card | Off | On top of the (last) minutes card. |
 | Flip animation | Classic | Classic, Gravity, Snappy, Bouncy, Slow fold, Cascade, Roll, Fade. |
 | When the lock screen appears | Airport board | Every card rolls from 0 to the time; or flip from blank cards; or nothing. |
 | Animation speed | 100 % | 30-300 %. |
@@ -148,9 +167,10 @@ you type your password.
 
 Everything here ran on the machine it was built on, not only in theory.
 
-- **Self-checks** (`tests/run-preview.ps1 check`): 38 assertions over the mod's
+- **Self-checks** (`tests/run-preview.ps1 check`): 44 assertions over the mod's
   real code - easing curves, flap keyframes for every style, 12/24-hour and
-  collapsed tens, automatic colour hours, and every sound: never clips, loudest
+  collapsed tens, automatic colour hours, what each card prints in its corners,
+  the Pairs roll-in (00 reaches 46 in six flaps), and every sound: never clips, loudest
   at the landing, the thump is a low, short knock (66-70 Hz, 98 % of its energy
   inside the motor run + 20 ms), clacks 4 ms apart are thinned, cards landing
   together share one thump.

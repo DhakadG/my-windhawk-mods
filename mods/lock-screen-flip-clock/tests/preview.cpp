@@ -9,8 +9,9 @@
 //                                   storyboards are paused and seeked), plus its soundtrack
 //   preview live   [k=v ...]        the clock in a window, real time, real sound
 //
-// k=v: theme=dark|light|auto anim=classic|gravity|... intro=roll|flip|none
-//      sound=... thump=off|light|firm seconds=0|1 h24=0|1 cards=0|1 date=0|1
+// k=v: style=digits|pairs theme=dark|light|auto anim=classic|gravity|... intro=roll|flip|none
+//      sound=... thump=off|light|firm seconds=off|small|large ampm=corner|card
+//      cardDate=0|1 cardWeekday=0|1 h24=0|1 cards=0|1 date=0|1
 //      background=black|dim|wallpaper size=30..100 start=HH:MM:SS secs=N fps=N
 //      w=px h=px reshowAt=ms
 //
@@ -53,7 +54,11 @@ static void ApplyArgs() {
     s.intro = pick(Arg("intro", "roll"), {"roll", "flip", "none"});
     s.sound = (Sound)pick(Arg("sound", "mechanical"), {"off", "solari", "mechanical", "click", "whoosh", "soft"});
     s.thump = pick(Arg("thump", "light"), {"off", "light", "firm"});
-    s.seconds = ArgInt("seconds", 0);
+    s.style = pick(Arg("style", "digits"), {"digits", "pairs"});
+    s.secondsCard = pick(Arg("seconds", "off"), {"off", "small", "large"});
+    s.ampmCard = Arg("ampm", "corner") == "card";
+    s.cardDate = ArgInt("cardDate", 0);
+    s.cardWeekday = ArgInt("cardWeekday", 0);
     s.h24 = ArgInt("h24", 0);
     s.cards = ArgInt("cards", 1);
     s.date = ArgInt("date", 0);
@@ -213,12 +218,43 @@ static int RunCheck(const std::wstring& out) {
         return PartsNow();
     };
     g_settings.h24 = false;
+    Group hours{nullptr, 'h', false, {}}, minutes{nullptr, 'm', false, {}};
+    hours.count = minutes.count = 2;
     Parts p = at("00:05:09");
-    Check(p.h == "12" && p.m == "05" && p.s == "09" && p.ampm == L"AM", "12-hour: 00:05 is 12:05 AM");
+    Check(p.h == "12" && p.m == "05" && p.s == "09" && p.ampm == "AM", "12-hour: 00:05 is 12:05 AM");
     p = at("09:07:00");
-    Check(p.h == " 9" && TensBlank(p) && LabelFor(&p, 'h', 1) == L"AM" && LabelFor(&p, 'h', 0) == L"", "12-hour: 9:07 collapses the tens card, AM on the units card");
+    Check(p.h == " 9" && TensBlank(p) && LabelFor(&p, hours, 1).tl == L"AM" && LabelFor(&p, hours, 0).tl.empty(),
+          "12-hour: 9:07 collapses the tens card, AM top left on the units card");
     p = at("13:00:00");
-    Check(p.h == " 1" && p.ampm == L"PM", "12-hour: 13:00 is 1 PM");
+    Check(p.h == " 1" && p.ampm == "PM" && LabelFor(&p, hours, 1).bl == L"PM", "12-hour: 13:00 is 1 PM, bottom left");
+    g_settings.cardDate = g_settings.cardWeekday = true;
+    p = at("13:00:00");
+    Check(!p.date.empty() && !p.weekday.empty() && LabelFor(&p, hours, 1).tl == p.date &&
+              LabelFor(&p, hours, 1).bl == L"PM" && LabelFor(&p, minutes, 1).tc == p.weekday &&
+              LabelFor(&p, minutes, 0).tc.empty(),
+          "date top left with PM below it, weekday on the last minutes card");
+    g_settings.ampmCard = true;
+    Check(LabelFor(&p, hours, 1).bl.empty(), "AM / PM as its own card leaves the corner empty");
+    g_settings.ampmCard = false;
+    g_settings.style = 1;  // Pairs
+    hours.count = minutes.count = 1;
+    p = at("09:07:46");
+    Check(ValueOf(p, 'h', 0) == "09" && ValueOf(p, 'm', 0) == "07" && ValueOf(p, 's', 0) == "46" &&
+              ValueOf(p, 'a', 0) == "AM" && LabelFor(&p, hours, 0).bl == L"AM" && LabelFor(&p, minutes, 0).tc == p.weekday,
+          "Pairs: 9:07 is 09 07 with AM and the weekday on its cards");
+    Check(Advance("00", "46") == "11" && Advance("33", "46") == "44" && Advance("45", "46") == "46" &&
+              Advance("0", "7") == "1" && Advance("  ", "10") == "00",
+          "the airport board moves every figure not yet there, together");
+    {
+        std::string s = "00";
+        int flaps = 0;
+        while (s != "46" && flaps < 20) s = Advance(s, "46"), flaps++;
+        Check(flaps == 6, "00 reaches 46 in six flaps", flaps);
+    }
+    Check(Filled("09", '0') == "00" && Filled(" 9", '0') == " 0" && Filled("09", ' ') == "  " && Filled("09", 0) == "09",
+          "filling the board: 0s, blanks, or the time");
+    g_settings.style = 0;
+    g_settings.cardDate = g_settings.cardWeekday = false;
     g_settings.h24 = true;
     p = at("09:07:00");
     Check(p.h == "09" && p.ampm.empty() && !TensBlank(p), "24-hour: 09:07");
@@ -304,19 +340,25 @@ static int RunArt(const std::wstring& out) {
         printf("FAIL  Direct2D init\n");
         return 1;
     }
+    auto one = [&](const std::string& v, bool light, bool withCard, float wu, const wchar_t* name) {
+        UINT h, w = (UINT)wu;
+        double t0 = SteadyMs();
+        auto px = p.Card(v, light, withCard, wu, w, h);
+        WritePng(out + L"\\" + name + L".png", w, h, px.data(), true);
+        printf("%ls  %.0f ms\n", name, SteadyMs() - t0);
+    };
     for (int light = 0; light < 2; light++) {
+        const std::wstring pre = light ? L"light-" : L"";
         for (int withCard = 1; withCard >= 0; withCard--) {
             for (int d = -1; d <= 9; d++) {
                 if (d < 0 && !withCard) continue;
-                UINT h;
-                double t0 = SteadyMs();
-                auto px = p.Card(d, light, withCard, 300, h);
-                wchar_t name[64];
-                swprintf(name, 64, L"\\%ls%ls-%ls.png", light ? L"light-" : L"", withCard ? L"card" : L"numeral",
-                         d < 0 ? L"blank" : std::to_wstring(d).c_str());
-                WritePng(out + name, 300, h, px.data(), true);
-                printf("%ls  %.0f ms\n", name + 1, SteadyMs() - t0);
+                std::wstring name = pre + (withCard ? L"card-" : L"numeral-") + (d < 0 ? L"blank" : std::to_wstring(d));
+                one(d < 0 ? "" : std::string(1, (char)('0' + d)), light, withCard, kDigitW, name.c_str());
             }
+        }
+        for (const char* v : {"04", "11", "29", "59", "AM", "PM"}) {
+            std::wstring name = pre + L"pair-" + std::wstring(v, v + 2);
+            one(v, light, true, kPairW, name.c_str());
         }
     }
     return 0;

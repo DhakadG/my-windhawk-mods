@@ -2,7 +2,7 @@
 // @id              lock-screen-flip-clock
 // @name            Lock Screen Flip Clock
 // @description     A mechanical flip clock for the lock screen: paper-grain cards that really flip, an airport-board roll-in, synthesised flap sounds and a vibration thump
-// @version         1.0.1
+// @version         1.1.0
 // @author          lost_husky
 // @github          https://github.com/DhakadG
 // @homepage        https://github.com/DhakadG/my-windhawk-mods/tree/main/mods/lock-screen-flip-clock
@@ -42,9 +42,14 @@ over and land like the real thing.
 - **Vibration thump.** A phone's haptic tick, rebuilt as sound: a low knock
   that sinks like a motor spinning down, with just enough harmonics to carry on
   laptop speakers.
-- Dark or light cards (or automatic: light by day, dark at night), optional
-  seconds, 12/24-hour with an AM/PM mark, cards on/off, size, gaps, dim, and a
-  black, dimmed or wallpaper background.
+- **Two card styles.** A card per digit (LyricDock's), or one card for the hours
+  and one for the minutes - the same numerals, two to a card.
+- **On the cards:** the date and the weekday in their top corners, the seconds
+  as small flip cards on the minutes card, AM / PM in the hours card's corner or
+  as its own small flip card - each a toggle.
+- Dark or light cards (or automatic: light by day, dark at night), full-size
+  seconds, 12/24-hour, cards on/off, size, gaps, dim, and a black, dimmed or
+  wallpaper background.
 - Silent while the display is off: a locked PC does not click all night.
 
 The design and the motion are ported from the flip clock in
@@ -60,6 +65,14 @@ you type your password.
 
 // ==WindhawkModSettings==
 /*
+- cardStyle: digits
+  $name: Card style
+  $description: >-
+    A card per digit, or one card for the hours and one for the minutes - the
+    same raised puff-print numerals, two to a card.
+  $options:
+  - digits: A card per digit
+  - pairs: A card for the hours, one for the minutes
 - theme: dark
   $name: Card colour
   $options:
@@ -78,9 +91,23 @@ you type your password.
   - system: Follow Windows
   - 12h: 12-hour (AM / PM)
   - 24h: 24-hour
-- seconds: false
-  $name: Show seconds
-  $description: A third card for seconds.
+- secondsCard: "off"
+  $name: Seconds
+  $options:
+  - "off": Off
+  - small: Small flip cards on the minutes card
+  - large: Full-size cards
+- ampm: corner
+  $name: AM / PM (12-hour time)
+  $options:
+  - corner: In the corner of the hours card
+  - card: A small flip card on the hours card
+- cardDate: false
+  $name: Date on the hours card
+  $description: The short date in its top left corner.
+- cardWeekday: false
+  $name: Day of the week on the minutes card
+  $description: In its top corner.
 - animation: classic
   $name: Flip animation
   $description: >-
@@ -223,8 +250,11 @@ you type your password.
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -248,7 +278,10 @@ struct ModSettings {
     int theme = 0;  // 0 dark, 1 light, 2 automatic
     int darkFrom = 22, darkTo = 7;
     bool h24 = false;
-    bool seconds = false;
+    int style = 0;        // 0 a card per digit, 1 pairs
+    int secondsCard = 0;  // 0 off, 1 small cards on the minutes card, 2 full size
+    bool ampmCard = false;
+    bool cardDate = false, cardWeekday = false;
     Anim anim = Anim::Classic;
     int intro = 0;  // 0 roll, 1 flip, 2 none
     double speed = 1;
@@ -299,7 +332,11 @@ static void LoadSettings() {
     s.darkTo = (int)Clamp(Wh_GetIntSetting(L"darkTo"), 0, 23);
     auto tf = str(L"timeFormat");
     s.h24 = tf == L"24h" || (tf != L"12h" && SystemUses24h());
-    s.seconds = Wh_GetIntSetting(L"seconds") != 0;
+    s.style = pick(str(L"cardStyle"), {L"digits", L"pairs"});
+    s.secondsCard = pick(str(L"secondsCard"), {L"off", L"small", L"large"});
+    s.ampmCard = str(L"ampm") == L"card";
+    s.cardDate = Wh_GetIntSetting(L"cardDate") != 0;
+    s.cardWeekday = Wh_GetIntSetting(L"cardWeekday") != 0;
     s.anim = (Anim)pick(str(L"animation"), {L"classic", L"gravity", L"snappy", L"bounce", L"fold",
                                              L"cascade", L"roll", L"fade"});
     s.intro = pick(str(L"intro"), {L"roll", L"flip", L"none"});
@@ -685,6 +722,17 @@ static const char* const kDigitPath[10] = {
     "241.7C184.1 241.7 208.9 220 215.1 192.1",
 };
 
+// A, M and P for the AM / PM card, drawn in the same strokes and on the same
+// grid (x 78-231, y 92.9-347.1) as the numerals.
+static const char* const kLetterA = "M80 347.1L150 92.9L220 347.1M106 262H194";
+static const char* const kLetterM = "M86 347.1V92.9L150 250L214 92.9V347.1";
+static const char* const kLetterP = "M96 347.1V92.9H154C192 92.9 214 117 214 151.8C214 186.6 192 210.7 154 210.7H96";
+
+static const char* GlyphPath(char c) {
+    if (c >= '0' && c <= '9') return kDigitPath[c - '0'];
+    return c == 'A' ? kLetterA : c == 'M' ? kLetterM : c == 'P' ? kLetterP : nullptr;
+}
+
 // Absolute M / L / H / V / C / Z only, which is all the paths above use.
 static void BuildPath(ID2D1GeometrySink* sink, const char* p) {
     auto num = [&]() {
@@ -978,15 +1026,19 @@ struct Painter {
         return br;
     }
 
-    // digit: 0-9, or -1 for a blank card. Returns premultiplied BGRA, w x h,
-    // where w is the card width in pixels.
-    std::vector<uint8_t> Card(int digit, bool light, bool withCard, UINT w, UINT& h) {
-        const float k = w / 300.0f;
+    // value: "" for a blank card, otherwise one or two characters ("4", "04",
+    // "PM"). wu: the card's width in design units (300 for one character, 480
+    // for two). Returns premultiplied BGRA, w x h.
+    std::vector<uint8_t> Card(const std::string& value, bool light, bool withCard, float wu, UINT w, UINT& h) {
+        const float k = w / wu;
         h = (UINT)std::lround(440 * k);
-        const UINT mw = (UINT)std::ceil(380 * k), mh = (UINT)std::ceil(520 * k);
+        const UINT mw = (UINT)std::ceil((wu + 80) * k), mh = (UINT)std::ceil(520 * k);
         const auto th = MakeTheme(light);
-        const int seed = digit < 0 ? 11 : digit + 1;
+        int seed = 11;
+        for (char c : value) seed = seed * 31 + c;
+        seed &= 0xffff;
         const auto M = [&](float x, float y) { return D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y); };
+        const float r = 40, c = r * 0.4475f;  // corner radius; its bezier handle
 
         // Draws one shape on a fresh margin bitmap and returns its filtered image.
         auto layer = [&](auto&& draw, const std::vector<Fx>& fx, int salt) {
@@ -999,11 +1051,18 @@ struct Painter {
             winrt::check_hresult(dc->EndDraw());
             return std::make_pair(bmp, Filter(bmp.get(), fx, k, seed * 13 + salt));
         };
+        auto halfClip = [&](int half) {
+            dc->PushAxisAlignedClip(half ? D2D1_RECT_F{0, 221, wu, 440} : D2D1_RECT_F{0, 0, wu, 219},
+                                    D2D1_ANTIALIAS_MODE_ALIASED);
+        };
 
         std::vector<std::pair<winrt::com_ptr<ID2D1Bitmap1>, winrt::com_ptr<ID2D1Image>>> layers;
         if (withCard) {
-            const char* shapes[2] = {"M0 40C0 17.9 17.9 0 40 0H260C282.1 0 300 17.9 300 40V219H0V40Z",
-                                     "M0 221H300V400C300 422.1 282.1 440 260 440H40C17.9 440 0 422.1 0 400V221Z"};
+            char shapes[2][256];
+            snprintf(shapes[0], 256, "M0 %.2fC0 %.2f %.2f 0 %.2f 0H%.2fC%.2f 0 %.2f %.2f %.2f %.2fV219H0V%.2fZ", r, c, c, r,
+                     wu - r, wu - c, wu, c, wu, r, r);
+            snprintf(shapes[1], 256, "M0 221H%.2fV%.2fC%.2f %.2f %.2f 440 %.2f 440H%.2fC%.2f 440 0 %.2f 0 %.2fV221Z", wu,
+                     440 - r, wu, 440 - c, wu - c, wu - r, r, c, 440 - c, 440 - r);
             for (int half = 0; half < 2; half++) {
                 winrt::com_ptr<ID2D1PathGeometry> g;
                 winrt::check_hresult(factory->CreatePathGeometry(g.put()));
@@ -1017,31 +1076,42 @@ struct Painter {
                                        half ? th.cardBot : th.cardTop, half));
             }
         }
-        if (digit >= 0) {
-            winrt::com_ptr<ID2D1PathGeometry> g;
-            winrt::check_hresult(factory->CreatePathGeometry(g.put()));
-            winrt::com_ptr<ID2D1GeometrySink> sink;
-            g->Open(sink.put());
-            BuildPath(sink.get(), kDigitPath[digit]);
-            sink->Close();
+        // Each character is one of the stroked numerals from the Figma board (or
+        // a letter drawn the same way for AM / PM): one character scaled 1.15x
+        // about the card centre, two side by side at 0.92x. The ink gradient lives
+        // in the glyph's space, the half clip does not.
+        if (!value.empty()) {
             D2D1_STROKE_STYLE_PROPERTIES sp{};
             sp.startCap = sp.endCap = sp.dashCap = D2D1_CAP_STYLE_FLAT;
             sp.lineJoin = D2D1_LINE_JOIN_MITER_OR_BEVEL;
             sp.miterLimit = 2.5f;
             winrt::com_ptr<ID2D1StrokeStyle> stroke;
             winrt::check_hresult(factory->CreateStrokeStyle(sp, nullptr, 0, stroke.put()));
-            // The numeral is scaled 1.15x about the card centre; its gradient
-            // lives in the scaled space, its half clip does not.
-            auto numeral = D2D1::Matrix3x2F::Translation(-150, -220) * D2D1::Matrix3x2F::Scale(1.15f, 1.15f) *
-                           D2D1::Matrix3x2F::Translation(150, 220);
+            const size_t n = value.size();
+            const float scale = n == 1 ? 1.15f : 0.92f, pitch = 212 * scale;  // two leave room for the corners
+            std::vector<std::pair<winrt::com_ptr<ID2D1PathGeometry>, D2D1::Matrix3x2F>> glyphs;
+            for (size_t i = 0; i < n; i++) {
+                const char* path = GlyphPath(value[i]);
+                if (!path) continue;
+                winrt::com_ptr<ID2D1PathGeometry> g;
+                winrt::check_hresult(factory->CreatePathGeometry(g.put()));
+                winrt::com_ptr<ID2D1GeometrySink> sink;
+                g->Open(sink.put());
+                BuildPath(sink.get(), path);
+                sink->Close();
+                const float cx = wu / 2 + (i - (n - 1) / 2.0f) * pitch;
+                glyphs.push_back({g, D2D1::Matrix3x2F::Translation(-150, -220) * D2D1::Matrix3x2F::Scale(scale, scale) *
+                                         D2D1::Matrix3x2F::Translation(cx, 220)});
+            }
             for (int half = 0; half < 2; half++) {
                 auto br = Gradient(half ? 220 : 85, half ? 355 : 220, Rgb(th.ink[half][0]), Rgb(th.ink[half][1]));
                 layers.push_back(layer(
                     [&] {
-                        dc->PushAxisAlignedClip(half ? D2D1_RECT_F{0, 221, 300, 440} : D2D1_RECT_F{0, 0, 300, 219},
-                                                D2D1_ANTIALIAS_MODE_ALIASED);
-                        dc->SetTransform(numeral * M(40 * k, 40 * k));
-                        dc->DrawGeometry(g.get(), br.get(), 46.5f, stroke.get());
+                        halfClip(half);
+                        for (auto& [g, at] : glyphs) {
+                            dc->SetTransform(at * M(40 * k, 40 * k));
+                            dc->DrawGeometry(g.get(), br.get(), 46.5f, stroke.get());
+                        }
                         dc->SetTransform(M(40 * k, 40 * k));
                         dc->PopAxisAlignedClip();
                     },
@@ -1056,8 +1126,8 @@ struct Painter {
         dc->SetTransform(D2D1::Matrix3x2F::Identity());
         winrt::com_ptr<ID2D1RoundedRectangleGeometry> clip;
         if (withCard) {
-            winrt::check_hresult(factory->CreateRoundedRectangleGeometry(
-                {{0, 0, 300 * k, 440 * k}, 40 * k, 40 * k}, clip.put()));
+            winrt::check_hresult(
+                factory->CreateRoundedRectangleGeometry({{0, 0, wu * k, 440 * k}, r * k, r * k}, clip.put()));
             dc->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), clip.get()), nullptr);
         }
         for (auto& l : layers) {
@@ -1070,17 +1140,17 @@ struct Painter {
             // The shadow the top half casts on the bottom one, the darkening
             // above the hinge, a hairline on the top edge and the hinge itself.
             auto cast = Gradient(221, 243, {0, 0, 0, th.cast}, {0, 0, 0, 0});
-            dc->FillRectangle({0, 221, 300, 243}, cast.get());
+            dc->FillRectangle({0, 221, wu, 243}, cast.get());
             auto fall = Gradient(205, 219, {0, 0, 0, 0}, {0, 0, 0, th.fall});
-            dc->FillRectangle({0, 205, 300, 219}, fall.get());
+            dc->FillRectangle({0, 205, wu, 219}, fall.get());
             solid->SetColor({1, 1, 1, th.hair});
-            dc->FillRectangle({40, 0, 260, 1}, solid.get());
+            dc->FillRectangle({r, 0, wu - r, 1}, solid.get());
             solid->SetColor({1, 1, 1, th.hinge});
-            dc->FillRectangle({0, 221.5f, 300, 222.5f}, solid.get());
+            dc->FillRectangle({0, 221.5f, wu, 222.5f}, solid.get());
             dc->PopLayer();
         }
         solid->SetColor({0, 0, 0, 1});  // the split between the halves
-        dc->FillRectangle({0, 218.5f, 300, 221.5f}, solid.get());
+        dc->FillRectangle({0, 218.5f, wu, 221.5f}, solid.get());
         winrt::check_hresult(dc->EndDraw());
 
         auto cpu = Target(w, h, true);
@@ -1337,12 +1407,27 @@ static void AddTrack(wuxma::Storyboard& sb, const ObjTrack& tr, const wux::Depen
 // the two flaps about the centre line: the top flap tips over and is hidden once
 // edge-on, and the bottom flap - visible only past ~70 deg, in shadow, so no
 // bright sliver pops out at the split - comes down and lands.
+//
+// Two card styles: Digits, a card per digit (LyricDock's), and Pairs, one card
+// for the hours and one for the minutes with the same numerals two to a card. Either way the seconds and AM / PM can
+// be small flip cards sitting on the minutes and hours cards' bottom corners,
+// and the date and weekday printed in their top corners.
+
+constexpr float kCardH = 440, kDigitW = 300, kPairW = 480;  // design units
+constexpr double kMini = 0.22;                               // a small card to a full one
+constexpr double kMiniMargin = 22;                           // from the host card's edges, units
+
+// What a card prints in its corners: part of what a flip changes.
+struct Corners {
+    std::wstring tl, tc, bl;  // top left, top centre, bottom left
+    bool operator==(const Corners& o) const { return tl == o.tl && tc == o.tc && bl == o.bl; }
+};
 
 struct Layer {
     wuxc::Grid el{nullptr};       // clipped to one half
-    wuxc::Grid content{nullptr};  // image + AM/PM; rolls inside the clip (statics)
+    wuxc::Grid content{nullptr};  // image + corners; rolls inside the clip (statics)
     wuxc::Image img{nullptr};
-    wuxc::TextBlock am{nullptr}, pm{nullptr};
+    wuxc::TextBlock tl{nullptr}, tc{nullptr}, bl{nullptr};
     wuxm::CompositeTransform roll{nullptr};    // statics: the Roll animation
     wuxm3::CompositeTransform3D turn{nullptr};  // flaps: the flip
     wuxs::Rectangle shade{nullptr};             // flaps: darkening; bottom static: the drop shadow
@@ -1353,25 +1438,31 @@ struct Layer {
 };
 
 struct Cell {
-    wuxc::Grid el{nullptr};
-    Layer top, bot, ft, fb;  // static top, static bottom, top flap, bottom flap
+    wuxc::Grid host{nullptr};  // the card, plus any small cards sitting on it
+    wuxc::Grid el{nullptr};    // the card itself, in perspective
+    Layer top, bot, ft, fb;    // static top, static bottom, top flap, bottom flap
     wuxma::Storyboard sb{nullptr};
-    char d = ' ';
-    std::wstring label;
+    std::string d;  // what it shows: "4", "04", "PM", " " (blank)
+    Corners label;
     int theme = 0;  // the theme its images show
     bool gone = false;
+    float wu = kDigitW;  // width in design units
+    double cw = 0, ch = 0;
+    UINT px = 0;  // art width in pixels
 };
 
 struct Group {
     wuxc::StackPanel el{nullptr};
-    char unit;  // h, m, s
+    char unit;  // h, m, s; a = AM / PM
+    bool mini = false;
     std::vector<Cell> cells;
+    int count = 0;  // cards planned (cells fills up as they are built)
 };
 
 struct Parts {
-    std::string h, m, s;
-    std::wstring ampm;
-    const std::string& Of(char u) const { return u == 'h' ? h : u == 'm' ? m : s; }
+    std::string h, m, s;  // " 4": in 12-hour Digits the tens card collapses
+    std::string ampm;      // "AM", "PM" or ""
+    std::wstring date, weekday;
 };
 
 struct ClockUi {
@@ -1380,14 +1471,11 @@ struct ClockUi {
     wuxc::StackPanel column{nullptr}, wrap{nullptr};
     wuxc::TextBlock date{nullptr};
     std::vector<Group> groups;
-    // card images per theme (0 dark, 1 light): 0-9 and 10 = blank
-    wuxmi::WriteableBitmap art[2][11]{{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr},
-                                      {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr}};
-    UINT artPx[2] = {0, 0};
-    bool artCards[2] = {true, true};
-    double cw = 0, ch = 0;  // card size, DIPs
+    std::unique_ptr<Painter> painter;
+    std::map<std::string, wuxmi::WriteableBitmap> art[2];  // per theme, "px|value"
+    double k = 0;                                          // DIPs per design unit
     double lastW = 0, lastH = 0;
-    bool secs = false;
+    bool secs = false;  // seconds on screen, as cards of either size
     bool built = false;
     bool wantIntro = true;
     double busyUntil = 0;
@@ -1398,6 +1486,13 @@ struct ClockUi {
 };
 
 static ClockUi* g_ui = nullptr;  // UI thread only; deliberately never freed off it
+
+static bool Pairs() {
+    return g_settings.style == 1;
+}
+static bool AmPmCard() {
+    return !g_settings.h24 && g_settings.ampmCard;
+}
 
 static bool NightNow() {
     int h = g_now().wHour, a = g_settings.darkFrom, b = g_settings.darkTo;
@@ -1424,9 +1519,9 @@ static Parts PartsNow() {
     int h = st.wHour;
     char buf[8];
     if (!g_settings.h24) {
-        v.ampm = h < 12 ? L"AM" : L"PM";
+        v.ampm = h < 12 ? "AM" : "PM";
         h = h % 12 ? h % 12 : 12;
-        snprintf(buf, sizeof buf, "%2d", h);  // 2:08 -> " 2": the tens card collapses
+        snprintf(buf, sizeof buf, Pairs() ? "%02d" : "%2d", h);  // Digits 2:08 -> " 2"
     } else {
         snprintf(buf, sizeof buf, "%02d", h);
     }
@@ -1435,23 +1530,43 @@ static Parts PartsNow() {
     v.m = buf;
     snprintf(buf, sizeof buf, "%02d", st.wSecond);
     v.s = buf;
+    if (g_settings.cardDate || g_settings.cardWeekday) {
+        WCHAR d[64];
+        if (GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &st, nullptr, d, ARRAYSIZE(d), nullptr)) v.date = d;
+        if (GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"dddd", d, ARRAYSIZE(d), nullptr)) v.weekday = d;
+    }
     return v;
 }
 static bool TensBlank(const Parts& v) {
     return v.h[0] == ' ';
 }
-static std::wstring LabelFor(const Parts* v, char u, int i) {
-    // AM / PM sits on the first visible hours card
-    return v && u == 'h' && i == (TensBlank(*v) ? 1 : 0) ? v->ampm : L"";
+// What cell i of unit u shows at v.
+static std::string ValueOf(const Parts& v, char u, int i) {
+    if (u == 'a') return v.ampm;
+    const std::string& s = u == 'h' ? v.h : u == 'm' ? v.m : v.s;
+    return Pairs() ? s : std::string(1, s[i]);
+}
+// The card the date and AM / PM belong to: the first visible hours card.
+static int FirstHours(const Parts& v) {
+    return !Pairs() && TensBlank(v) ? 1 : 0;
+}
+static Corners LabelFor(const Parts* v, const Group& g, int i) {
+    Corners c;
+    if (!v || g.mini) return c;
+    if (g.unit == 'h' && i == FirstHours(*v)) {
+        if (g_settings.cardDate) c.tl = v->date;
+        if (!v->ampm.empty() && !AmPmCard()) {
+            // LyricDock puts AM top left and PM bottom left; with the date on
+            // top, and on Pairs cards, it is always bottom left.
+            std::wstring a(v->ampm.begin(), v->ampm.end());
+            (Pairs() || g_settings.cardDate || v->ampm == "PM" ? c.bl : c.tl) = a;
+        }
+    }
+    if (g.unit == 'm' && i == g.count - 1 && g_settings.cardWeekday) c.tc = v->weekday;
+    return c;
 }
 static std::string KeyOf(const Parts& v) {
-    return v.h + v.m + (g_ui->secs ? v.s : "") + (v.ampm == L"PM" ? "P" : v.ampm == L"AM" ? "A" : "");
-}
-
-static wf::IInspectable Art(char d, int theme) {
-    int i = d >= '0' && d <= '9' ? d - '0' : 10;
-    if (i == 10 && !g_settings.cards) return nullptr;
-    return g_ui->art[theme][i];
+    return v.h + v.m + (g_ui->secs ? v.s : "") + v.ampm;
 }
 
 static wuxm::SolidColorBrush Brush(uint32_t rgb, double a = 1) {
@@ -1459,52 +1574,59 @@ static wuxm::SolidColorBrush Brush(uint32_t rgb, double a = 1) {
         (uint8_t)std::lround(a * 255), (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255));
 }
 
-// Renders (or re-renders) the card art for a theme at the current card size.
-static bool EnsureArt(int theme) {
-    double scale = 1;
-    try {
-        scale = g_ui->root.XamlRoot().RasterizationScale();
-    } catch (...) {
-    }
-    UINT px = (UINT)std::lround(g_ui->cw * scale);
-    if (px < 8) return false;
-    if (g_ui->art[theme][0] && g_ui->artCards[theme] == g_settings.cards &&
-        std::abs((int)px - (int)g_ui->artPx[theme]) <= (int)g_ui->artPx[theme] / 8) {
-        return true;
-    }
-    Painter p;
-    if (!p.Init()) {
+static bool Blank(const std::string& d) {
+    return d.find_first_not_of(' ') == std::string::npos;
+}
+static std::string ArtKey(const std::string& d, UINT px) {
+    return std::to_string(px) + "|" + (Blank(d) ? "" : d);
+}
+
+static bool EnsurePainter() {
+    if (g_ui->painter) return true;
+    auto p = std::make_unique<Painter>();
+    if (!p->Init()) {
         Wh_Log(L"Direct2D is not available");
         return false;
     }
-    double t0 = SteadyMs();
-    for (int i = 0; i < 11; i++) {
-        UINT h;
-        auto bgra = p.Card(i == 10 ? -1 : i, theme == 1, g_settings.cards, px, h);
-        wuxmi::WriteableBitmap wb((int)px, (int)h);
-        memcpy(wb.PixelBuffer().data(), bgra.data(), bgra.size());
-        wb.Invalidate();
-        g_ui->art[theme][i] = wb;
-    }
-    g_ui->artPx[theme] = px;
-    g_ui->artCards[theme] = g_settings.cards;
-    // ~7 MB a card at 4K: keep one colour. A colour change still in flight
-    // holds its own references to the old images.
-    for (auto& b : g_ui->art[1 - theme]) b = nullptr;
-    g_ui->artPx[1 - theme] = 0;
-    Wh_Log(L"Card art: theme %d, %u px wide, %.0f ms", theme, px, SteadyMs() - t0);
+    g_ui->painter = std::move(p);
     return true;
 }
 
-static void Paint(Layer& l, char d, const std::wstring& label, int theme) {
-    auto art = Art(d, theme);
+// A card's image, drawn the first time it is needed. At 4K a Pairs card is
+// ~8 MB, so the cache keeps only what is on screen once it grows; a flip in
+// flight holds its own references to the images it uses.
+static wf::IInspectable Art(const std::string& d, int theme, const Cell& c) {
+    if (Blank(d) && !g_settings.cards) return nullptr;
+    auto& cache = g_ui->art[theme];
+    const std::string key = ArtKey(d, c.px);
+    if (auto it = cache.find(key); it != cache.end()) return it->second;
+    if (!EnsurePainter() || c.px < 8) return nullptr;
+    if (cache.size() >= 24) {
+        std::set<std::string> keep;
+        for (auto& g : g_ui->groups) {
+            for (auto& o : g.cells) keep.insert(ArtKey(o.d, o.px));
+        }
+        for (auto it = cache.begin(); it != cache.end();) it = keep.count(it->first) ? std::next(it) : cache.erase(it);
+    }
+    UINT h;
+    auto bgra = g_ui->painter->Card(Blank(d) ? "" : d, theme == 1, g_settings.cards, c.wu, c.px, h);
+    wuxmi::WriteableBitmap wb((int)c.px, (int)h);
+    memcpy(wb.PixelBuffer().data(), bgra.data(), bgra.size());
+    wb.Invalidate();
+    cache.insert_or_assign(key, wb);
+    return wb;
+}
+
+static void Paint(Layer& l, const std::string& d, const Corners& label, int theme, const Cell& c) {
+    auto art = Art(d, theme, c);
     l.img.Source(art ? art.as<wuxm::ImageSource>() : nullptr);
-    l.am.Text(label == L"AM" ? L"AM" : L"");
-    l.pm.Text(label == L"PM" ? L"PM" : L"");
+    l.tl.Text(label.tl);
+    l.tc.Text(label.tc);
+    l.bl.Text(label.bl);
 }
 
 // A cell at rest showing d: no storyboard, flaps hidden.
-static void Rest(Cell& c, char d, const std::wstring& label, int theme) {
+static void Rest(Cell& c, const std::string& d, const Corners& label, int theme) {
     if (c.sb) {
         c.sb.Stop();
         c.sb = nullptr;
@@ -1512,7 +1634,7 @@ static void Rest(Cell& c, char d, const std::wstring& label, int theme) {
     c.d = d;
     c.label = label;
     c.theme = theme;
-    for (Layer* l : {&c.top, &c.bot, &c.ft, &c.fb}) Paint(*l, d, label, theme);
+    for (Layer* l : {&c.top, &c.bot, &c.ft, &c.fb}) Paint(*l, d, label, theme, c);
     c.ft.el.Opacity(0);
     c.fb.el.Opacity(0);
     c.ft.turn.RotationX(0);
@@ -1528,7 +1650,8 @@ static void Rest(Cell& c, char d, const std::wstring& label, int theme) {
     }
 }
 
-static Layer MakeLayer(double cw, double ch, bool top, bool flap, int theme) {
+static Layer MakeLayer(const Cell& c, bool top, bool flap) {
+    const double cw = c.cw, ch = c.ch, u = ch / kCardH;  // DIPs per design unit
     Layer l;
     l.el = wuxc::Grid();
     l.el.Width(cw);
@@ -1545,23 +1668,28 @@ static Layer MakeLayer(double cw, double ch, bool top, bool flap, int theme) {
     l.img.Height(ch);
     l.img.Stretch(wuxm::Stretch::Fill);
     l.content.Children().Append(l.img);
-    const double u = cw / 300;  // design units
-    const bool light = theme == 1;
-    for (int i = 0; i < 2; i++) {
+    const bool light = c.theme == 1;
+    // Corners: baselines at y 62 (top) and 412 (bottom), 30 units in.
+    auto corner = [&](wux::HorizontalAlignment ha, double baseline) {
         wuxc::TextBlock t;
-        t.FontFamily(wuxm::FontFamily(L"Segoe UI Variable Display"));
+        // LyricDock's label font, Inter, where it is installed; Segoe UI otherwise.
+        t.FontFamily(wuxm::FontFamily(L"Inter, Segoe UI Variable Display"));
         t.FontWeight(winrt::Windows::UI::Text::FontWeights::Bold());
-        t.FontSize(34 * u);
+        t.FontSize(32 * u);
         t.CharacterSpacing(20);
         t.TextLineBounds(wux::TextLineBounds::Tight);
         t.Foreground(light ? Brush(0x161616, 0.78) : Brush(0xFFFFFF, 0.74));
-        t.HorizontalAlignment(wux::HorizontalAlignment::Left);
+        t.HorizontalAlignment(ha);
         t.VerticalAlignment(wux::VerticalAlignment::Top);
-        // baselines at y 62 (AM, top left) and 412 (PM, bottom left)
-        t.Margin({30 * u, (i ? 412 - 25 : 62 - 25) * u, 0, 0});
+        t.TextTrimming(wux::TextTrimming::CharacterEllipsis);
+        t.MaxWidth(cw - 60 * u);
+        t.Margin({30 * u, (baseline - 25) * u, ha == wux::HorizontalAlignment::Center ? 30 * u : 0, 0});
         l.content.Children().Append(t);
-        (i ? l.pm : l.am) = t;
-    }
+        return t;
+    };
+    l.tl = corner(wux::HorizontalAlignment::Left, 62);
+    l.tc = corner(wux::HorizontalAlignment::Center, 62);
+    l.bl = corner(wux::HorizontalAlignment::Left, 412);
     if (!flap) {
         l.roll = wuxm::CompositeTransform();
         l.roll.CenterY(ch / 2);
@@ -1621,69 +1749,143 @@ static Layer MakeLayer(double cw, double ch, bool top, bool flap, int theme) {
     return l;
 }
 
-static Cell MakeCell(double cw, double ch, int theme) {
+// wu: width in design units; mini: a small card sitting on a full one.
+static Cell MakeCell(float wu, bool mini, int theme) {
+    const double k = g_ui->k * (mini ? kMini : 1);
     Cell c;
+    c.wu = wu;
+    c.theme = theme;
+    c.cw = std::floor(k * wu);
+    c.ch = std::floor(k * kCardH);
+    double scale = 1;
+    try {
+        scale = g_ui->root.XamlRoot().RasterizationScale();
+    } catch (...) {
+    }
+    c.px = (UINT)std::lround(c.cw * scale);
+    c.host = wuxc::Grid();
     c.el = wuxc::Grid();
-    c.el.Width(cw);
-    c.el.Height(ch);
+    c.el.Width(c.cw);
+    c.el.Height(c.ch);
     wuxm3::PerspectiveTransform3D persp;
-    persp.Depth(ch * 3.5);
+    persp.Depth(c.ch * 3.5);
     c.el.Transform3D(persp);
-    c.top = MakeLayer(cw, ch, true, false, theme);
-    c.bot = MakeLayer(cw, ch, false, false, theme);
-    c.ft = MakeLayer(cw, ch, true, true, theme);
-    c.fb = MakeLayer(cw, ch, false, true, theme);
+    c.top = MakeLayer(c, true, false);
+    c.bot = MakeLayer(c, false, false);
+    c.ft = MakeLayer(c, true, true);
+    c.fb = MakeLayer(c, false, true);
     for (Layer* l : {&c.top, &c.bot, &c.ft, &c.fb}) c.el.Children().Append(l->el);
+    c.host.Children().Append(c.el);
     return c;
 }
 
+// The groups on screen: units and how many cards each has.
+struct Plan {
+    char unit;
+    int cards;
+    bool mini;
+};
+static std::vector<Plan> PlanNow() {
+    const int per = Pairs() ? 1 : 2;
+    std::vector<Plan> p = {{'h', per, false}, {'m', per, false}};
+    if (g_settings.secondsCard == 2) p.push_back({'s', per, false});
+    if (g_settings.secondsCard == 1) p.push_back({'s', per, true});
+    if (AmPmCard()) p.push_back({'a', 1, true});
+    return p;
+}
+
 // Card size: as big as the space allows - groups side by side when wide,
-// stacked when tall - times the size setting. Visible cards only.
-static void ComputeSize(double W, double H, int groups, int cards, int perRow) {
-    const double R = 440.0 / 300;
+// stacked when tall - times the size setting. Visible cards only; the small
+// cards sit on the big ones and take no room.
+static void ComputeSize(double W, double H, bool tensGone) {
+    const double wu = Pairs() ? kPairW : kDigitW, inner = g_settings.digitGap * kDigitW,
+                 sep = g_settings.groupGap * kDigitW;
     bool stacked = g_settings.layout == 2 || (g_settings.layout == 0 && H > W);
-    double inner = g_settings.digitGap, sep = g_settings.groupGap, n = groups;
-    double cw = stacked ? std::min(W * 0.88 / (perRow + (perRow - 1) * inner), H * 0.84 / (n * R + (n - 1) * sep))
-                        : std::min(W * 0.95 / (cards + (cards - n) * inner + (n - 1) * sep), H * 0.8 / R);
-    if (g_settings.date) cw *= 0.92;  // room for the date line
-    g_ui->cw = std::floor(cw * g_settings.scale);
-    g_ui->ch = std::floor(g_ui->cw * R);
+    double rowW = 0, totalW = 0;
+    int n = 0;
+    for (const auto& p : PlanNow()) {
+        if (p.mini) continue;
+        int cards = p.cards - (p.unit == 'h' && tensGone ? 1 : 0);
+        double w = cards * wu + (cards - 1) * inner;
+        rowW = std::max(rowW, w);
+        totalW += (n ? sep : 0) + w;
+        n++;
+    }
+    double k = stacked ? std::min(W * 0.88 / rowW, H * 0.84 / (n * kCardH + (n - 1) * sep))
+                       : std::min(W * 0.95 / totalW, H * 0.8 / kCardH);
+    if (g_settings.date) k *= 0.92;  // room for the date line
+    g_ui->k = k * g_settings.scale;
     g_ui->wrap.Orientation(stacked ? wuxc::Orientation::Vertical : wuxc::Orientation::Horizontal);
 }
 
-// fill: 0 = the time; ' ' = blank cards; '0' = every card on 0 (the roll-in
-// starts there).
+// What a cell shows when the board is filled: 0 = the time; ' ' = blank cards;
+// '0' = every figure on 0 (the roll-in starts there; AM / PM starts blank).
+static std::string Filled(const std::string& t, char fill) {
+    if (!fill) return t;
+    std::string s = t;
+    for (auto& ch : s) {
+        if (ch != ' ') ch = fill == '0' && ch >= '0' && ch <= '9' ? '0' : ' ';
+    }
+    return s;
+}
+
 static void BuildCells(char fill) {
     auto& ui = *g_ui;
     const Parts v = PartsNow();
     const int theme = ThemeNow();
     ui.painted = theme;
-    const char units[3] = {'h', 'm', 's'};
-    const int n = ui.secs ? 3 : 2;
-    const bool tensGone = TensBlank(v);
-    ComputeSize(ui.lastW, ui.lastH, n, n * 2 - (tensGone ? 1 : 0), 2);
-    if (!EnsureArt(theme)) return;
+    const bool tensGone = !Pairs() && TensBlank(v);
+    ComputeSize(ui.lastW, ui.lastH, tensGone);
+    if (!EnsurePainter()) return;
+    for (auto& g : ui.groups) {
+        for (auto& c : g.cells) {
+            if (c.sb) c.sb.Stop();
+        }
+    }
+    ui.art[0].clear();
+    ui.art[1].clear();
     ui.wrap.Children().Clear();
-    ui.wrap.Spacing(ui.cw * g_settings.groupGap);
+    ui.wrap.Spacing(ui.k * g_settings.groupGap * kDigitW);
     ui.groups.clear();
-    for (int g = 0; g < n; g++) {
+    for (const auto& p : PlanNow()) {
         Group grp;
-        grp.unit = units[g];
+        grp.unit = p.unit;
+        grp.mini = p.mini;
+        grp.count = p.cards;
         grp.el = wuxc::StackPanel();
         grp.el.Orientation(wuxc::Orientation::Horizontal);
-        grp.el.Spacing(ui.cw * g_settings.digitGap);
-        grp.el.HorizontalAlignment(wux::HorizontalAlignment::Center);
-        for (int i = 0; i < 2; i++) {
-            Cell c = MakeCell(ui.cw, ui.ch, theme);
-            char t = v.Of(grp.unit)[i];
-            char d = fill == 0 || t == ' ' ? t : fill;
-            Rest(c, d, fill == ' ' ? L"" : LabelFor(&v, grp.unit, i), theme);
-            c.gone = grp.unit == 'h' && i == 0 && tensGone;
-            c.el.Visibility(c.gone ? wux::Visibility::Collapsed : wux::Visibility::Visible);
-            grp.el.Children().Append(c.el);
+        grp.el.Spacing(ui.k * (p.mini ? kMini : 1) * g_settings.digitGap * kDigitW);
+        const float wu = p.unit == 'a' || Pairs() ? kPairW : kDigitW;
+        for (int i = 0; i < p.cards; i++) {
+            Cell c = MakeCell(wu, p.mini, theme);
+            const std::string t = ValueOf(v, p.unit, i);
+            Rest(c, p.unit == 'a' && fill ? " " : Filled(t, fill), fill == ' ' ? Corners{} : LabelFor(&v, grp, i),
+                 theme);
+            c.gone = p.unit == 'h' && i == 0 && tensGone;
+            c.host.Visibility(c.gone ? wux::Visibility::Collapsed : wux::Visibility::Visible);
+            grp.el.Children().Append(c.host);
             grp.cells.push_back(std::move(c));
         }
-        ui.wrap.Children().Append(grp.el);
+        if (!p.mini) {
+            grp.el.HorizontalAlignment(wux::HorizontalAlignment::Center);
+            ui.wrap.Children().Append(grp.el);
+        } else {
+            // Seconds on the last minutes card's bottom right, AM / PM on the
+            // first hours card's bottom left: inside the bottom half.
+            const bool secs = p.unit == 's';
+            Group* host = nullptr;
+            for (auto& g : ui.groups) {
+                if (g.unit == (secs ? 'm' : 'h') && !g.mini) host = &g;
+            }
+            if (host) {
+                Cell& on = secs ? host->cells.back() : host->cells[tensGone ? 1 : 0];
+                const double m = kMiniMargin * ui.k;
+                grp.el.HorizontalAlignment(secs ? wux::HorizontalAlignment::Right : wux::HorizontalAlignment::Left);
+                grp.el.VerticalAlignment(wux::VerticalAlignment::Bottom);
+                grp.el.Margin({secs ? 0 : m, 0, secs ? m : 0, m});
+                on.host.Children().Append(grp.el);
+            }
+        }
         ui.groups.push_back(std::move(grp));
     }
     ui.wrap.Opacity(1 - g_settings.dim);
@@ -1694,36 +1896,38 @@ struct Hit {
     double fall, land;  // ms from the start of the job
 };
 
-// One card from its digit to d: appends the keyframes to T, starting at t0 (ms
-// from the start of the job). cut: when this flip takes over the card (images
-// swap, a flip still running is cut short). fromTheme: the theme of the digit
-// being left (a colour change flips the cards over).
+// One card from what it shows to d: appends the keyframes to J, starting at t0
+// (ms from the start of the job). cut: when this flip takes over the card
+// (images swap, a flip still running is cut short). A colour change flips the
+// cards over: the side being left keeps the old theme's image.
 struct CellJob {
     Track ftOp, ftRot, fbOp, fbRot, ftShade, fbShade, drop, sheenOp, sheenY;
     Track rollScale[2], rollY[2], rollOp[2];
-    ObjTrack img[4], am[4], pm[4];
+    ObjTrack img[4], tl[4], tc[4], bl[4];
     double end = 0;
 };
 
-static Hit Flip(Cell& c, CellJob& J, double cut, double t0, char d, const std::wstring& label, double speed,
+static Hit Flip(Cell& c, CellJob& J, double cut, double t0, const std::string& d, const Corners& label, double speed,
                 Anim anim, int toTheme) {
-    const char from = c.d;
-    const std::wstring fromLabel = c.label;
+    const std::string from = c.d;
+    const Corners fromLabel = c.label;
     const int fromTheme = c.theme;
     if (AnimationsOff()) anim = Anim::Fade;
     double sp = 1 / (Clamp(g_settings.speed, 0.3, 3) * speed);
     if (g_ui->secs) sp = std::min(sp, 820 / (BaseMs(anim) + (t0 - cut)));  // never outlive the next second
-    const double ch = g_ui->ch;
+    const double ch = c.ch;
 
-    auto images = [&](char a, int at, char b, int bt) {  // static top, static bottom, top flap, bottom flap
-        J.img[0].Set(cut, Art(b, bt));
-        J.img[1].Set(cut, Art(a, at));
-        J.img[2].Set(cut, Art(a, at));
-        J.img[3].Set(cut, Art(b, bt));
-        const std::wstring* labels[4] = {&label, &fromLabel, &fromLabel, &label};
+    // static top, static bottom, top flap, bottom flap
+    auto images = [&](const std::string& a, int at, const std::string& b, int bt) {
+        J.img[0].Set(cut, Art(b, bt, c));
+        J.img[1].Set(cut, Art(a, at, c));
+        J.img[2].Set(cut, Art(a, at, c));
+        J.img[3].Set(cut, Art(b, bt, c));
+        const Corners* labels[4] = {&label, &fromLabel, &fromLabel, &label};
         for (int i = 0; i < 4; i++) {
-            J.am[i].Set(cut, winrt::box_value(*labels[i] == L"AM" ? L"AM" : L""));
-            J.pm[i].Set(cut, winrt::box_value(*labels[i] == L"PM" ? L"PM" : L""));
+            J.tl[i].Set(cut, winrt::box_value(labels[i]->tl));
+            J.tc[i].Set(cut, winrt::box_value(labels[i]->tc));
+            J.bl[i].Set(cut, winrt::box_value(labels[i]->bl));
         }
     };
     for (int i = 0; i < 2; i++) {  // the statics' Roll pose at rest
@@ -1741,7 +1945,6 @@ static Hit Flip(Cell& c, CellJob& J, double cut, double t0, char d, const std::w
     if (anim == Anim::Roll || anim == Anim::Fade) {
         const double land = 420 * sp;
         images(d, toTheme, d, toTheme);
-        J.img[1].Set(cut, Art(d, toTheme));
         J.ftOp.Set(cut, 0);
         J.fbOp.Set(cut, 0);
         for (int i = 0; i < 2; i++) {
@@ -1824,8 +2027,9 @@ static void Run(Cell& c, CellJob& J) {
     Layer* L[4] = {&c.top, &c.bot, &c.ft, &c.fb};
     for (int i = 0; i < 4; i++) {
         AddTrack(sb, J.img[i], L[i]->img, L"Source");
-        AddTrack(sb, J.am[i], L[i]->am, L"Text");
-        AddTrack(sb, J.pm[i], L[i]->pm, L"Text");
+        AddTrack(sb, J.tl[i], L[i]->tl, L"Text");
+        AddTrack(sb, J.tc[i], L[i]->tc, L"Text");
+        AddTrack(sb, J.bl[i], L[i]->bl, L"Text");
     }
     AddTrack(sb, J.ftOp, c.ft.el, L"Opacity");
     AddTrack(sb, J.ftRot, c.ft.turn, L"RotationX");
@@ -1856,19 +2060,19 @@ static std::vector<Cell*> VisibleCells() {
     return out;
 }
 
-// Flip every card that differs from v, right to left (the order a real clock
-// turns). Each card makes its own sound as it lands, so several changing at
-// once rattle like a real board.
+// Flip every card that differs from v, the small cards first, then right to
+// left (the order a real clock turns). Each card makes its own sound as it
+// lands, so several changing at once rattle like a real board.
 static void Turn(const Parts& v, double stagger, bool withSound, bool animate) {
     auto& ui = *g_ui;
     const int theme = ThemeNow();
-    if (!ui.groups.empty() && ui.groups[0].cells[0].gone != TensBlank(v)) {
+    if (!Pairs() && !ui.groups.empty() && ui.groups[0].cells[0].gone != TensBlank(v)) {
         // 9:59 -> 10:00 in 12-hour time: the card count changes, so the cards
         // are rebuilt at their new size showing what they showed, then flip.
         // The tens card that appears flips in from blank.
-        std::vector<std::pair<char, std::wstring>> old;
+        std::vector<std::pair<std::string, Corners>> old;
         for (auto& g : ui.groups) {
-            for (auto& c : g.cells) old.push_back({c.gone ? ' ' : c.d, c.gone ? L"" : c.label});
+            for (auto& c : g.cells) old.push_back({c.gone ? " " : c.d, c.gone ? Corners{} : c.label});
         }
         BuildCells(0);
         if (!ui.built) return;
@@ -1888,8 +2092,8 @@ static void Turn(const Parts& v, double stagger, bool withSound, bool animate) {
     for (auto g = ui.groups.rbegin(); g != ui.groups.rend(); ++g) {
         for (int i = (int)g->cells.size() - 1; i >= 0; i--) {
             Cell& c = g->cells[i];
-            char d = v.Of(g->unit)[i];
-            std::wstring label = LabelFor(&v, g->unit, i);
+            const std::string d = ValueOf(v, g->unit, i);
+            const Corners label = LabelFor(&v, *g, i);
             if (c.gone || (d == c.d && label == c.label && c.theme == theme)) continue;
             if (!animate) {
                 Rest(c, d, label, theme);
@@ -1916,9 +2120,22 @@ static Anim FlapAnim() {  // the board always flaps
     return g_settings.anim == Anim::Roll || g_settings.anim == Anim::Fade ? Anim::Classic : g_settings.anim;
 }
 
+static bool Figures(const std::string& s) {
+    return !s.empty() && s.find_first_not_of("0123456789") == std::string::npos;
+}
+// One flap of the airport board: every figure not yet at its target moves on
+// by one, together (so "00" reaches "46" in six flaps, not forty-six).
+static std::string Advance(const std::string& cur, const std::string& target) {
+    std::string n = cur.size() == target.size() ? cur : std::string(target.size(), '0');
+    for (size_t i = 0; i < n.size(); i++) {
+        if (n[i] != target[i]) n[i] = n[i] >= '0' && n[i] <= '9' ? (char)('0' + (n[i] - '0' + 1) % 10) : '0';
+    }
+    return n;
+}
+
 // The airport board: every card turns forward one flap at a time until it
 // shows its target, each at its own pace, clacking at every flap. The next flap
-// lets go as the previous one lands.
+// lets go as the previous one lands. AM / PM just flips in from blank.
 static void Roll(bool withSound) {
     const Parts v = PartsNow();
     const int theme = ThemeNow();
@@ -1929,13 +2146,13 @@ static void Roll(bool withSound) {
         for (int ci = 0; ci < (int)g.cells.size(); ci++) {
             Cell& c = g.cells[ci];
             if (c.gone) continue;
-            const char target = v.Of(g.unit)[ci];
-            const std::wstring label = LabelFor(&v, g.unit, ci);
+            const std::string target = ValueOf(v, g.unit, ci);
+            const Corners label = LabelFor(&v, g, ci);
             const double pace = 3.7 + Rand() * 0.8;  // x normal speed: ~60 ms a flap
             double t = i++ * 40 + Rand() * 45;
             CellJob J;
-            while (c.d != target && target >= '0' && target <= '9') {
-                char next = c.d >= '0' && c.d <= '9' ? (char)('0' + (c.d - '0' + 1) % 10) : '0';
+            for (int guard = 0; c.d != target && guard < 12; guard++) {
+                const std::string next = Figures(target) ? Advance(c.d, target) : target;
                 Hit h = Flip(c, J, t, t, next, label, pace, FlapAnim(), theme);
                 if (withSound) sound.Card(h.fall / 1000, h.land / 1000, 0.55);
                 if (next == target) sound.Thump(h.land / 1000);
@@ -1954,7 +2171,7 @@ static void Roll(bool withSound) {
 // Enter: roll from 0, flip from blank, or just appear.
 static void Show(bool on) {
     auto& ui = *g_ui;
-    ui.secs = g_settings.seconds;
+    ui.secs = g_settings.secondsCard != 0;
     const int how = AnimationsOff() || !on ? 2 : g_settings.intro;
     BuildCells(how == 0 ? '0' : how == 1 ? ' ' : 0);
     if (!ui.built) {  // no card art (no Direct2D?): try again shortly
@@ -1974,10 +2191,10 @@ static void Show(bool on) {
 }
 
 // A colour change (Automatic at the dark / light hours): every card flips over,
-// left to right, from the old colour to the new one; the digits stay.
+// left to right, from the old colour to the new one; the figures stay.
 static void Retheme() {
     const int theme = ThemeNow();
-    if (!EnsureArt(theme)) return;
+    const int old = g_ui->painted;
     SoundJob sound;
     double end = 0;
     int i = 0;
@@ -1990,6 +2207,7 @@ static void Retheme() {
         end = std::max(end, J.end);
     }
     AudioFlush(sound);
+    g_ui->art[old].clear();  // the flips hold the old images they still need
     g_ui->painted = theme;
     g_ui->busyUntil = g_ms() + g_settings.latency + end;
 }
@@ -2013,7 +2231,7 @@ static void UpdateDate() {
         ui.lastDate = text;
         ui.date.Text(text);
     }
-    ui.date.FontSize(std::max(18.0, ui.ch * 0.085));
+    ui.date.FontSize(std::max(18.0, ui.k * kCardH * 0.085));
     const bool lightBg = g_settings.background == 0 && ThemeNow() == 1 && !g_settings.cards;
     ui.date.Foreground(lightBg ? Brush(0, 0.55) : Brush(0xFFFFFF, 0.74));
 }

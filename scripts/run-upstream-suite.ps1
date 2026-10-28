@@ -7,11 +7,11 @@
 # made in the clone (restored first, so reruns don't stack; a changed anchor fails
 # instead of guessing):
 #  - options-smoke.h pins the exact settings schema: taught the settings we add.
-#  - main() starts with our layout features off (justified rows, tight photo grid,
-#    preloading, Photos-style motion: his tests are timed to 180 ms ease-out and
-#    expect his view-centre zoom anchor). His
-#    suite then checks that his paths still behave as his; those features are
-#    ours to test.
+#  - main() starts with our layout features off (tight photo grid, preloading,
+#    Photos-style motion: his tests are timed to 180 ms ease-out and expect his
+#    view-centre zoom anchor; the Justified view is off unless a folder chose
+#    it). His suite then checks that his paths still behave as his; those
+#    features are ours to test.
 #  - icon-sizing-smoke.h expects plain icons magnified to fill any slot (his
 #    0.9.257). This mod caps that at 2x the artwork by choice; the check keeps its
 #    aspect and fill assertions up to that cap.
@@ -27,7 +27,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$off = ' g_photoGridBelow96=0; g_justifiedGrid=false; g_preloadThumbnails=false; g_photoMotion=false;'
+$off = ' g_photoGridBelow96=0; g_preloadThumbnails=false; g_photoMotion=false;'
 # file  ->  (text in his source  ->  what replaces it)
 $patches = [ordered]@{
     'tests\options-smoke.h' = [ordered]@{
@@ -35,11 +35,9 @@ $patches = [ordered]@{
             '{L"Hover.hoverSelectedOpacity",100,0,100,&g_bothAlpha},{L"Appearance.photoGridBelow",64,0,512,&g_photoGridBelow96},'
         '{L"enableLogging",false,&g_perf},' =
             '{L"enableLogging",false,&g_perf},{L"Appearance.preloadThumbnails",true,&g_preloadThumbnails},'
-        '{L"Columns.folderPlacement",L"foldersBottom"}' =
-            '{L"Columns.folderPlacement",L"foldersBottom"},{L"Appearance.gridLayout",L"justified"}'
     }
-    # Again after the options test: it reloads every setting from the schema
-    # defaults and restores only numbers and booleans, not gridLayout.
+    # Again after the options test, which reloads every setting from the
+    # schema defaults.
     'tests\background-regression.cpp' = [ordered]@{
         'int wmain(int argc,wchar_t** argv) {' = 'int wmain(int argc,wchar_t** argv) {' + $off
         'TestUserOptions();' = 'TestUserOptions();' + $off

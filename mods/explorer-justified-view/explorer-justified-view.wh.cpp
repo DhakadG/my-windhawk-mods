@@ -2,7 +2,7 @@
 // @id              explorer-justified-view
 // @name            Explorer Justified View
 // @description     GPU-drawn Explorer views with justified photo rows, fast thumbnails and smooth animations
-// @version         0.1.0
+// @version         0.2.0
 // @author          lost_husky
 // @include         explorer.exe
 // @architecture    x86-64
@@ -18,8 +18,11 @@
 Explorer's Details, List and icon views redrawn on the GPU, with a justified
 photo layout, fast thumbnails and smooth animations.
 
-- **Justified rows** — each thumbnail keeps its own shape and rows fill the
-  window edge to edge, like Google Photos.
+- **Justified view** — a view next to Explorer's own: each thumbnail keeps
+  its own shape and rows fill the window edge to edge, like Google Photos.
+  Choose it with **Ctrl+Shift+9**, *View → Justified* in the right-click
+  menu, or the status-bar button beside Explorer's view buttons; choosing any
+  Explorer view leaves it. Explorer remembers it per folder.
 - **Tight photo grid** — zoom an icon view far out (Ctrl+wheel or pinch) for an
   edge-to-edge thumbnail wall without names.
 - **Fast thumbnails** — cached thumbnails first, HEIF and camera RAW from their
@@ -80,12 +83,6 @@ by DarkionAvey (GPL-2.0), version 0.9.263. This mod is GPL-2.0 as well.
     - listThumbnails: false
       $name: Show thumbnails in list views
       $description: Use available thumbnails at the item's icon size in List and Details, with rounded corners and shadows.
-    - gridLayout: justified
-      $name: Grid layout
-      $description: Justified rows size each thumbnail by its own shape and fill every row edge to edge, like Google Photos. Items without a thumbnail count as squares.
-      $options:
-        - justified: Justified rows
-        - uniform: Uniform cells
     - preloadThumbnails: true
       $name: Preload thumbnails
       $description: After a thumbnail view opens, quietly fill Windows' thumbnail cache for the rest of the folder at background priority, nearest items first, so scrolling finds them ready. Covers every format Windows has a thumbnail handler for, including camera RAW and video.
@@ -573,7 +570,6 @@ std::atomic<ViewOption> g_filenameOnly{ViewOption::GridOnly};
 std::atomic<ViewOption> g_middleEllipsis{ViewOption::GridOnly};
 std::atomic<bool> g_listThumbnails{false};
 std::atomic<int> g_photoGridBelow96{64};
-std::atomic<bool> g_justifiedGrid{true};
 std::atomic<bool> g_preloadThumbnails{true};
 std::atomic<bool> g_animateHover{true};
 std::atomic<COLORREF> g_selectionRgb{RGB(0, 120, 215)};
@@ -1001,6 +997,7 @@ struct CachedFolderSnapshot {
     ShellVisibilityPolicy visibility;
     ShellGroupSpec grouping;
     FolderViewMode viewMode;
+    bool justified = false;
     std::vector<Entry> entries;
     EntryPathIndex pathIndex;
     EntryPathUpdates pathUpdates;
@@ -2394,6 +2391,8 @@ struct ViewState {
     HWND nativeHwnd = nullptr;
     HWND frameHwnd = nullptr; // Explorer frame owns this tab's distinct overlay HWND.
     HWND viewToggle = nullptr, viewToggleTooltip = nullptr;
+    HWND justifiedButton = nullptr; // Leading the switch; shares its tooltip.
+    bool justifiedButtonHot = false;
     HICON viewToggleIcons[2]{}; // Normal/disabled, premultiplied BGRA with alpha.
     int viewToggleIconPx = 0;
     COLORREF viewToggleIconColor = CLR_INVALID;
@@ -2408,9 +2407,9 @@ struct ViewState {
     bool viewToggleHot = false, viewTogglePaletteDirty = true;
     COLORREF viewToggleBackground = CLR_INVALID, viewToggleForeground = CLR_INVALID;
     void ReleaseViewToggle() {
-        for (HWND child : {viewToggleTooltip, viewToggle}) {
+        for (HWND child : {viewToggleTooltip, viewToggle, justifiedButton}) {
             if (IsWindow(child) && GetPropW(child, kViewToggleOwnerProperty) == hwnd) {
-                if (child==viewToggle)
+                if (child==viewToggle || child==justifiedButton)
                     RemoveWindowSubclass(child,ViewToggleSubclass,reinterpret_cast<UINT_PTR>(ViewToggleSubclass));
                 RemovePropW(child,kViewToggleOwnerProperty);
                 DestroyWindow(child);
@@ -2418,7 +2417,8 @@ struct ViewState {
         }
         for (HICON icon : viewToggleIcons) if (icon) DestroyIcon(icon);
         if (viewToggleBufferedPaint) BufferedPaintUnInit();
-        viewToggleTooltip = viewToggle = nullptr;
+        viewToggleTooltip = viewToggle = justifiedButton = nullptr;
+        justifiedButtonHot = false;
         viewToggleNeighbor = nullptr;
         viewToggleGeometry={}; viewToggleQuery={};
         viewToggleGeometryToken=0; viewToggleGeometryPending=false;
@@ -2478,6 +2478,9 @@ struct ViewState {
     // Thumbnail aspect ratios by path, learned as thumbnails arrive.
     // ponytail: cleared wholesale past 50k entries; an LRU if that ever matters.
     std::unordered_map<std::wstring, float> imageAspects;
+    // Justified view chosen for this folder (its view-state bag); shown only
+    // over an icon mode. Owner-thread only, like the table it selects.
+    bool justifiedView = false;
     bool justifiedRelayoutPending = false;
     ULONGLONG justifiedPendingSince = 0, justifiedLastAspectAt = 0;
     int justifiedDirtyFrom = INT_MAX; // Lowest item whose aspect changed.
@@ -3381,7 +3384,7 @@ void Redraw(ViewState& state);
 int ViewHeight(ViewState& state);
 void SetActive(HWND hwnd, bool on);
 void RefreshViewToggleForFrame(HWND frame, bool deferred = false);
-void DrawViewToggle(const ViewState& state, const DRAWITEMSTRUCT& item);
+void DrawViewToggle(const ViewState& state, const DRAWITEMSTRUCT& item, bool justified = false);
 bool SyncNativeSelection(ViewState& state,
     std::shared_ptr<PreparedNativeSelection> prepared = {});
 void CancelNativeSelectionPreparation(ViewState& state);
@@ -3500,7 +3503,7 @@ bool PhotoGrid(const ViewState& state) {
     return PhotoGridIcon(state, state.zoomAnimating ? state.zoomToIconPx : state.iconPx);
 }
 bool JustifiedGridIcon(const ViewState& state, float icon) {
-    return state.gridView && g_justifiedGrid.load(std::memory_order_relaxed) &&
+    return state.gridView && state.justifiedView &&
         !DriveTiles(state) && state.cachedNativeMode != FVM_SMALLICON &&
         !PhotoGridIcon(state, icon);
 }
@@ -5557,7 +5560,6 @@ void LoadSettings() {
     AcquireSRWLockExclusive(&g_fontFamilyLock);
     g_fontFamily.swap(fontFamily);
     ReleaseSRWLockExclusive(&g_fontFamilyLock);
-    g_justifiedGrid.store(_wcsicmp(WindhawkUtils::StringSetting::make(L"Appearance.gridLayout").get(),L"uniform")!=0);
     const auto textSetting=WindhawkUtils::StringSetting::make(L"Appearance.textAntialiasing");
     const auto textMode=_wcsicmp(textSetting.get(),L"smooth")==0 ? TextAntialiasing::Smooth :
         _wcsicmp(textSetting.get(),L"aliased")==0 ? TextAntialiasing::Aliased : TextAntialiasing::System;
@@ -8751,6 +8753,7 @@ void CacheDepartingFolder(ViewState& state) {
     snapshot.grouping = state.displayedGrouping;
     snapshot.visibility = state.visibility;
     snapshot.viewMode = {state.layoutNativeMode,state.layoutIconSize};
+    snapshot.justified = state.justifiedView;
     snapshot.entries = std::move(state.entries);
     snapshot.presentationEntries=std::move(state.presentationEntries);
     snapshot.pathIndex = std::move(state.entryPathIndex);
@@ -9378,6 +9381,8 @@ bool ReadNativeViewMode(ViewState& state, FolderViewMode& result) {
     return true;
 }
 
+void SetJustifiedView(ViewState& state, bool on);
+
 // Capture the native baseline around user input, never around an automatic
 // WM_COMMAND/reorder. The queued existing probe accepts only a real change
 // made to this SAME folder/view. Navigation discards its pending baseline.
@@ -9399,6 +9404,9 @@ struct NativeViewInput {
     }
     struct InputOwner { ViewState* state=nullptr; bool explicitMode=false; HWND viewControl=nullptr; };
     explicit NativeViewInput(InputOwner input) : NativeViewInput(input.state,input.explicitMode) {
+        // Ctrl+Shift+1..8 or a native status-bar view button: an Explorer
+        // view was chosen, so Justified ends.
+        if (input.state && input.explicitMode) SetJustifiedView(*input.state,false);
         if (overlay && input.viewControl)
             if (auto* state=State(overlay)) {
                 viewControl=input.viewControl; controlLifetime=state->lifetimeToken;
@@ -9418,7 +9426,8 @@ struct NativeViewInput {
         const HWND frame=GetAncestor(target,GA_ROOTOWNER);
         if (!IsExplorerFrame(frame)) return {};
         auto* state=State(OverlayUnder(frame));
-        if (!state || (!shortcut && (target==state->hwnd || target==state->viewToggle))) return {};
+        if (!state || (!shortcut && (target==state->hwnd || target==state->viewToggle ||
+            target==state->justifiedButton))) return {};
         if (!shortcut && message->message!=WM_CONTEXTMENU &&
             (target==state->nativeHwnd || IsChild(state->nativeHwnd,target))) return {};
         bool explicitMode=shortcut;
@@ -14442,6 +14451,8 @@ void RequestVisibleIcons(ViewState& state) {
     state.lastIconFirst = static_cast<int>(state.scrollNow / std::max(1.f, state.rowPx));
 }
 
+void GlideGridRelayout(ViewState& state, const std::vector<int>& rows);
+
 // Reflow a justified grid after new aspect ratios. The first visible item
 // stays put on screen; everything else glides to its new place on the
 // shared layout spring.
@@ -14472,6 +14483,46 @@ void RelayoutJustified(ViewState& state) {
         }
         return;
     }
+    GlideGridRelayout(state, rows);
+}
+
+// Justified is a view of its own, remembered per folder in a private bag of
+// Explorer's view-state store: per folder, across processes, ZIP folders too
+// (scripts/probes/probe-view-mode.cpp). SHGetViewStatePropertyBag is exported
+// by shlwapi, not shell32, and missing from the mingw headers.
+ComPtr<IPropertyBag> JustifiedBag(IShellFolder* folder) {
+    using GetBag = HRESULT (WINAPI*)(PCIDLIST_ABSOLUTE, PCWSTR, DWORD, REFIID, void**);
+    static const auto get = reinterpret_cast<GetBag>(reinterpret_cast<void*>(
+        GetProcAddress(GetModuleHandleW(L"shlwapi.dll"), "SHGetViewStatePropertyBag")));
+    constexpr DWORD kFolderNoDefaults = 0x80000005; // SHGVSPB_FOLDERNODEFAULTS
+    ComPtr<IPersistFolder2> persist;
+    PIDLIST_ABSOLUTE pidl = nullptr;
+    ComPtr<IPropertyBag> bag;
+    if (get && folder && SUCCEEDED(folder->QueryInterface(IID_PPV_ARGS(&persist))) &&
+        SUCCEEDED(persist->GetCurFolder(&pidl)) && pidl)
+        get(pidl, L"WindhawkExplorerJustifiedView", kFolderNoDefaults, IID_PPV_ARGS(&bag));
+    CoTaskMemFree(pidl);
+    return bag;
+}
+bool ReadJustifiedChoice(IShellFolder* folder) {
+    VARIANT value{}; value.vt = VT_I4;
+    const auto bag = JustifiedBag(folder);
+    return bag && SUCCEEDED(bag->Read(L"Layout", &value, nullptr)) &&
+        value.vt == VT_I4 && value.lVal == 1;
+}
+// Leave Justified without a relayout: the caller's mode change brings one.
+void ForgetJustifiedView(ViewState& state) {
+    if (!state.justifiedView) return;
+    state.justifiedView = false;
+    VARIANT empty{}; empty.vt = VT_EMPTY; // Clears the value, as if never set.
+    if (const auto bag = JustifiedBag(state.folder.Get())) bag->Write(L"Layout", &empty);
+    if (IsWindow(state.justifiedButton)) InvalidateRect(state.justifiedButton, nullptr, FALSE);
+}
+
+// Move the grid between uniform cells and justified rows in place, items
+// gliding to their new places on the shared layout spring. The first fully
+// visible item keeps its place on screen.
+void GlideGridRelayout(ViewState& state, const std::vector<int>& rows) {
     const float progress = LayoutTransitionProgress(state,
         state.rowTransitionActive, state.rowTransitionStartedQpc);
     std::vector<CapturedRow> captures;
@@ -14495,8 +14546,38 @@ void RelayoutJustified(ViewState& state) {
         state.scrollNow += delta; state.scrollTarget += delta; state.smoothStart += delta;
         ClampScroll(state);
     }
-    StartGroupingTransition(state, std::move(captures), {}, state.rowPx);
+    if (!captures.empty()) StartGroupingTransition(state, std::move(captures), {}, state.rowPx);
     Redraw(state);
+}
+
+// Enter or leave the Justified view of this tab's folder. Justified needs an
+// icon mode under it: from Details, List, Small icons, Tiles or Content the
+// native view first becomes Large icons, and that mode change relayouts.
+void SetJustifiedView(ViewState& state, bool on) {
+    if (g_unloading.load(std::memory_order_relaxed) || state.presentationOnly ||
+        (on && state.thisPcGpu)) return;
+    if (!on) {
+        if (!state.justifiedView) return;
+        ForgetJustifiedView(state);
+    } else {
+        const bool already = state.justifiedView;
+        if (!already) {
+            state.justifiedView = true;
+            VARIANT value{}; value.vt = VT_I4; value.lVal = 1;
+            if (const auto bag = JustifiedBag(state.folder.Get())) bag->Write(L"Layout", &value);
+            if (IsWindow(state.justifiedButton)) InvalidateRect(state.justifiedButton, nullptr, FALSE);
+        }
+        FolderViewMode before;
+        if (state.folderView && ReadNativeViewMode(state, before) && before.mode != FVM_ICON) {
+            if (SUCCEEDED(state.folderView->SetViewModeAndIconSize(FVM_ICON, 96)))
+                PostShellVisibilityProbe(state, true, true, &before);
+            return;
+        }
+        if (already) return;
+    }
+    if (!state.gridView || state.thisPcGpu) return;
+    GlideGridRelayout(state, VisibleItemRows(state, static_cast<float>(kRowTransitionOverscan)));
+    QueueVisibleDataFrame(state);
 }
 
 void ReceiveIcons(ViewState& state, bool requestMore) {
@@ -20504,6 +20585,34 @@ bool ShellCommandInSubmenu(HMENU menu, UINT command, int depth = 0) {
     return false;
 }
 
+// View → Justified. The Shell fills its View submenu on WM_INITMENUPOPUP, so
+// the item goes in after that, found by Explorer's language-neutral verbs
+// (viewlogicaliconslarge … viewlogicalcontent), as their radio group's last.
+constexpr UINT kJustifiedMenuCommand = 0x7FFF; // Above the Shell's id range.
+bool ExplorerViewVerb(IContextMenu* menu, UINT command) {
+    wchar_t verb[40]{};
+    return command && command != UINT(-1) && command < kJustifiedMenuCommand &&
+        SUCCEEDED(menu->GetCommandString(command - 1, GCS_VERBW, nullptr,
+            reinterpret_cast<LPSTR>(verb), ARRAYSIZE(verb))) && !_wcsnicmp(verb, L"viewlogical", 11);
+}
+void AddJustifiedMenuItem(const ViewState& state, HMENU popup, IContextMenu* menu) {
+    if (!menu || state.thisPcGpu || GetMenuState(popup, kJustifiedMenuCommand, MF_BYCOMMAND) != UINT(-1)) return;
+    const bool shown = state.justifiedView && state.gridView;
+    int last = -1;
+    for (int i = 0, count = GetMenuItemCount(popup); i < count; ++i)
+        if (ExplorerViewVerb(menu, GetMenuItemID(popup, i))) {
+            last = i;
+            if (shown) CheckMenuItem(popup, i, MF_BYPOSITION | MF_UNCHECKED);
+        }
+    if (last < 0) return;
+    MENUITEMINFOW item{sizeof(item)};
+    item.fMask = MIIM_ID | MIIM_FTYPE | MIIM_STATE | MIIM_STRING;
+    item.fType = MFT_RADIOCHECK; item.fState = shown ? MFS_CHECKED : 0;
+    item.wID = kJustifiedMenuCommand;
+    item.dwTypeData = const_cast<LPWSTR>(L"&Justified");
+    InsertMenuItemW(popup, last + 1, TRUE, &item);
+}
+
 void BackgroundContextMenu(ViewState& state, POINT screen) {
     if (!state.visible || !state.inScope || !IsWindow(state.hwnd) ||
         !IsWindow(state.nativeHwnd) || !state.folderView ||
@@ -20533,7 +20642,7 @@ void BackgroundContextMenu(ViewState& state, POINT screen) {
     }
     HMENU popup = CreatePopupMenu();
     if (!popup) return;
-    if (SUCCEEDED(menu->QueryContextMenu(popup, 0, 1, 0x7FFF,
+    if (SUCCEEDED(menu->QueryContextMenu(popup, 0, 1, kJustifiedMenuCommand - 1,
                                          CMF_NORMAL))) {
         ShellPopupBridge bridge;
         menu.As(&bridge.menu3);
@@ -20548,7 +20657,11 @@ void BackgroundContextMenu(ViewState& state, POINT screen) {
                 ShellMenuFlags(state,true), screen.x, screen.y,
                 owner, nullptr);
             if (IsWindow(owner)) RemovePropW(owner, kPopupBridgeProperty);
-            if (selected && IsWindow(nativeOwner)) {
+            if (selected == kJustifiedMenuCommand) {
+                if (auto* live = IsWindow(owner) ? State(owner) : nullptr;
+                    live && live->nativeHwnd == nativeOwner && live->folderPath == currentPath)
+                    SetJustifiedView(*live, true);
+            } else if (selected && IsWindow(nativeOwner)) {
                 // Explorer's New submenu invokes a child command. Arm before
                 // InvokeCommand: SHCNE_CREATE/MKDIR can be delivered reentrantly.
                 // Do not arm Paste or normal top-level background commands.
@@ -20570,6 +20683,8 @@ void BackgroundContextMenu(ViewState& state, POINT screen) {
                 invoke.ptInvoke = screen;
                 TabTraceSlowScope commandTrace(L"Shell background command", state.hwnd);
                 HRESULT hr;
+                if (ExplorerViewVerb(menu.Get(), selected))
+                    if (auto* live = State(owner)) SetJustifiedView(*live, false);
                 {
                     NativeViewInput input(&state,hasVerb && !_wcsnicmp(verb,L"view",4));
                     hr = InvokeShellSelectionCommand(state,menu.Get(),reinterpret_cast<LPCMINVOKECOMMANDINFO>(&invoke));
@@ -20955,6 +21070,7 @@ bool ApplyViewLayout(ViewState& state, FolderViewMode requested, bool animate = 
         const float font=state.fontPx;
         if (state.gridView!=grid) {
             state.wheelRemainder=0; state.touchpadPinching=false;
+            if (IsWindow(state.justifiedButton)) InvalidateRect(state.justifiedButton,nullptr,FALSE);
         }
         state.gridView=grid;
         state.layoutNativeMode=mode; state.layoutIconSize=state.nativeIconSize;
@@ -21117,6 +21233,10 @@ void BeginDirectoryViewMode(ViewState& state, bool nativeReady) {
         if (IsIconViewMode(mode.mode,state.thisPcGpu)) state.nativeIconSize=mode.iconSize;
         state.directoryModePinned=true;
     } else if (nativeReady) RefreshNativeViewMode(state,true);
+    // A speculative destination without cached rows waits for its folder;
+    // AttachView reads the bag when Explorer confirms it.
+    state.justifiedView = cached ? saved->second.justified :
+        nativeReady && ReadJustifiedChoice(state.folder.Get());
     ApplyViewLayout(state,{state.cachedNativeMode,state.nativeIconSize},state.graphicsReady);
     PipelineEvent(*state.background,{.operation=L"view.mode.choose[cache,native,pinned,size]",.a=state.token,
         .b=state.layoutNativeMode,.v={static_cast<double>(cached),static_cast<double>(nativeReady),
@@ -22761,9 +22881,10 @@ LRESULT CALLBACK ExplorerFrameSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
     if (msg == WM_COMMAND && HIWORD(wp) == BN_CLICKED && lp) {
         const HWND button = reinterpret_cast<HWND>(lp);
         const HWND overlay = reinterpret_cast<HWND>(GetPropW(button, kViewToggleOwnerProperty));
-        if (auto state = State(overlay); state && state->frameHwnd == hwnd && state->viewToggle == button) {
+        if (auto state = State(overlay); state && state->frameHwnd == hwnd &&
+            (state->viewToggle == button || state->justifiedButton == button)) {
             if (!g_unloading.load(std::memory_order_relaxed) && TabOwnsActiveView(*state))
-                PostMessageW(overlay, kMsgViewToggle, 0, 0);
+                PostMessageW(overlay, kMsgViewToggle, state->justifiedButton == button, 0);
             return 0;
         }
     }
@@ -24397,6 +24518,10 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         bool handled = false;
         const LRESULT result = ForwardShellPopupMessage(hwnd, msg, wParam,
                                                          lParam, handled);
+        if (msg == WM_INITMENUPOPUP && s)
+            if (auto* bridge = reinterpret_cast<ShellPopupBridge*>(GetPropW(hwnd, kPopupBridgeProperty)))
+                AddJustifiedMenuItem(*s, reinterpret_cast<HMENU>(wParam),
+                    bridge->menu3 ? bridge->menu3.Get() : bridge->menu2.Get());
         if (handled) return result;
         break;
     }
@@ -24690,6 +24815,11 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                         if (requested)
                             PipelineEvent(*s->background,{.operation=L"view.mode.input",.a=s->token,.b=observed.mode,
                                 .v={static_cast<double>(before->mode),static_cast<double>(observed.iconSize)}});
+                        // Any input that left the icon modes (the command
+                        // bar's View menu, say) chose an Explorer view.
+                        if (requested && (observed.mode == FVM_SMALLICON ||
+                                !IsIconViewMode(observed.mode, s->thisPcGpu)))
+                            ForgetJustifiedView(*s);
                     }
                 }
                 if (!IsWindow(hwnd) || State(hwnd)!=s || s->token!=sourceToken ||
@@ -26289,8 +26419,10 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         if (s && wParam==WPARAM(s->lifetimeToken)) SetActive(hwnd, false);
         return 0;
     case kMsgViewToggle:
-        if (s && s->inScope && TabOwnsActiveView(*s))
-            SetActive(hwnd, !s->visible);
+        if (s && s->inScope && TabOwnsActiveView(*s)) {
+            if (!wParam) SetActive(hwnd, !s->visible);
+            else if (s->visible) SetJustifiedView(*s, !(s->justifiedView && s->gridView));
+        }
         return 0;
     case kMsgViewToggleLayout:
         if (s && (!wParam || wParam==WPARAM(s->lifetimeToken))) {
@@ -28367,6 +28499,11 @@ void AttachView(HWND native, ComPtr<IFolderView2>& view,
             // The already-painted name snapshot belongs to this destination:
             // KEEP it. Resetting it here would recreate the 200ms blank wait.
             s->folder = folder;
+            if (const bool justified = ReadJustifiedChoice(folder.Get()); justified != s->justifiedView) {
+                s->justifiedView = justified;
+                if (s->gridView && s->loaded)
+                    GlideGridRelayout(*s, VisibleItemRows(*s, static_cast<float>(kRowTransitionOverscan)));
+            }
             WatchDirectory(*s);
             // A cold provisional preview already has a worker running. When
             // the Shell announces different grouping, cancel that worker's
@@ -28484,6 +28621,7 @@ void AttachView(HWND native, ComPtr<IFolderView2>& view,
     s->folder = folder;
     s->folderPath = path;
     s->thisPcGpu = IsThisPcLocation(path);
+    s->justifiedView = !s->thisPcGpu && ReadJustifiedChoice(folder.Get());
     s->rtlLayout = ShellUiIsRtl(*s);
     s->token = g_nextToken.fetch_add(1);
     s->iconToken = s->token;
@@ -29135,6 +29273,21 @@ int TranslateAcceleratorInput(HWND hwnd, HACCEL accelerator, LPMSG msg) {
             if (HWND overlay = OverlayUnder(frame))
                 if (auto state = State(overlay)) PostShellVisibilityProbe(*state, true, true);
     }
+    // Ctrl+Shift+9 picks the Justified view, next to Explorer's 1..8 views.
+    wchar_t keyClass[16]{};
+    if (!result && msg && msg->message == WM_KEYDOWN && msg->wParam == '9' &&
+        !(msg->lParam & (1LL << 30)) && (GetKeyState(VK_CONTROL) & 0x8000) &&
+        (GetKeyState(VK_SHIFT) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) &&
+        !g_unloading.load(std::memory_order_relaxed) &&
+        !(GetClassNameW(msg->hwnd, keyClass, ARRAYSIZE(keyClass)) && !_wcsicmp(keyClass, L"Edit"))) {
+        const HWND frame = GetAncestor(msg->hwnd, GA_ROOT);
+        if (IsExplorerFrame(frame))
+            if (auto state = State(OverlayUnder(frame)); state && state->visible && state->inScope &&
+                !state->optimisticStartedAt && TabOwnsActiveView(*state)) {
+                SetJustifiedView(*state, true);
+                return 1;
+            }
+    }
     return result;
 }
 
@@ -29676,7 +29829,9 @@ void RemoveAllOverlays() {
     }
     while (g_windowCallbacks.load(std::memory_order_acquire)) Sleep(1);
 }
-void DrawViewToggle(const ViewState& state, const DRAWITEMSTRUCT& destination) {
+// Also paints the Justified button (`justified`): checked while that view
+// shows, its glyph three rows of unequal tiles.
+void DrawViewToggle(const ViewState& state, const DRAWITEMSTRUCT& destination, bool justified) {
     DRAWITEMSTRUCT item = destination;
     BP_PAINTPARAMS params{sizeof(params)};
     params.dwFlags = BPPF_ERASE;
@@ -29706,8 +29861,11 @@ void DrawViewToggle(const ViewState& state, const DRAWITEMSTRUCT& destination) {
     InflateRect(&bounds, -Scale96(1, dpi), -Scale96(1, dpi));
     const int radius = Scale96(4, dpi);
     const bool disabled = (item.itemState & ODS_DISABLED) != 0;
-    if (!disabled && (state.viewToggleHot || (item.itemState & ODS_SELECTED))) {
-        SetDCBrushColor(item.hDC, blend((item.itemState & ODS_SELECTED) ? 18 : 10));
+    const bool hot = justified ? state.justifiedButtonHot : state.viewToggleHot;
+    const bool checked = justified && state.justifiedView && state.gridView;
+    if (!disabled && (hot || checked || (item.itemState & ODS_SELECTED))) {
+        SetDCBrushColor(item.hDC, blend((item.itemState & ODS_SELECTED) || (checked && hot) ? 18 :
+            checked ? 14 : 10));
         SelectObject(item.hDC, brush); SelectObject(item.hDC, GetStockObject(NULL_PEN));
         RoundRect(item.hDC, bounds.left, bounds.top, bounds.right, bounds.bottom, radius, radius);
     }
@@ -29716,7 +29874,24 @@ void DrawViewToggle(const ViewState& state, const DRAWITEMSTRUCT& destination) {
         SetDCPenColor(item.hDC, foreground); SelectObject(item.hDC, GetStockObject(NULL_BRUSH));
         RoundRect(item.hDC, bounds.left, bounds.top, bounds.right, bounds.bottom, radius, radius);
     }
-    if (HICON icon = state.viewToggleIcons[disabled ? 1 : 0]) {
+    if (justified) {
+        const int size = state.viewToggleIconPx ? state.viewToggleIconPx : Scale96(16, dpi);
+        const int gap = std::max(1, size / 8), row = (size - 2 * gap) / 3;
+        const int left = item.rcItem.left + (item.rcItem.right - item.rcItem.left - size) / 2;
+        int top = item.rcItem.top + (item.rcItem.bottom - item.rcItem.top - (3 * row + 2 * gap)) / 2;
+        // Tile widths per row, in sixteenths of the glyph.
+        static constexpr int kTiles[3][3]{{9, 7, 0}, {5, 11, 0}, {6, 4, 6}};
+        SetDCBrushColor(item.hDC, disabled ? blend(40) : foreground);
+        for (const auto& tiles : kTiles) {
+            int x = left;
+            for (int tile : tiles) if (tile) {
+                const RECT cell{x, top, x + std::max(1, tile * size / 16 - gap), top + row};
+                FillRect(item.hDC, &cell, brush);
+                x += tile * size / 16;
+            }
+            top += row + gap;
+        }
+    } else if (HICON icon = state.viewToggleIcons[disabled ? 1 : 0]) {
         const int size = state.viewToggleIconPx;
         DrawIconEx(item.hDC, item.rcItem.left + (item.rcItem.right - item.rcItem.left - size) / 2,
             item.rcItem.top + (item.rcItem.bottom - item.rcItem.top - size) / 2,
@@ -29733,7 +29908,9 @@ LRESULT CALLBACK ViewToggleSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                     UINT_PTR id, DWORD_PTR) {
     WindowCallbackGuard callback;
     const HWND overlay = reinterpret_cast<HWND>(GetPropW(hwnd, kViewToggleOwnerProperty));
-    if (auto state = State(overlay); state && state->viewToggle == hwnd) {
+    if (auto state = State(overlay); state && (state->viewToggle == hwnd || state->justifiedButton == hwnd)) {
+        const bool justified = state->justifiedButton == hwnd;
+        bool& hotFlag = justified ? state->justifiedButtonHot : state->viewToggleHot;
         if (msg == WM_PAINT || msg == WM_PRINTCLIENT || msg == WM_PRINT) {
             if (msg == WM_PRINT && (lp & PRF_CHECKVISIBLE) && !IsWindowVisible(hwnd)) return 0;
             PAINTSTRUCT paint{};
@@ -29748,7 +29925,7 @@ LRESULT CALLBACK ViewToggleSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             if (SendMessageW(hwnd, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS) item.itemState |= ODS_NOFOCUSRECT;
             // Own normal paint and capture requests. Explorer's frame and
             // other subclasses need not forward WM_DRAWITEM for this to work.
-            if (item.hDC) DrawViewToggle(*state, item);
+            if (item.hDC) DrawViewToggle(*state, item, justified);
             if (msg == WM_PAINT) EndPaint(hwnd, &paint);
             return 0;
         }
@@ -29757,18 +29934,18 @@ LRESULT CALLBACK ViewToggleSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             RECT client{}; GetClientRect(hwnd, &client);
             const POINT point{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
             const bool hot = IsWindowEnabled(hwnd) && PtInRect(&client, point);
-            if (hot && !state->viewToggleHot) {
+            if (hot && !hotFlag) {
                 TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, hwnd, 0};
                 TrackMouseEvent(&track);
             }
-            if (hot != state->viewToggleHot) {
-                state->viewToggleHot = hot;
+            if (hot != hotFlag) {
+                hotFlag = hot;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
         }
         if ((msg == WM_MOUSELEAVE || msg == WM_CANCELMODE || msg == WM_SHOWWINDOW ||
-                (msg == WM_ENABLE && !wp)) && state->viewToggleHot) {
-            state->viewToggleHot = false;
+                (msg == WM_ENABLE && !wp)) && hotFlag) {
+            hotFlag = false;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         if (msg == WM_CAPTURECHANGED || msg == WM_LBUTTONUP) {
@@ -29776,8 +29953,8 @@ LRESULT CALLBACK ViewToggleSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
             POINT point{}; RECT client{}; GetClientRect(hwnd, &client);
             const bool hot = IsWindowEnabled(hwnd) && IsWindowVisible(hwnd) &&
                 GetCursorPos(&point) && ScreenToClient(hwnd, &point) && PtInRect(&client, point);
-            if (hot != state->viewToggleHot) {
-                state->viewToggleHot = hot;
+            if (hot != hotFlag) {
+                hotFlag = hot;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
         }
@@ -29846,6 +30023,43 @@ void RequestStatusButtonGeometry(ViewState& state,const StatusButtonQuery& query
     SetEvent(work.columns.wake);
 }
 
+// The Justified button leads the GPU switch in the status bar, beside
+// Explorer's own view buttons, and shares the switch's painter, subclass and
+// tooltip. `at` is in frame placement coordinates; nullptr hides it.
+void PlaceJustifiedButton(ViewState& state, HWND frame, const RECT* at) {
+    if (!at) {
+        if (IsWindowVisible(state.justifiedButton)) SetPresentationVisibility(state.justifiedButton, false);
+        return;
+    }
+    if (!IsWindow(state.justifiedButton)) {
+        state.justifiedButton = CreateWindowExW(WS_EX_NOPARENTNOTIFY, L"BUTTON", L"Justified view",
+            WS_CHILD | WS_CLIPSIBLINGS | WS_TABSTOP | BS_PUSHBUTTON | BS_FLAT, 0, 0, 1, 1, frame,
+            nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!state.justifiedButton) return;
+        UsePhysicalClientCoordinates(state.justifiedButton);
+        if (!SetPropW(state.justifiedButton, kViewToggleOwnerProperty, state.hwnd) ||
+            !SetWindowSubclass(state.justifiedButton, ViewToggleSubclass,
+                reinterpret_cast<UINT_PTR>(ViewToggleSubclass), 0)) {
+            DestroyWindow(state.justifiedButton); state.justifiedButton = nullptr; return;
+        }
+        state.justifiedButtonHot = false;
+        if (IsWindow(state.viewToggleTooltip)) {
+            TOOLINFOW tool{static_cast<UINT>(TTTOOLINFOW_V2_SIZE)};
+            tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+            tool.hwnd = frame; tool.uId = reinterpret_cast<UINT_PTR>(state.justifiedButton);
+            tool.lpszText = const_cast<LPWSTR>(L"Justified view\r\n(Ctrl+Shift+9)");
+            SendMessageW(state.viewToggleTooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+        }
+    }
+    RECT previous{}; GetWindowRect(state.justifiedButton, &previous);
+    MapWindowPoints(HWND_DESKTOP, frame, reinterpret_cast<POINT*>(&previous), 2);
+    if (!IsWindowVisible(state.justifiedButton) || !EqualRect(&previous, at)) {
+        SetWindowPos(state.justifiedButton, HWND_TOP, at->left, at->top, at->right - at->left,
+            at->bottom - at->top, SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        InvalidateRect(state.justifiedButton, nullptr, FALSE);
+    }
+}
+
 void RefreshViewToggleForFrame(HWND frame, bool deferred) {
     if (g_unloading.load(std::memory_order_relaxed) || !IsWindow(frame)) return;
     if (deferred) {
@@ -29870,6 +30084,7 @@ void RefreshViewToggleForFrame(HWND frame, bool deferred) {
             if (IsWindow(state->viewToggleTooltip)) SendMessageW(state->viewToggleTooltip, TTM_POP, 0, 0);
             if (IsWindow(state->viewToggle) && IsWindowVisible(state->viewToggle))
                 SetPresentationVisibility(state->viewToggle, false);
+            PlaceJustifiedButton(*state, frame, nullptr);
             continue;
         }
         ConsumeStatusButtonGeometry(*state);
@@ -30051,6 +30266,11 @@ void RefreshViewToggleForFrame(HWND frame, bool deferred) {
                     fromNative ? (state->viewToggleGeometry.accessible ? L"accessibility" : L"HWND") : L"fallback",
                     state->viewToggleGeometry.providerHost,state->viewToggleNeighbor,x,y,width,height,gap,state->viewToggleGeometryPending);
         }
+        // Only beside the real status-bar buttons: the fallback spot sits
+        // over the view itself.
+        RECT justified{x, y, x + width, y + height};
+        OffsetRect(&justified, trailingAtLowX ? width + gap : -width - gap, 0);
+        PlaceJustifiedButton(*state, frame, fromNative && gpu && !state->thisPcGpu ? &justified : nullptr);
     }
 }
 

@@ -1,6 +1,7 @@
 # Plan — new mod: GPU Explorer view with a Justified view
 
-Status: **Phases 0 and 1 done (0.1.0, 2026-10-28); Phase 2 next.** Results: §10.
+Status: **Phases 0 and 1 done (0.1.0); Phase 2's Justified view in (0.2.0, 2026-10-28);
+device check, zoom-out without names and the smoke test left before 1.0.0.** Results: §10.
 Id `explorer-justified-view` (decisions in §9). Written 2026-10-28 after reading every file in
 [DarkionAvey/windhawk-gpu-accelerated-explorer-view](https://github.com/DarkionAvey/windhawk-gpu-accelerated-explorer-view)
 at commit `e543816` (0.9.263) and the local fork in `mods/gpu-accelerated-explorer-view/`.
@@ -252,3 +253,19 @@ hit test round-trips). Device check: groups, RTL, rename box, drag image, 125/15
   beyond §3.4: all window property names were shared with the original mod while
   `State()` trusts any HWND they name; now derived from the mod id. Details:
   `CHANGELOG-explorer-justified-view.md`.
+
+## 11. Phase 2 so far (0.2.0, 2026-10-28)
+
+- **Done:** Justified per tab (`ViewState::justifiedView`) instead of a global
+  setting; entry points (Ctrl+Shift+9, View menu item inserted on
+  `WM_INITMENUPOPUP` after the verbs, status-bar button); exits (Explorer view
+  verbs, Ctrl+Shift+1–8, native status buttons, any input that lands in a
+  non-icon mode); per-folder bag; Large icons uniform again; animated switch;
+  `Appearance.gridLayout` removed. Upstream suite: see the changelog.
+- **No self-initiated-mode tagging needed (§4.4):** Justified is left only by
+  explicit view choices or by a user change to a non-icon mode, so our own
+  `SetViewModeAndIconSize(FVM_ICON, 96)` can't end it.
+- **Left for 1.0.0:** device check (groups, RTL, rename box, drag image, 125/150 %,
+  the button's place and tooltip, menu item in other languages); zoom-out
+  keeping justified rows without names (still square tiles); label-cache
+  check during the switch; the `BuildJustifiedLayout` smoke test.

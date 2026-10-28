@@ -79,7 +79,11 @@ for the function names below, don't read it top to bottom.
 | Grid metrics | `UpdateMetrics` (icon/row size), `LayoutGroupSections` (columns per row) |
 | Per-item geometry (draw + hit-test + rename) | `LayoutItem` → `ItemGeometry` |
 | Tight photo grid | `PhotoGridIcon`, `PhotoGrid`, `ItemGeometry::photo`; setting `Appearance.photoGridBelow` |
-| Justified grid | `JustifiedLayout`, `BuildJustifiedLayout`, `Justified()`, `VisitJustifiedLines`, `ItemWidthAt`, `SectionLineCount`, `RelayoutJustified`; aspects in `ViewState::imageAspects` (filled in `ReceiveIcons`); setting `Appearance.gridLayout` |
+| Justified grid | `JustifiedLayout`, `BuildJustifiedLayout`, `Justified()`, `VisitJustifiedLines`, `ItemWidthAt`, `SectionLineCount`, `RelayoutJustified`, `GlideGridRelayout` (animated uniform ↔ justified); aspects in `ViewState::imageAspects` (filled in `ReceiveIcons`) |
+| Justified view on/off | `ViewState::justifiedView` (per tab; read by `JustifiedGridIcon`); `SetJustifiedView` (enter: switches a non-icon mode to Large icons; leave), `ForgetJustifiedView` (leave without relayout) |
+| Justified per-folder memory | `JustifiedBag` / `ReadJustifiedChoice` (bag `WindhawkExplorerJustifiedView`, value `Layout`); read in `BeginDirectoryViewMode`, at attach and on optimistic confirmation in `AttachView`; cached with rows in `CachedFolderSnapshot::justified` |
+| Justified entry points | Ctrl+Shift+9 at the end of `TranslateAcceleratorHook`; View menu: `AddJustifiedMenuItem` on `WM_INITMENUPOPUP` (`ExplorerViewVerb`, id `kJustifiedMenuCommand`), handled in `BackgroundContextMenu`; status button: `PlaceJustifiedButton` from `RefreshViewToggleForFrame`, painted by `DrawViewToggle(…, justified)`, click → `kMsgViewToggle` with wParam 1 |
+| Justified exits | `NativeViewInput(InputOwner)` (Ctrl+Shift+1..8, native status buttons), `ExplorerViewVerb` in `BackgroundContextMenu`, and the `kMsgShellVisibilityChanged` probe (any input landing in a non-icon or Small icons mode) |
 | Grid position math (both layouts) | `DocumentRowTop`, `DocumentRowLeft`, `RowAtDocument`, `VisibleItemRows`, `DocumentHeight` |
 | Grid keyboard / marquee | `KeyboardNavigationTarget` (`justifiedLines` for Up/Down/PageUp/PageDown), `UpdateMarquee` |
 | Icon/thumbnail drawing | `DrawActualIcon` → `DrawCachedIcon` (optional `fill` rect = cover-crop) |
@@ -89,7 +93,7 @@ for the function names below, don't read it top to bottom.
 | HEIF/RAW fast path | `HasEmbeddedPreview`, `LoadEmbeddedPreview` (WIC frame thumbnail + orientation) |
 | Thumbnail preloading | `SchedulePreload` (called when names complete), `ThumbnailPreloadProc`, `StopPreload` (both uninit hooks); setting `Appearance.preloadThumbnails` |
 | Zoom (Ctrl+wheel / pinch) | `ApplyRowHeight` (grid lower bound 8, list 24) |
-| View-mode shortcuts (Ctrl+Shift+1..8) | `NativeViewInput::Owner` — passes through to Explorer |
+| View-mode shortcuts (Ctrl+Shift+1..8) | `NativeViewInput::Owner` — passes through to Explorer (and ends Justified) |
 
 ## 4. Decisions and why
 
@@ -137,12 +141,21 @@ for the function names below, don't read it top to bottom.
   a property names (it only checks the thread), so sharing upstream's names with a
   second GPU-view mod in the same Explorer would cast its windows to our
   `ViewState`. Only `kSharedOverlayMarker` keeps the public name.
-- **Justified per-folder memory (Phase 2) goes in Explorer's own view-state bags**,
+- **Justified is left only by explicit view choices** (verbs, Ctrl+Shift+1–8,
+  native status buttons) or by user input that lands in a non-icon mode, never
+  by a mode change as such: entering it from Details sets Large icons itself,
+  and that change must not end it.
+- **Justified per-folder memory lives in Explorer's own view-state bags**,
   bag `WindhawkExplorerJustifiedView`, via `SHGetViewStatePropertyBag`
   (`SHGVSPB_FOLDERNODEFAULTS`). It is exported by **shlwapi.dll**, not shell32, and
   missing from the mingw headers: resolve it with `GetProcAddress`. Probed
   (`scripts/probes/probe-view-mode.cpp`): persists across processes, per folder,
-  works for ZIP folders, a `VT_EMPTY` write clears it. Rejected: `FVM_THUMBNAIL`
+  works for ZIP folders, a `VT_EMPTY` write clears it. To check what Explorer
+  saved, look in the registry (`HKCU\Software\Classes\Local Settings\Software\
+  Microsoft\Windows\Shell\Bags\<n>\WindhawkExplorerJustifiedView`, value
+  `Layout`): the probe's `SHParseDisplayName` PIDL for the same path can map to
+  a different bag slot than Explorer's own, so `probe bag` may read empty.
+  Rejected: `FVM_THUMBNAIL`
   (DefView stores it as `FVM_ICON`) and an odd icon size (native Ctrl+wheel itself
   produces odd sizes: 27, 33, 97, 133…).
 - **View submenu items have stable verbs**: `viewlogicaliconsextralarge`,
@@ -166,10 +179,13 @@ for the function names below, don't read it top to bottom.
 
 ## 6. Open work
 
-0. **Phase 2 of `PLAN-explorer-justified-view.md`:** Justified as its own view
-   (right-click View menu, Ctrl+Shift+9, status-bar button), per-folder memory in
-   the view-state bag, Large icons back to a uniform grid, `Appearance.gridLayout`
-   removed. Then 1.0.0.
+0. **Rest of Phase 2, then 1.0.0** (`PLAN-explorer-justified-view.md` §11): the
+   Justified view itself is in (0.2.0). Left: device check (groups, RTL, rename
+   box, drag image, 125/150 %, button place/tooltip, the menu item in another
+   display language), zoom-out keeping justified rows without names, label
+   cache during the switch, a `BuildJustifiedLayout` smoke test. Known gap: the
+   command bar's XAML View menu isn't seen as a view choice, so Large / Medium /
+   Extra large there keep Justified.
 1. **Thumbnail speed: verify on device.** Cache-first probing, preloading and
    the HEIF/RAW embedded-preview path are in (measurements in the changelog).
    Remaining slow cases: video (MOV/MP4 0.2–0.5 s each, Media Foundation,
